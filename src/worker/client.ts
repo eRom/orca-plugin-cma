@@ -46,20 +46,32 @@ export function createClientStore(secrets: OrcaWorkerApi['secrets']): ClientStor
   }
 }
 
-/** Les refus de budget : le code vient du corps de la `BadRequestError`, le texte est le nôtre. */
-const BUDGET_ERRORS: { code: 'model_not_budgetable' | 'budget_not_raised' | 'budget_create_only'; message: string }[] = [
+/**
+ * Les refus de budget d'une `BadRequestError`. Le corps réel de `budget_create_only` (capturé le
+ * 22/11) ne porte aucun code : seulement un message, d'où `pattern`. Les deux autres codes n'ont
+ * jamais été observés (corps inconnu) : on cherche leur nom dans tout le corps (`code`).
+ */
+const BUDGET_ERRORS: {
+  code: 'model_not_budgetable' | 'budget_not_raised' | 'budget_create_only'
+  message: string
+  pattern?: RegExp
+}[] = [
   {
     code: 'model_not_budgetable',
     message: 'A model of this agent has no public price, so the session cannot have a budget.'
   },
   { code: 'budget_not_raised', message: 'The new budget must be above what the session already cost.' },
-  { code: 'budget_create_only', message: 'A budget can only be set when the session is created.' }
+  {
+    code: 'budget_create_only',
+    message: 'A budget can only be set when the session is created.',
+    pattern: /can only be attached when a session is created/
+  }
 ]
 
 function budgetError(error: InstanceType<typeof Anthropic.BadRequestError>): { message: string; code: ApiErrorCode } | null {
-  // La forme exacte du corps n'est pas documentée : on cherche le code dans tout le corps.
   const body = JSON.stringify(error.error ?? null)
-  return BUDGET_ERRORS.find((entry) => body.includes(entry.code)) ?? null
+  const found = BUDGET_ERRORS.find((entry) => entry.pattern?.test(body) || body.includes(entry.code))
+  return found ? { message: found.message, code: found.code } : null
 }
 
 export function describeError(error: unknown): { message: string; code: ApiErrorCode } {

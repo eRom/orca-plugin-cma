@@ -115,7 +115,7 @@ test('toSessionDetail lists resources and the environment name', () => {
   expect(detail.resources[1]).toBe('Repository https://github.com/a/b')
 })
 
-// Corps réel d'une BadRequestError de budget : voir l'avertissement sur les fixtures plus bas.
+// Une BadRequestError de l'API portant le corps JSON donné (`error.error`).
 function badRequest(body: unknown): InstanceType<typeof Anthropic.BadRequestError> {
   return new Anthropic.BadRequestError(400, body as object, 'budget refused', new Headers())
 }
@@ -138,15 +138,22 @@ test('a bad request without a budget reason stays other', () => {
   expect(describeError(badRequest(body)).code).toBe('other')
 })
 
-// ATTENTION : ces trois corps ne sont PAS des captures. L'enveloppe `{ type, error: { type, message } }`
-// est celle observée le 22/11 (400 "Cannot modify archived session" sur test-001, archivée), mais
-// le corps réel des refus de budget n'a pas pu être capturé (aucune session sans budget ni coût
-// >= 1 cent à portée). Le code est donc placé à trois endroits différents pour que la détection
-// ne dépende pas d'une forme supposée.
+// CAPTURÉ (réel) le 22/11 : `sessions.update(id, { budget })` sur une session créée sans budget,
+// corps complet de la BadRequestError (req_011ChHmZNKo16Auq3qGxBojF). Il ne porte AUCUN code
+// snake_case, seulement ce message : `describeError` s'appuie donc sur le texte.
 const BUDGET_CREATE_ONLY_BODY = {
   type: 'error',
-  error: { type: 'invalid_request_error', message: 'Budget cannot be added', reason: 'budget_create_only' }
+  error: {
+    type: 'invalid_request_error',
+    message:
+      "`budget` can only be attached when a session is created: a session that has no budget cannot gain one, and removing a budget is permanent. A session's existing budget may be raised, lowered, or removed."
+  },
+  request_id: 'req_011ChHmZNKo16Auq3qGxBojF'
 }
+
+// SYNTHÉTIQUES, jamais observés : le corps réel de ces deux refus n'a pas pu être capturé (coût
+// toujours à 0 cent, aucun modèle non budgétable à portée). On y place le code à deux endroits
+// différents pour tester la recherche du nom du code dans tout le corps, rien de plus.
 const BUDGET_NOT_RAISED_BODY = {
   type: 'error',
   error: { type: 'invalid_request_error', message: 'Budget must be raised (budget_not_raised)' }
@@ -156,9 +163,11 @@ const MODEL_NOT_BUDGETABLE_BODY = {
   error: { type: 'invalid_request_error', message: 'No public price', details: [{ reason: 'model_not_budgetable' }] }
 }
 
-// Faux client : `store.get()` rend un objet qui note les événements envoyés et sert une liste de sessions.
+// Faux client : `store.get()` rend un objet qui note les événements envoyés et les paramètres de liste,
+// et ne sert les sessions archivées que si `include_archived` est vrai (comme l'API).
 function fakeStore(sessions: unknown[] = []) {
   const sent: unknown[] = []
+  const listParams: { include_archived?: boolean }[] = []
   const client = {
     beta: {
       sessions: {
@@ -167,16 +176,19 @@ function fakeStore(sessions: unknown[] = []) {
             sent.push(...params.events)
           }
         },
-        list: () => ({
+        list: (params: { include_archived?: boolean } = {}) => ({
           async *[Symbol.asyncIterator]() {
-            for (const session of sessions) yield session
+            listParams.push(params)
+            for (const session of sessions) {
+              if (params.include_archived === true || (session as { archived_at?: string }).archived_at == null) yield session
+            }
           }
         })
       }
     }
   }
   const store = { get: async () => client, reset() {}, hasKey: async () => true } as unknown as ClientStore
-  return { store, sent }
+  return { store, sent, listParams }
 }
 
 test('confirm sends deny_message only on a non-empty denial', async () => {
@@ -200,6 +212,22 @@ test('testSpend counts only plugin-test sessions and sums a missing cost as zero
   ])
   const result = await createSessionHandlers(store).testSpend()
   expect(result).toEqual({ ok: true, value: { sessions: 2, total: { minor: '30', currency: 'USD' } } })
+})
+
+// Garde du plafond de dépense : une session de test archivée coûte encore, elle doit être comptée.
+test('testSpend asks for archived sessions and counts their cost', async () => {
+  const { store, listParams } = fakeStore([
+    { metadata: { purpose: 'plugin-test' }, archived_at: null, usage: { list_cost: { amount: '30', currency: 'USD' } } },
+    {
+      metadata: { purpose: 'plugin-test' },
+      archived_at: '2026-11-22T10:00:00Z',
+      usage: { list_cost: { amount: '20', currency: 'USD' } }
+    }
+  ])
+  const result = await createSessionHandlers(store).testSpend()
+  expect(listParams.length).toBe(1)
+  expect(listParams[0]?.include_archived).toBe(true)
+  expect(result).toEqual({ ok: true, value: { sessions: 2, total: { minor: '50', currency: 'USD' } } })
 })
 
 test('raiseBudget refuses an invalid amount without calling the API', async () => {
