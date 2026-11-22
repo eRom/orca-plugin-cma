@@ -30,12 +30,14 @@ import type {
   ConfigDetail,
   ConfigKind,
   ConfigRow,
+  DraftRef,
   MemoryContent,
   MemoryStoreDetail,
   ToolPolicy,
   ToolsetView
 } from '../protocol'
 import { clipBytes } from '../shared/text'
+import { DraftControls, loadDraftControls } from './drafts'
 import { EnvironmentFormView } from './environment-form'
 import { VaultFormView } from './vault-forms'
 import { configDetail, configDetailError, configRows, loadDetail, RENDER_ROW_CAP } from './config-state'
@@ -85,9 +87,15 @@ async function loadMemory(memoryStoreId: string, memoryId: string): Promise<void
   if (top?.view !== 'memory' || top.memoryStoreId !== memoryStoreId || top.memoryId !== memoryId) return
   if (result.ok) {
     set(memoryContent, result.value)
+    await loadDraftControls(memoryDraft(memoryStoreId, memoryId, result.value.path))
   } else {
     set(memoryError, result.error)
   }
+}
+
+/** Le brouillon d'une mémoire existante. */
+function memoryDraft(memoryStoreId: string, memoryId: string, path: string): DraftRef {
+  return { kind: 'memory', memoryStoreId, memoryId, path }
 }
 
 /** Ouvre une mémoire depuis le détail de sa banque. */
@@ -326,6 +334,7 @@ export function MemoryView({ memoryStoreId, memoryId }: { memoryStoreId: string;
             </Text>
           )}
           {loaded.content.truncated ? <Truncated /> : null}
+          <DraftControls draftRef={memoryDraft(memoryStoreId, memoryId, loaded.path)} label="Edit content" />
         </Stack>
       )}
     </Stack>

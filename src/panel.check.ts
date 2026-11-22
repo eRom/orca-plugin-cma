@@ -7,6 +7,7 @@ import type {
   ConfigRow,
   CreateFormOptions,
   CredentialForm,
+  DraftInfo,
   EnvironmentDetail,
   EnvironmentForm,
   SessionDetail,
@@ -125,6 +126,20 @@ export default defineCheck({
       { id: 'mem_a', path: 'runbooks/deploy.md', sizeBytes: 2048, updatedAt: '2026-11-20T10:00:00Z' },
       { id: 'mem_b', path: 'runbooks/rollback.md', sizeBytes: 300, updatedAt: '2026-11-21T10:00:00Z' }
     ]
+  }),
+  // Une mémoire ouverte : le dossier de brouillons n'est pas un projet d'Orca, la carte d'installation s'affiche.
+  'drafts setup card': memoryDraftScenario({ ready: false, info: null }),
+  // Un brouillon gardé (fichier sauvegardé, pas appliqué) : « Unapplied draft from HH:MM », Apply et Discard.
+  'drafts kept draft': memoryDraftScenario({
+    ready: true,
+    info: {
+      ref: { kind: 'memory', memoryStoreId: 'memstore_check', memoryId: 'mem_a', path: 'runbooks/deploy.md' },
+      file: 'memories/notes--memstore_check/runbooks/deploy.md',
+      unapplied: true,
+      writtenAt: '2026-11-22T10:00:00Z',
+      savedAt: '2026-11-22T10:42:00Z',
+      returnTo: { workspaceId: 'ws_orca', name: 'orca' }
+    }
   }),
   vault: configScenario('vault', {
     kind: 'vault',
@@ -364,6 +379,40 @@ function configScenario(kind: ConfigKind, detail: ConfigDetail) {
       'sessions.list': { ok: true as const, value: [] },
       'configs.list': { ok: true as const, value: [] },
       'configs.detail': { ok: true as const, value: detail }
+    }
+  }
+}
+
+/** Une mémoire ouverte depuis sa banque, avec l'état du dossier de brouillons et du brouillon que le worker connaît. */
+function memoryDraftScenario(drafts: { ready: boolean; info: DraftInfo | null }) {
+  return {
+    persisted: {
+      plugin: {
+        nav: [
+          { view: 'home' },
+          { view: 'config', kind: 'memory_store', id: 'memstore_check' },
+          { view: 'memory', memoryStoreId: 'memstore_check', memoryId: 'mem_a' }
+        ]
+      }
+    },
+    requests: {
+      'workspace.info': WITH_KEY,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'sessions.list': { ok: true as const, value: [] },
+      'configs.list': { ok: true as const, value: [] },
+      'memory.read': {
+        ok: true as const,
+        value: {
+          id: 'mem_a',
+          memoryStoreId: 'memstore_check',
+          path: 'runbooks/deploy.md',
+          updatedAt: '2026-11-20T10:00:00Z',
+          sha256: 'sha-check',
+          content: { text: '# Deploy\n\nRun the script.', truncated: false }
+        }
+      },
+      'drafts.status': { folder: '/Users/someone/.config/agent-claude-managed/managed-agents', ready: drafts.ready },
+      'draft.state': { ok: true as const, value: drafts.info }
     }
   }
 }

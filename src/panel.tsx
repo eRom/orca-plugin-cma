@@ -4,6 +4,7 @@ import { Callout, plugin, read, set, Spinner, Stack, Text, type PanelContext } f
 import { POLL_VISIBLE_MS } from './protocol'
 import { loadConfigs } from './panel/config-state'
 import { ConfigDetailView, MemoryView, restoreConfigView } from './panel/config-views'
+import { setupDrafts } from './panel/drafts'
 import { EnvironmentFormView } from './panel/environment-form'
 import { Home } from './panel/home'
 import { NewSessionView, restoreNewSession } from './panel/new-session'
@@ -25,6 +26,8 @@ import {
 } from './panel/state'
 
 export function setup(ctx: PanelContext): void {
+  // La relecture de la carte d'installation des brouillons s'arrête avec le panneau.
+  setupDrafts(ctx)
   // Le worker pousse la liste des sessions ; une liste vide peut aussi signer une clé refusée.
   ctx.subscriptions.push(
     plugin.on('sessions.changed', ({ rows }) => {
