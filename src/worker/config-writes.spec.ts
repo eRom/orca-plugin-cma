@@ -13,7 +13,7 @@ import {
   toEnvironmentForm
 } from './config-writes'
 import { toEnvironmentDetail } from './configs'
-import { validateEnvironmentForm } from '../shared/environment-rules'
+import { metadataTextProblem, validateEnvironmentForm } from '../shared/environment-rules'
 
 // Les fixtures sont des réponses réelles de l'API (capturées le 22/11), chargées sans `resolveJsonModule`.
 function fixture<T>(name: string): T {
@@ -101,6 +101,9 @@ test('validateEnvironmentForm reports each rule with its message', () => {
     )
   ).toBe("Package installs need 'Allow package managers' in a limited network.")
   expect(validateEnvironmentForm(limitedForm())).toBe(null)
+  // Une paire de métadonnées sans clé ne peut pas partir ; une valeur vide avec une clé reste permise.
+  expect(validateEnvironmentForm(limitedForm({ metadata: [{ key: '  ', value: 'x' }] }))).toBe('Metadata lines must look like key=value.')
+  expect(validateEnvironmentForm(limitedForm({ metadata: [{ key: 'a', value: '' }] }))).toBe(null)
   // 16 hôtes pile : accepté. Un réseau sans limite n'impose rien aux paquets.
   const sixteen = hosts.slice(0, 16)
   expect(
@@ -154,12 +157,13 @@ test('environmentUpdateParams sends only the top-level fields that differ', () =
   expect(environmentUpdateParams(base, { ...base, description: 'old' })).toEqual({ description: null })
 })
 
-test('a network or package change sends the whole config', () => {
+test('a network change sends the networking only, a package change the packages only', () => {
   const base = limitedForm()
   const withHost = limitedForm({
     network: { mode: 'limited', allowedHosts: ['example.com', 'pypi.org'], allowPackageManagers: true, allowMcpServers: true }
   })
-  expect(environmentUpdateParams(withHost, base)).toEqual({
+  const networkOnly = environmentUpdateParams(withHost, base)
+  expect(networkOnly).toEqual({
     config: {
       type: 'cloud',
       networking: {
@@ -167,20 +171,27 @@ test('a network or package change sends the whole config', () => {
         allowed_hosts: ['example.com', 'pypi.org'],
         allow_package_managers: true,
         allow_mcp_servers: true
-      },
-      packages: { type: 'packages', ...noPackages }
+      }
     }
   })
+  expect(Object.keys(networkOnly.config as object)).toEqual(['type', 'networking'])
   const withPackage = limitedForm({ packages: { ...noPackages, npm: ['left-pad'] } })
-  const sent = environmentUpdateParams(withPackage, base)
-  expect(Object.keys(sent)).toEqual(['config'])
-  expect(sent.config).toEqual({
+  const packagesOnly = environmentUpdateParams(withPackage, base)
+  expect(Object.keys(packagesOnly)).toEqual(['config'])
+  expect(packagesOnly.config).toEqual({ type: 'cloud', packages: { type: 'packages', ...noPackages, npm: ['left-pad'] } })
+  expect(Object.keys(packagesOnly.config as object)).toEqual(['type', 'packages'])
+  const unrestricted = environmentUpdateParams(limitedForm({ network: { mode: 'unrestricted' } }), base)
+  expect(unrestricted.config).toEqual({ type: 'cloud', networking: { type: 'unrestricted' } })
+  // Les deux changés : les deux partent.
+  const both = environmentUpdateParams(
+    limitedForm({ network: { mode: 'unrestricted' }, packages: { ...noPackages, npm: ['left-pad'] } }),
+    base
+  )
+  expect(both.config).toEqual({
     type: 'cloud',
-    networking: { type: 'limited', allowed_hosts: ['example.com'], allow_package_managers: true, allow_mcp_servers: true },
+    networking: { type: 'unrestricted' },
     packages: { type: 'packages', ...noPackages, npm: ['left-pad'] }
   })
-  const unrestricted = environmentUpdateParams(limitedForm({ network: { mode: 'unrestricted' } }), base)
-  expect((unrestricted.config as { networking: unknown }).networking).toEqual({ type: 'unrestricted' })
 })
 
 test('isStale compares the update stamp unless the save is forced', () => {
@@ -359,4 +370,28 @@ test('an API 409 on archive or remove comes back as other, never as a conflict',
     expect(!result.ok && result.code).toBe('other')
     expect(!result.ok && result.error.includes('Still in use.')).toBe(true)
   }
+})
+
+test('metadataTextProblem refuses a line without = or with an empty key, with the exact message', () => {
+  const message = 'Metadata lines must look like key=value.'
+  expect(metadataTextProblem('')).toBe(null)
+  expect(metadataTextProblem('a=1\n\nb=')).toBe(null)
+  expect(metadataTextProblem('a=1\nfoo')).toBe(message)
+  expect(metadataTextProblem('=value')).toBe(message)
+  expect(metadataTextProblem('  =value')).toBe(message)
+})
+
+test('saveEnvironment sends only the packages when only the packages changed', async () => {
+  const { handlers, calls } = fakeStore()
+  // Le réseau est le même des deux côtés (gestionnaires de paquets permis) : seuls les paquets changent.
+  const base: EnvironmentForm = {
+    ...toEnvironmentForm(environment),
+    network: { mode: 'limited', allowedHosts: [], allowPackageManagers: true, allowMcpServers: true }
+  }
+  const form = { ...base, packages: { ...base.packages, pip: [...base.packages.pip, 'plugin-test-pkg'] } }
+  const result = await handlers.saveEnvironment(saveInput({ form, base }))
+  expect(result.ok).toBe(true)
+  const update = calls.find((call) => call.method === 'environments.update')
+  const body = update?.args[1] as { config?: Record<string, unknown> }
+  expect(Object.keys(body.config ?? {})).toEqual(['type', 'packages'])
 })

@@ -7,10 +7,32 @@ export function cleaned(values: string[]): string[] {
   return values.map((value) => value.trim()).filter((value) => value !== '')
 }
 
+export const METADATA_LINE_MESSAGE = 'Metadata lines must look like key=value.'
+
+/**
+ * Le défaut du texte brut des métadonnées (une paire `key=value` par ligne), ou null s'il est bon.
+ * Une ligne sans `=` ou à clé vide est refusée : l'API lirait une valeur vide comme la suppression de la clé.
+ */
+export function metadataTextProblem(text: string): string | null {
+  const wellFormed = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
+    .every((line) => {
+      const at = line.indexOf('=')
+      return at !== -1 && line.slice(0, at).trim() !== ''
+    })
+  return wellFormed ? null : METADATA_LINE_MESSAGE
+}
+
 /** Le premier défaut du formulaire en texte lisible, ou null s'il peut partir. */
 export function validateEnvironmentForm(form: EnvironmentForm): string | null {
   if (form.name.trim() === '') {
     return 'A name is required.'
+  }
+  // Une paire sans clé ne peut pas partir : `toRecord` l'écarterait en silence.
+  if (form.metadata.some((item) => item.key.trim() === '')) {
+    return METADATA_LINE_MESSAGE
   }
   // `self_hosted` : l'hôte gère le réseau et les paquets, rien à contrôler ici.
   if (form.hosting === 'self_hosted' || form.network.mode !== 'limited') {

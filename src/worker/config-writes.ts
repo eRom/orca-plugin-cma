@@ -117,7 +117,7 @@ export function environmentCreateParams(form: EnvironmentForm): EnvironmentCreat
   }
 }
 
-/** Seuls les champs de premier niveau qui diffèrent de `base` partent ; réseau ou paquets modifiés renvoient tout le `config`. */
+/** Seuls les champs de premier niveau qui diffèrent de `base` partent ; dans `config`, seul le réseau ou seuls les paquets modifiés partent. */
 export function environmentUpdateParams(form: EnvironmentForm, base: EnvironmentForm): EnvironmentUpdateParams {
   const params: EnvironmentUpdateParams = {}
   if (form.name.trim() !== base.name.trim()) {
@@ -132,11 +132,15 @@ export function environmentUpdateParams(form: EnvironmentForm, base: Environment
     params.metadata = patch
   }
   if (form.hosting === 'cloud') {
-    const changed =
-      JSON.stringify(networkingParams(form.network)) !== JSON.stringify(networkingParams(base.network)) ||
-      JSON.stringify(packagesParams(form.packages)) !== JSON.stringify(packagesParams(base.packages))
-    if (changed) {
-      params.config = cloudConfig(form)
+    // Le SDK dit « omit on update to preserve » pour chacun : seule la partie modifiée part.
+    const networkChanged = JSON.stringify(networkingParams(form.network)) !== JSON.stringify(networkingParams(base.network))
+    const packagesChanged = JSON.stringify(packagesParams(form.packages)) !== JSON.stringify(packagesParams(base.packages))
+    if (networkChanged || packagesChanged) {
+      params.config = {
+        type: 'cloud',
+        ...(networkChanged && { networking: networkingParams(form.network) }),
+        ...(packagesChanged && { packages: packagesParams(form.packages) })
+      }
     }
   }
   return params

@@ -29,7 +29,7 @@ import {
   type KeyValueItem,
   type PackageManager
 } from '../protocol'
-import { validateEnvironmentForm } from '../shared/environment-rules'
+import { metadataTextProblem, validateEnvironmentForm } from '../shared/environment-rules'
 import { clipBytes } from '../shared/text'
 import { archiveQuestion, ConfirmAction, deleteQuestion } from './confirm'
 import { configDetail, loadConfigs, loadDetail, openConfig } from './config-views'
@@ -96,12 +96,18 @@ function parseLines(text: string): string[] {
     .filter((line) => line !== '')
 }
 
-/** `key=value` par ligne, coupé au premier `=` ; une ligne sans `=` est une clé sans valeur. */
+/**
+ * `key=value` par ligne, coupé au premier `=`. Une ligne sans `=` ou à clé vide n'entre pas dans le
+ * formulaire (l'API lirait une valeur vide comme une suppression) : `metadataTextProblem` la signale.
+ */
 function parseMetadata(text: string): KeyValueItem[] {
-  return parseLines(text).map((line) => {
+  const items: KeyValueItem[] = []
+  for (const line of parseLines(text)) {
     const at = line.indexOf('=')
-    return at === -1 ? { key: line, value: '' } : { key: line.slice(0, at).trim(), value: line.slice(at + 1).trim() }
-  })
+    const key = at === -1 ? '' : line.slice(0, at).trim()
+    if (key !== '') items.push({ key, value: line.slice(at + 1).trim() })
+  }
+  return items
 }
 
 function metadataText(items: readonly KeyValueItem[]): string {
@@ -119,20 +125,23 @@ export function openNewConfig(kind: ConfigKind): void {
   update(nav, (stack) => pushView(stack, { view: 'newConfig', kind }))
 }
 
+/** La base et l'horodatage frais, ceux de l'objet chargé : une saisie gardée apporte les siens. */
 type SaveTarget = { key: string; id: string | null; base: EnvironmentForm; baseUpdatedAt: string | null }
 
 /** Envoie le formulaire. Un conflit ouvre son avis ; un refus s'affiche ; la réussite relit la liste puis le détail. */
 async function saveForm(target: SaveTarget, force: boolean): Promise<void> {
   if (read(saving)) return
-  const { key, id, base, baseUpdatedAt } = target
-  // L'horodatage envoyé est celui de la saisie gardée : le worker voit ainsi un changement fait ailleurs depuis.
-  const { form, baseUpdatedAt: sentBaseUpdatedAt } = readForm(key, base, baseUpdatedAt)
+  const { key, id } = target
+  // La base et l'horodatage envoyés sont ceux de la saisie gardée, forcée ou non : le worker voit ainsi un
+  // changement fait ailleurs depuis, et n'envoie que les champs que la personne a touchés.
+  const { form, base, baseStamp } = readForm(key, target.base, target.baseUpdatedAt)
   set(saving, true)
   set(saveFailure, null)
   try {
     const result = await plugin.request('environment.save', {
       id,
-      baseUpdatedAt: sentBaseUpdatedAt,
+      // L'horodatage d'un environnement est une chaîne ; seul un agent aura un numéro de version.
+      baseUpdatedAt: typeof baseStamp === 'string' ? baseStamp : null,
       force,
       form,
       base: id === null ? null : base
@@ -186,9 +195,9 @@ type BodyProps = { id: string | null; base: EnvironmentForm; baseUpdatedAt: stri
 
 function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
   const key = formKey('environment', id)
-  const { form, dirty, stale } = readForm(key, base, baseUpdatedAt)
+  const { form, base: draftBase, dirty, stale } = readForm(key, base, baseUpdatedAt)
   const latest = (): EnvironmentForm => readForm(key, base, baseUpdatedAt).form
-  const change = (changes: Partial<EnvironmentForm>): void => editForm(key, { ...latest(), ...changes }, baseUpdatedAt)
+  const change = (changes: Partial<EnvironmentForm>): void => editForm(key, { ...latest(), ...changes }, base, baseUpdatedAt)
   const changeLimited = (changes: Partial<LimitedNetwork>): void => {
     const { network } = latest()
     if (network.mode === 'limited') change({ network: { ...network, ...changes } })
@@ -198,7 +207,8 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
   const conflict = read(formConflict)[key] === true || stale
   const busy = read(saving)
   const failed = read(saveFailure)
-  const problem = validateEnvironmentForm(form)
+  const metadataRaw = fieldText(key, 'metadata', metadataText(form.metadata))
+  const problem = validateEnvironmentForm(form) ?? metadataTextProblem(metadataRaw)
   const nameMissing = form.name.trim() === ''
   return (
     <Stack gap="md">
@@ -232,11 +242,12 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
           <Text size="sm">{clipBytes(failed.message, ERROR_TEXT_LIMIT_BYTES).text}</Text>
         </Callout>
       ) : null}
-      <Input label="Name" value={form.name} invalid={nameMissing} onChange={(value) => change({ name: value })} />
-      <Input label="Description" placeholder="Optional" value={form.description} onChange={(value) => change({ description: value })} />
+      <Input label="Name" disabled={busy} value={form.name} invalid={nameMissing} onChange={(value) => change({ name: value })} />
+      <Input label="Description" disabled={busy} placeholder="Optional" value={form.description} onChange={(value) => change({ description: value })} />
       {id === null ? (
         <RadioGroup
           label="Hosting"
+          disabled={busy}
           value={form.hosting}
           options={[
             { value: 'cloud', label: 'Cloud' },
@@ -251,6 +262,7 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
         <>
           <RadioGroup
             label="Network"
+            disabled={busy}
             value={form.network.mode}
             options={[
               { value: 'unrestricted', label: 'Unrestricted' },
@@ -259,7 +271,7 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
             onChange={(mode) => {
               dropFieldText(key, 'hosts')
               // Revenir à `Limited` retrouve les réglages du chargement, s'il y en avait.
-              change({ network: mode === 'limited' ? (base.network.mode === 'limited' ? base.network : DEFAULT_LIMITED) : { mode: 'unrestricted' } })
+              change({ network: mode === 'limited' ? (draftBase.network.mode === 'limited' ? draftBase.network : DEFAULT_LIMITED) : { mode: 'unrestricted' } })
             }}
           />
           {form.network.mode === 'limited' ? (
@@ -267,6 +279,7 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
               <Textarea
                 label="Allowed hosts"
                 placeholder="One host per line"
+                disabled={busy}
                 rows={4}
                 value={fieldText(key, 'hosts', form.network.allowedHosts.join('\n'))}
                 onChange={(text) => {
@@ -276,11 +289,13 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
               />
               <Checkbox
                 label="Allow package managers"
+                disabled={busy}
                 checked={form.network.allowPackageManagers}
                 onChange={(checked) => changeLimited({ allowPackageManagers: checked })}
               />
               <Checkbox
                 label="Allow MCP servers"
+                disabled={busy}
                 checked={form.network.allowMcpServers}
                 onChange={(checked) => changeLimited({ allowMcpServers: checked })}
               />
@@ -293,6 +308,7 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
                   key={manager}
                   label={manager}
                   placeholder="One package per line"
+                  disabled={busy}
                   rows={2}
                   value={fieldText(key, manager, form.packages[manager].join('\n'))}
                   onChange={(text) => {
@@ -313,7 +329,8 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
         label="Metadata"
         placeholder="key=value, one per line"
         rows={3}
-        value={fieldText(key, 'metadata', metadataText(form.metadata))}
+        disabled={busy}
+        value={metadataRaw}
         onChange={(text) => {
           setFieldText(key, 'metadata', text)
           change({ metadata: parseMetadata(text) })

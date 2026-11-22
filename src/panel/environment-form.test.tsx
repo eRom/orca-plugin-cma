@@ -253,8 +253,9 @@ test('a kept draft started on an older version shows the conflict and Save sends
   const first = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
   await first.type({ label: 'Description' }, 'Mine', { replace: true })
   // Le brouillon retient la version sur laquelle il a été commencé.
-  const drafts = first.persisted.plugin['forms.drafts'] as Record<string, { baseUpdatedAt: string | null }>
-  assert.equal(drafts['environment:env_a']?.baseUpdatedAt, DETAIL.updatedAt)
+  const drafts = first.persisted.plugin['forms.drafts'] as Record<string, { baseStamp: string | null; base: unknown }>
+  assert.equal(drafts['environment:env_a']?.baseStamp, DETAIL.updatedAt)
+  assert.deepEqual(drafts['environment:env_a']?.base, FORM)
   assert.equal(first.find({ type: 'Callout', text: /Changed elsewhere since you opened it\./ }), null)
   const persisted = { plugin: first.persisted.plugin }
   await first.unmount()
@@ -298,7 +299,7 @@ test('Reload on a stale kept draft drops it and shows the fresh version', async 
   const persisted = {
     plugin: {
       ...OPEN_DETAIL.plugin,
-      'forms.drafts': { 'environment:env_a': { form: { ...FORM, description: 'Mine' }, baseUpdatedAt: DETAIL.updatedAt } }
+      'forms.drafts': { 'environment:env_a': { form: { ...FORM, description: 'Mine' }, base: FORM, baseStamp: DETAIL.updatedAt } }
     }
   }
   const host = mockHost({ requests: requests(calls, { 'configs.detail': { ok: true, value: newer } }) })
@@ -397,5 +398,125 @@ test('an archive refused by the API shows its text and changes nothing', async (
   assert.equal(read(notice), 'Environment is still in use.')
   assert.deepEqual(view.persisted.plugin.nav, OPEN_DETAIL.plugin.nav)
   assert.ok(view.find({ type: 'Callout', text: /Archive Sandbox\?/ }))
+  await view.unmount()
+})
+
+test('Save anyway on a restored draft sends the base it started on, so only the touched field goes', async () => {
+  const calls = newCalls()
+  const touched: EnvironmentForm = { ...FORM, name: 'Renamed' }
+  const persisted = {
+    plugin: { ...OPEN_DETAIL.plugin, 'forms.drafts': { 'environment:env_a': { form: touched, base: FORM, baseStamp: DETAIL.updatedAt } } }
+  }
+  // La console a changé la description depuis : le détail frais est plus récent.
+  const newer: EnvironmentDetail = {
+    ...DETAIL,
+    description: 'Changed in the console',
+    updatedAt: '2026-11-22T15:00:00Z',
+    form: { ...FORM, description: 'Changed in the console' }
+  }
+  const host = mockHost({
+    requests: requests(calls, {
+      'configs.detail': { ok: true, value: newer },
+      'environment.save': (input: SaveInput<EnvironmentForm>) => {
+        calls.saves.push(input)
+        return input.force ? { ok: true, value: { id: 'env_a', updatedAt: '2026-11-22T16:00:00Z' } } : CONFLICT
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted })
+  assert.ok(view.find({ type: 'Callout', text: /Changed elsewhere since you opened it\./ }))
+  await view.press({ role: 'button', text: 'Save' })
+  assert.equal(calls.saves.length, 1)
+  assert.equal(calls.saves[0]?.baseUpdatedAt, DETAIL.updatedAt)
+  assert.deepEqual(calls.saves[0]?.base, FORM)
+  await view.press({ role: 'button', text: 'Save anyway' })
+  assert.equal(calls.saves.length, 2)
+  const forced = calls.saves[1]
+  assert.ok(forced)
+  assert.equal(forced.force, true)
+  assert.equal(forced.baseUpdatedAt, DETAIL.updatedAt)
+  assert.deepEqual(forced.base, FORM)
+  // Seul le nom diffère de la base envoyée : la description de la console n'est pas écrasée.
+  assert.equal(forced.form.name, 'Renamed')
+  assert.equal(forced.form.description, FORM.description)
+  assert.deepEqual({ ...forced.form, name: FORM.name }, forced.base)
+  await view.unmount()
+})
+
+test('a restored draft brought back to its base does not show Unsaved changes against a changed fresh version', async () => {
+  const calls = newCalls()
+  const persisted = {
+    plugin: { ...OPEN_DETAIL.plugin, 'forms.drafts': { 'environment:env_a': { form: FORM, base: FORM, baseStamp: DETAIL.updatedAt } } }
+  }
+  const newer: EnvironmentDetail = {
+    ...DETAIL,
+    description: 'Changed in the console',
+    updatedAt: '2026-11-22T15:00:00Z',
+    form: { ...FORM, description: 'Changed in the console' }
+  }
+  const host = mockHost({ requests: requests(calls, { 'configs.detail': { ok: true, value: newer } }) })
+  const view = await mount(panel, { host, persisted })
+  assert.equal(view.find({ text: 'Unsaved changes' }), null)
+  await view.unmount()
+})
+
+test('a metadata line without = is flagged before any send and keeps Save disabled', async () => {
+  const calls = newCalls()
+  const host = mockHost({ requests: requests(calls) })
+  const view = await mount(panel, { host, persisted: OPEN_DETAIL })
+  const message = 'Metadata lines must look like key=value.'
+  await view.type({ label: 'Metadata' }, '\na')
+  // Le texte reste tel quel : `a` ne devient pas `a=`.
+  assert.equal(view.valueOf({ label: 'Metadata' }), 'team=infra\na')
+  assert.ok(view.find({ text: message }))
+  assert.equal(view.find({ role: 'button', text: 'Save' })?.disabled, true)
+  assert.equal(calls.saves.length, 0)
+  await view.type({ label: 'Metadata' }, '=1')
+  assert.equal(view.find({ text: message }), null)
+  assert.equal(view.find({ role: 'button', text: 'Save' })?.disabled, false)
+  // Une clé vide est refusée aussi.
+  await view.type({ label: 'Metadata' }, '\n=orphan')
+  assert.ok(view.find({ text: message }))
+  assert.equal(view.find({ role: 'button', text: 'Save' })?.disabled, true)
+  await view.unmount()
+})
+
+test('a metadata line without = keeps Create disabled on a new environment', async () => {
+  const calls = newCalls()
+  const host = mockHost({ requests: requests(calls) })
+  const view = await mount(panel, { host, persisted: OPEN_NEW })
+  await view.type({ label: 'Name' }, 'plugin-test-env')
+  assert.equal(view.find({ role: 'button', text: 'Create' })?.disabled, false)
+  await view.type({ label: 'Metadata' }, 'foo')
+  assert.ok(view.find({ text: 'Metadata lines must look like key=value.' }))
+  assert.equal(view.find({ role: 'button', text: 'Create' })?.disabled, true)
+  await view.unmount()
+})
+
+test('the fields are disabled while a save is in flight, so a keystroke cannot be lost to the reread', async () => {
+  const calls = newCalls()
+  const seen: Record<string, boolean | undefined> = {}
+  let view: Awaited<ReturnType<typeof mount>> | undefined
+  const host = mockHost({
+    requests: requests(calls, {
+      'environment.save': async (input: SaveInput<EnvironmentForm>) => {
+        calls.saves.push(input)
+        // Le temps de laisser le panneau se redessiner avec l'enregistrement en cours.
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        seen.name = view?.find({ label: 'Name' })?.disabled
+        seen.description = view?.find({ label: 'Description' })?.disabled
+        seen.metadata = view?.find({ label: 'Metadata' })?.disabled
+        seen.network = view?.find({ type: 'RadioGroup', label: 'Network' })?.disabled
+        return { ok: true, value: { id: 'env_a', updatedAt: '2026-11-22T11:00:00Z' } }
+      }
+    })
+  })
+  view = await mount(panel, { host, persisted: OPEN_DETAIL })
+  assert.equal(view.find({ label: 'Description' })?.disabled, false)
+  await view.type({ label: 'Description' }, 'Mine', { replace: true })
+  await view.press({ role: 'button', text: 'Save' })
+  assert.equal(calls.saves.length, 1)
+  assert.deepEqual(seen, { name: true, description: true, metadata: true, network: true })
+  assert.equal(view.find({ label: 'Description' })?.disabled, false)
   await view.unmount()
 })

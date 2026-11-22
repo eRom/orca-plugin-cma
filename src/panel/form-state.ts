@@ -3,11 +3,18 @@
 import { atom, read, update } from 'orca'
 
 /**
- * Une saisie gardée : le formulaire et l'horodatage de l'objet sur lequel elle a été commencée.
- * Sans lui, une saisie rouverte après un changement ailleurs serait comparée à la version fraîche
- * et écraserait ce changement sans conflit.
+ * Le repère de version d'un objet : l'horodatage d'un environnement, le numéro de version d'un agent.
+ * `null` pour une création.
  */
-type Draft = { form: unknown; baseUpdatedAt: string | null }
+export type BaseStamp = string | number | null
+
+/**
+ * Une saisie gardée : le formulaire, la base (le formulaire de l'objet tel qu'il était à l'ouverture)
+ * et le repère de version de cette base. Sans eux, une saisie rouverte après un changement ailleurs
+ * serait comparée à la version fraîche : elle écraserait ce changement sans conflit, et enverrait
+ * des champs que la personne n'a pas touchés.
+ */
+type Draft = { form: unknown; base: unknown; baseStamp: BaseStamp }
 
 /** Saisies gardées, par clé de formulaire (`kind:id`). Jamais de secret ici : il va dans `secretDrafts`. */
 export const formDrafts = atom<Record<string, Draft>>('forms.drafts', {}, { persist: 'plugin' })
@@ -38,48 +45,55 @@ function deepEqual(left: unknown, right: unknown): boolean {
   )
 }
 
-/** Vrai pour une saisie à la forme courante ; l'ancienne forme (le formulaire seul) n'en est pas une. */
+/** Vrai pour une saisie à la forme courante ; les formes antérieures (le formulaire seul, ou sans base) n'en sont pas. */
 function isDraft(value: unknown): value is Draft {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as Record<string, unknown>
   return (
     Object.hasOwn(candidate, 'form') &&
-    (candidate.baseUpdatedAt === null || typeof candidate.baseUpdatedAt === 'string')
+    Object.hasOwn(candidate, 'base') &&
+    (candidate.baseStamp === null || typeof candidate.baseStamp === 'string' || typeof candidate.baseStamp === 'number')
   )
 }
 
 /**
- * Le formulaire à afficher : la saisie gardée si elle existe, sinon `base`.
- * - `dirty` : elle diffère de `base`.
- * - `baseUpdatedAt` : l'horodatage à envoyer à l'écriture, celui de la saisie si elle existe, sinon `currentUpdatedAt`.
- * - `stale` : la saisie a été commencée sur une autre version que `currentUpdatedAt` (null pour une création).
- * Une saisie gardée à l'ancienne forme (sans horodatage) est ignorée : elle compte comme absente.
+ * Le formulaire à afficher : la saisie gardée si elle existe, sinon `freshBase`.
+ * - `base` et `baseStamp` : ceux de la saisie si elle existe (la version sur laquelle elle a été commencée),
+ *   sinon `freshBase` et `currentStamp`. C'est ce qu'il faut envoyer à l'écriture.
+ * - `dirty` : le formulaire diffère de `base`.
+ * - `stale` : la saisie a été commencée sur une autre version que `currentStamp` (null pour une création).
+ * Une saisie gardée à une forme antérieure (sans base) est ignorée : elle compte comme absente.
  */
 export function readForm<F>(
   key: string,
-  base: F,
-  currentUpdatedAt: string | null = null
-): { form: F; dirty: boolean; baseUpdatedAt: string | null; stale: boolean } {
+  freshBase: F,
+  currentStamp: BaseStamp = null
+): { form: F; base: F; baseStamp: BaseStamp; dirty: boolean; stale: boolean } {
   const drafts = read(formDrafts)
   const draft: unknown = Object.hasOwn(drafts, key) ? drafts[key] : undefined
-  if (!isDraft(draft)) return { form: base, dirty: false, baseUpdatedAt: currentUpdatedAt, stale: false }
+  if (!isDraft(draft)) return { form: freshBase, base: freshBase, baseStamp: currentStamp, dirty: false, stale: false }
   const form = draft.form as F
+  const base = draft.base as F
   return {
     form,
+    base,
+    baseStamp: draft.baseStamp,
     dirty: !deepEqual(form, base),
-    baseUpdatedAt: draft.baseUpdatedAt,
-    stale: draft.baseUpdatedAt !== currentUpdatedAt
+    stale: draft.baseStamp !== currentStamp
   }
 }
 
 /**
- * Garde la saisie en cours. `baseUpdatedAt` est l'horodatage de l'objet chargé (null à la création) :
- * il est retenu à la première saisie d'une clé, puis conservé tant que la saisie vit.
+ * Garde la saisie en cours. `base` (le formulaire de l'objet chargé) et `baseStamp` (son repère de
+ * version, null à la création) sont retenus à la première saisie d'une clé, puis conservés tant que la saisie vit.
  */
-export function editForm<F>(key: string, form: F, baseUpdatedAt: string | null = null): void {
+export function editForm<F>(key: string, form: F, base: F, baseStamp: BaseStamp = null): void {
   update(formDrafts, (drafts) => {
     const existing: unknown = Object.hasOwn(drafts, key) ? drafts[key] : undefined
-    return { ...drafts, [key]: { form, baseUpdatedAt: isDraft(existing) ? existing.baseUpdatedAt : baseUpdatedAt } }
+    return {
+      ...drafts,
+      [key]: isDraft(existing) ? { form, base: existing.base, baseStamp: existing.baseStamp } : { form, base, baseStamp }
+    }
   })
 }
 
