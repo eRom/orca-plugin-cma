@@ -1,6 +1,21 @@
 import { read, set } from 'orca'
 import { assert, mockHost, mount, test } from 'orca/testing'
-import { clearForm, editForm, formConflict, formDrafts, formKey, readForm, secretDrafts } from './form-state'
+import {
+  clearForm,
+  dropFieldText,
+  editForm,
+  editSecret,
+  fieldText,
+  formConflict,
+  formDrafts,
+  formKey,
+  isTouched,
+  readForm,
+  secretCleared,
+  secretDrafts,
+  setFieldText,
+  touchField
+} from './form-state'
 
 type EnvForm = { name: string; packages: { pip: string[] }; metadata: { key: string; value: string }[] }
 
@@ -136,5 +151,52 @@ test('drafts persist for the plugin while secret drafts and conflicts never do',
   assert.equal(JSON.stringify(view.persisted).includes('plugin-test-token-QUOKKA-xyz'), false)
   assert.equal(JSON.stringify(view.persisted).includes('formConflict'), false)
   assert.equal(Object.keys(view.persisted.plugin).some((name) => name.includes('conflict')), false)
+  await view.unmount()
+})
+
+test('a typed secret is remembered only as a flag in the draft, and the flag reads as cleared once the secret is gone', async () => {
+  const view = await mount(Probe, { host: mockHost() })
+  const key = 'credential:vcrd_1'
+  editSecret(key, 'plugin-test-token-QUOKKA', BASE, BASE, T1)
+  assert.equal(read(secretDrafts)[key], 'plugin-test-token-QUOKKA')
+  assert.equal(secretCleared(key), false)
+  await view.rerender()
+  const persisted = view.persisted.plugin['forms.drafts'] as Record<string, unknown>
+  assert.deepEqual(persisted[key], { form: BASE, base: BASE, baseStamp: T1, hadSecret: true })
+  assert.equal(JSON.stringify(view.persisted).includes('plugin-test-token-QUOKKA'), false)
+  // Une saisie suivante garde le drapeau.
+  editForm(key, { ...BASE, name: 'Renamed' }, BASE, T1)
+  assert.equal(readForm(key, BASE, T1).dirty, true)
+  // Le panneau a perdu le secret (redémarrage) : le drapeau reste, le secret manque.
+  set(secretDrafts, {})
+  assert.equal(secretCleared(key), true)
+  // Un secret retapé puis vidé retire le drapeau.
+  editSecret(key, 'again', BASE, BASE, T1)
+  editSecret(key, '', BASE, BASE, T1)
+  assert.equal(secretCleared(key), false)
+  assert.equal(Object.hasOwn((read(formDrafts)[key] ?? {}) as object, 'hadSecret'), false)
+  await view.unmount()
+})
+
+test('clearForm forgets the secret flag, the raw texts and the touched fields of that form only', async () => {
+  const view = await mount(Probe, { host: mockHost() })
+  const key = 'credential:vcrd_1'
+  const other = 'credential:vcrd_2'
+  editSecret(key, 'plugin-test-token-QUOKKA', BASE, BASE, T1)
+  setFieldText(key, 'hosts', 'a.example.com')
+  setFieldText(other, 'hosts', 'b.example.com')
+  touchField(key, 'name')
+  touchField(other, 'name')
+  assert.equal(isTouched(key, 'name'), true)
+  assert.equal(fieldText(key, 'hosts', 'derived'), 'a.example.com')
+  clearForm(key)
+  assert.equal(secretCleared(key), false)
+  assert.deepEqual(read(secretDrafts), {})
+  assert.equal(isTouched(key, 'name'), false)
+  assert.equal(fieldText(key, 'hosts', 'derived'), 'derived')
+  assert.equal(isTouched(other, 'name'), true)
+  assert.equal(fieldText(other, 'hosts', 'derived'), 'b.example.com')
+  dropFieldText(other, 'hosts')
+  assert.equal(fieldText(other, 'hosts', 'derived'), 'derived')
   await view.unmount()
 })

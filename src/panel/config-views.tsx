@@ -1,6 +1,6 @@
-// Configurations : lecture des listes de l'accueil, vues de détail (agent, env, banque de mémoire,
-// mémoire, coffre) et ouverture dans la console. Seul l'environnement s'écrit (`environment-form`).
-// État éphémère : seule la pile `nav` (et l'onglet, le filtre) survit à un redémarrage du panneau ;
+// Configurations : vues de détail (agent, env, banque de mémoire, mémoire, coffre) et ouverture dans
+// la console. L'environnement et le coffre s'écrivent dans leurs formulaires (`environment-form`, `vault-forms`) ;
+// l'état et les lectures sont dans `config-state`. État éphémère : seule la pile `nav` (et l'onglet, le filtre) survit à un redémarrage du panneau ;
 // les vues rouvertes se rechargent par `restoreConfigView`.
 import {
   atom,
@@ -9,7 +9,6 @@ import {
   Card,
   Code,
   CodeView,
-  env,
   KeyValue,
   List,
   ListItem,
@@ -31,17 +30,16 @@ import type {
   ConfigDetail,
   ConfigKind,
   ConfigRow,
-  CredentialRow,
-  CredentialType,
   MemoryContent,
   MemoryStoreDetail,
   ToolPolicy,
-  ToolsetView,
-  VaultDetail
+  ToolsetView
 } from '../protocol'
 import { clipBytes } from '../shared/text'
 import { EnvironmentFormView } from './environment-form'
-import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, nav, popView, pushView, run, workspace } from './state'
+import { VaultFormView } from './vault-forms'
+import { configDetail, configDetailError, configRows, loadDetail, RENDER_ROW_CAP } from './config-state'
+import { ERROR_TEXT_LIMIT_BYTES, nav, popView, pushView, run, workspace } from './state'
 
 /** Mention affichée sous un texte coupé côté worker. */
 const TRUNCATED_NOTICE = 'Truncated, open in Console for the full text'
@@ -51,12 +49,6 @@ const TITLE_LIMIT_BYTES = 200
 const DESCRIPTION_LIMIT_BYTES = 300
 /** Plafond d'une description d'agent : sous les 16 Kio qu'Orca accepte par `Text`, avec marge. */
 const LONG_TEXT_LIMIT_BYTES = 4_000
-
-/**
- * Lignes dessinées au plus par liste : un rendu est refusé au-delà de 5000 nœuds et d'environ
- * 512 Kio. Une banque de mémoire peut garder bien plus de mémoires que cela.
- */
-export const RENDER_ROW_CAP = 200
 
 const CONSOLE_SEGMENTS: Record<ConfigKind, string> = {
   agent: 'agents',
@@ -71,29 +63,10 @@ const POLICY_LABELS: Record<ToolPolicy, string> = {
   auto: 'auto'
 }
 
-const CREDENTIAL_LABELS: Record<CredentialType, string> = {
-  mcp_oauth: 'MCP OAuth',
-  static_bearer: 'Static bearer',
-  environment_variable: 'Environment variable'
-}
-
 // --- État ---
 
-/** Lignes des listes de l'accueil, par type ; absent tant que la première lecture n'est pas revenue. */
-export const configRows = atom<Partial<Record<ConfigKind, ConfigRow[]>>>('configs.rows', {})
-/** Erreur de lecture de la liste, par type. */
-export const configErrors = atom<Partial<Record<ConfigKind, string | null>>>('configs.errors', {})
-/** Détail de la configuration ouverte ; il reste chargé quand une mémoire s'ouvre par-dessus. */
-export const configDetail = atom<ConfigDetail | null>('configs.detail', null)
-const configDetailError = atom<string | null>('configs.detail.error', null)
 const memoryContent = atom<MemoryContent | null>('configs.memory', null)
 const memoryError = atom<string | null>('configs.memory.error', null)
-
-/** Oublie les listes lues (clé changée ou oubliée) : elles ne valent plus pour la nouvelle clé. */
-export function resetConfigs(): void {
-  set(configRows, {})
-  set(configErrors, {})
-}
 
 /** Garde les lignes dont le nom ou l'identifiant contient la saisie, sans tenir compte de la casse. */
 export function filterRows(rows: readonly ConfigRow[], query: string): ConfigRow[] {
@@ -103,45 +76,6 @@ export function filterRows(rows: readonly ConfigRow[], query: string): ConfigRow
 }
 
 // --- Lectures ---
-
-/**
- * Lit la liste d'un type. Sans clé utilisable il n'y a rien à lire ; un 401 est l'état « clé
- * refusée » : on relit l'identité du workspace, qui remontre le formulaire. Les lignes déjà lues
- * restent affichées pendant la relecture.
- */
-export async function loadConfigs(kind: ConfigKind): Promise<void> {
-  const info = read(workspace)
-  if (!info?.hasKey || info.keyRejected) return
-  const result = await plugin.request('configs.list', { kind })
-  if (result.ok) {
-    update(configRows, (current) => ({ ...current, [kind]: result.value }))
-    update(configErrors, (current) => ({ ...current, [kind]: null }))
-  } else if (result.code === 'unauthorized') {
-    await loadWorkspace()
-  } else {
-    update(configErrors, (current) => ({ ...current, [kind]: result.error }))
-  }
-}
-
-/** Vrai tant que la vue au sommet de la pile est cette configuration. */
-function isConfigOnTop(kind: ConfigKind, id: string): boolean {
-  const top = read(nav).at(-1)
-  return top?.view === 'config' && top.kind === kind && top.id === id
-}
-
-/** Relit le détail d'une configuration ; le formulaire d'environnement s'en sert après une écriture. */
-export async function loadDetail(kind: ConfigKind, id: string): Promise<void> {
-  set(configDetail, null)
-  set(configDetailError, null)
-  const result = await plugin.request('configs.detail', { kind, id })
-  // Retour ou autre vue ouverte pendant la lecture : cette réponse ne sert plus.
-  if (!isConfigOnTop(kind, id)) return
-  if (result.ok) {
-    set(configDetail, result.value)
-  } else {
-    set(configDetailError, result.error)
-  }
-}
 
 async function loadMemory(memoryStoreId: string, memoryId: string): Promise<void> {
   set(memoryContent, null)
@@ -154,12 +88,6 @@ async function loadMemory(memoryStoreId: string, memoryId: string): Promise<void
   } else {
     set(memoryError, result.error)
   }
-}
-
-/** Ouvre le détail d'une configuration depuis l'accueil : empile la vue, puis la charge. */
-export function openConfig(kind: ConfigKind, id: string): void {
-  update(nav, (stack) => pushView(stack, { view: 'config', kind, id }))
-  run(() => loadDetail(kind, id))
 }
 
 /** Ouvre une mémoire depuis le détail de sa banque. */
@@ -176,6 +104,8 @@ export async function restoreConfigView(): Promise<void> {
   const top = read(nav).at(-1)
   if (top?.view === 'config' && read(configDetail)?.id !== top.id) {
     await loadDetail(top.kind, top.id)
+  } else if (top?.view === 'credential' && read(configDetail)?.id !== top.vaultId) {
+    await loadDetail('vault', top.vaultId)
   } else if (top?.view === 'memory' && read(memoryContent)?.id !== top.memoryId) {
     await loadMemory(top.memoryStoreId, top.memoryId)
   }
@@ -197,12 +127,6 @@ function openInConsole(url: string): void {
 
 function consoleUrl(workspaceId: string | null, kind: ConfigKind, id: string): string | null {
   return workspaceId ? `https://platform.claude.com/workspaces/${workspaceId}/${CONSOLE_SEGMENTS[kind]}/${encodeURIComponent(id)}` : null
-}
-
-function formatDate(iso: string): string {
-  const time = Date.parse(iso)
-  if (Number.isNaN(time)) return iso
-  return new Date(time).toLocaleString(env.locale, { dateStyle: 'medium', timeStyle: 'short' })
 }
 
 function formatSize(bytes: number): string {
@@ -408,34 +332,6 @@ export function MemoryView({ memoryStoreId, memoryId }: { memoryStoreId: string;
   )
 }
 
-// --- Coffre ---
-
-function credentialDescription(credential: CredentialRow): string {
-  const parts: string[] = [CREDENTIAL_LABELS[credential.type]]
-  if (credential.mcpServerUrl) parts.push(clipBytes(credential.mcpServerUrl, DESCRIPTION_LIMIT_BYTES).text)
-  if (credential.expiresAt) parts.push(`expires ${formatDate(credential.expiresAt)}`)
-  return parts.join(' · ')
-}
-
-function VaultBody({ vault }: { vault: VaultDetail }) {
-  return (
-    <Section title="Credentials">
-      {vault.credentials.length === 0 ? (
-        <Text muted size="sm">
-          No credentials yet.
-        </Text>
-      ) : (
-        <List label="Credentials">
-          {vault.credentials.slice(0, RENDER_ROW_CAP).map((credential) => (
-            <ListItem key={credential.id} title={clipTitle(credential.name)} description={credentialDescription(credential)} />
-          ))}
-        </List>
-      )}
-      <CapNotice total={vault.credentials.length} />
-    </Section>
-  )
-}
-
 // --- Vue ---
 
 function DetailBody({ detail }: { detail: ConfigDetail }) {
@@ -447,7 +343,7 @@ function DetailBody({ detail }: { detail: ConfigDetail }) {
     case 'memory_store':
       return <MemoryStoreBody store={detail} />
     case 'vault':
-      return <VaultBody vault={detail} />
+      return <VaultFormView id={detail.id} />
   }
 }
 

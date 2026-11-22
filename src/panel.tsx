@@ -2,11 +2,13 @@
 // Il route sur le sommet de la pile de navigation ; une vue inconnue retombe sur l'accueil.
 import { Callout, plugin, read, set, Spinner, Stack, Text, type PanelContext } from 'orca'
 import { POLL_VISIBLE_MS } from './protocol'
-import { ConfigDetailView, loadConfigs, MemoryView, restoreConfigView } from './panel/config-views'
+import { loadConfigs } from './panel/config-state'
+import { ConfigDetailView, MemoryView, restoreConfigView } from './panel/config-views'
 import { EnvironmentFormView } from './panel/environment-form'
 import { Home } from './panel/home'
 import { NewSessionView, restoreNewSession } from './panel/new-session'
 import { restoreOpenSession, SessionView, sessionSubscriptions } from './panel/session-view'
+import { CredentialFormView, VaultFormView } from './panel/vault-forms'
 import { clipBytes } from './shared/text'
 import {
   ERROR_TEXT_LIMIT_BYTES,
@@ -88,8 +90,11 @@ function CurrentView() {
     case 'config':
       return <ConfigDetailView kind={top.kind} id={top.id} />
     case 'newConfig':
-      // Seul l'environnement a son formulaire de création ; une pile persistée d'un autre type retombe sur l'accueil.
-      return top.kind === 'environment' ? <EnvironmentFormView id={null} /> : <Home />
+      // L'environnement et le coffre ont leur formulaire de création ; une pile persistée d'un autre type retombe sur l'accueil.
+      if (top.kind === 'environment') return <EnvironmentFormView id={null} />
+      return top.kind === 'vault' ? <VaultFormView id={null} /> : <Home />
+    case 'credential':
+      return <CredentialFormView vaultId={top.vaultId} credentialId={top.credentialId} />
     case 'memory':
       return <MemoryView memoryStoreId={top.memoryStoreId} memoryId={top.memoryId} />
     default:

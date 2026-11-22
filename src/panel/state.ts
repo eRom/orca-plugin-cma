@@ -20,6 +20,7 @@ export type NavEntry =
   | { view: 'session'; sessionId: string }
   | { view: 'newSession' }
   | { view: 'newConfig'; kind: ConfigKind }
+  | { view: 'credential'; vaultId: string; credentialId: string | null }
 
 export type HomeTab = 'agent' | 'environment' | 'memory_store' | 'vault'
 

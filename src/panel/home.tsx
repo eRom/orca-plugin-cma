@@ -25,16 +25,8 @@ import {
 import { formatMoney } from '../shared/money'
 import { badgeLabel, badgeTone, sortSessions } from '../shared/sessions'
 import { clipBytes } from '../shared/text'
-import {
-  configErrors,
-  configRows,
-  filterRows,
-  loadConfigs,
-  openConfig,
-  RENDER_ROW_CAP,
-  resetConfigs,
-  restoreConfigView
-} from './config-views'
+import { configErrors, configRows, loadConfigs, openConfig, RENDER_ROW_CAP, resetConfigs } from './config-state'
+import { filterRows, restoreConfigView } from './config-views'
 import { openNewConfig } from './environment-form'
 import { openNewSession, restoreNewSession } from './new-session'
 import { openSession, restoreOpenSession } from './session-view'
@@ -151,6 +143,11 @@ function ConfigList({ tab }: { tab: (typeof CONFIG_TABS)[number] }) {
       {tab.value === 'environment' ? (
         <Button icon="add" onPress={() => openNewConfig('environment')}>
           New environment
+        </Button>
+      ) : null}
+      {tab.value === 'vault' ? (
+        <Button icon="add" onPress={() => openNewConfig('vault')}>
+          New vault
         </Button>
       ) : null}
       <Input

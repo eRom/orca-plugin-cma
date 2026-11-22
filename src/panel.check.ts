@@ -6,6 +6,7 @@ import type {
   ConfigKind,
   ConfigRow,
   CreateFormOptions,
+  CredentialForm,
   EnvironmentDetail,
   EnvironmentForm,
   SessionDetail,
@@ -71,6 +72,10 @@ export default defineCheck({
   'new environment form': newEnvironmentScenario(),
   // Une saisie gardée sur une version plus ancienne que le détail : « Unsaved changes » et l'avis de conflit (Reload, Save anyway).
   'environment form conflict': environmentDraftScenario(),
+  // Le formulaire d'un identifiant à jeton : le champ de remplacement du jeton, vide, avec son aide.
+  'credential form bearer': credentialScenario('vcrd_bearer'),
+  // Celui d'une variable d'environnement : nom de la variable en lecture seule, réseau limité, injection.
+  'credential form variable': credentialScenario('vcrd_variable'),
   'configurations agents': {
     requests: {
       'workspace.info': WITH_KEY,
@@ -306,6 +311,40 @@ function environmentDraftScenario() {
             baseStamp: '2026-11-21T09:00:00Z'
           }
         }
+      }
+    }
+  }
+}
+
+/** Un coffre avec un identifiant à jeton, une variable d'environnement et un OAuth ; le formulaire de `credentialId` est ouvert. */
+function credentialScenario(credentialId: string) {
+  const bearer: CredentialForm = { type: 'static_bearer', name: 'GitHub bearer', mcpServerUrl: 'https://api.githubcopilot.com/mcp/', token: '' }
+  const variable: CredentialForm = {
+    type: 'environment_variable',
+    name: 'Deploy token',
+    secretName: 'DEPLOY_TOKEN',
+    secretValue: '',
+    network: { mode: 'limited', allowedHosts: ['example.com', 'api.example.com'] },
+    injection: { header: true, body: false }
+  }
+  const detail: ConfigDetail = {
+    kind: 'vault',
+    id: 'vlt_check',
+    name: 'GitHub',
+    updatedAt: '2026-11-22T10:00:00Z',
+    form: { name: 'GitHub' },
+    credentials: [
+      { id: 'vcrd_bearer', name: 'GitHub bearer', type: 'static_bearer', mcpServerUrl: 'https://api.githubcopilot.com/mcp/', expiresAt: null, updatedAt: '2026-11-22T10:00:00Z', form: bearer },
+      { id: 'vcrd_variable', name: 'Deploy token', type: 'environment_variable', mcpServerUrl: null, expiresAt: null, updatedAt: '2026-11-22T10:00:00Z', form: variable },
+      { id: 'vcrd_oauth', name: 'GitHub OAuth', type: 'mcp_oauth', mcpServerUrl: 'https://api.githubcopilot.com/mcp/', expiresAt: '2027-01-01T00:00:00Z', updatedAt: '2026-11-22T10:00:00Z', form: null }
+    ]
+  }
+  const scenario = configScenario('vault', detail)
+  return {
+    ...scenario,
+    persisted: {
+      plugin: {
+        nav: [{ view: 'home' }, { view: 'config', kind: 'vault', id: detail.id }, { view: 'credential', vaultId: detail.id, credentialId }]
       }
     }
   }

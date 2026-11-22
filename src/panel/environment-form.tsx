@@ -1,5 +1,5 @@
 // Formulaire d'un environnement : création, modification, archivage et suppression. La saisie en cours
-// est gardée par `form-state` (atome persisté) ; le texte brut des champs multi-lignes reste ici, en
+// est gardée par `form-state` (atome persisté) ; le texte brut des champs multi-lignes y reste aussi, en
 // éphémère, pour ne pas réécrire ce que la personne tape (`a` ne devient pas `a=` pendant la frappe).
 import {
   atom,
@@ -32,8 +32,19 @@ import {
 import { metadataTextProblem, validateEnvironmentForm } from '../shared/environment-rules'
 import { clipBytes } from '../shared/text'
 import { archiveQuestion, ConfirmAction, deleteQuestion } from './confirm'
-import { configDetail, loadConfigs, loadDetail, openConfig } from './config-views'
-import { clearForm, editForm, formConflict, formKey, readForm } from './form-state'
+import { configDetail, loadConfigs, loadDetail, openConfig } from './config-state'
+import {
+  clearForm,
+  dropFieldText,
+  editForm,
+  fieldText,
+  formConflict,
+  formKey,
+  isTouched,
+  readForm,
+  setFieldText,
+  touchField
+} from './form-state'
 import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, nav, popView, pushView, run } from './state'
 
 /** Titre de l'avis d'un conflit : le même texte que celui du worker. */
@@ -58,31 +69,14 @@ function emptyForm(): EnvironmentForm {
 
 // --- État éphémère ---
 
-/** Texte brut des champs multi-lignes, par formulaire et par champ ; absent, il se déduit du formulaire. */
-const rawTexts = atom<Record<string, string>>({})
 /** Vrai pendant un enregistrement : un double appui ne part pas deux fois. */
 const saving = atom(false)
 /** Refus de l'enregistrement (hors conflit), avec le formulaire concerné. */
 const saveFailure = atom<{ key: string; message: string } | null>(null)
 
-const rawKey = (key: string, field: string): string => `${key}#${field}`
-
-function fieldText(key: string, field: string, derived: string): string {
-  return read(rawTexts)[rawKey(key, field)] ?? derived
-}
-
-function setFieldText(key: string, field: string, text: string): void {
-  update(rawTexts, (texts) => ({ ...texts, [rawKey(key, field)]: text }))
-}
-
-function dropFieldText(key: string, field: string): void {
-  update(rawTexts, ({ [rawKey(key, field)]: _dropped, ...rest }) => rest)
-}
-
 /** Oublie la saisie gardée, le texte brut, le conflit et le refus de ce formulaire. */
 function discardForm(key: string): void {
   clearForm(key)
-  update(rawTexts, (texts) => Object.fromEntries(Object.entries(texts).filter(([name]) => !name.startsWith(`${key}#`))))
   if (read(saveFailure)?.key === key) set(saveFailure, null)
 }
 
@@ -210,6 +204,8 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
   const metadataRaw = fieldText(key, 'metadata', metadataText(form.metadata))
   const problem = validateEnvironmentForm(form) ?? metadataTextProblem(metadataRaw)
   const nameMissing = form.name.trim() === ''
+  // L'erreur du nom attend que la personne l'ait modifié une fois : un formulaire neuf ne s'ouvre pas en rouge.
+  const nameInvalid = nameMissing && isTouched(key, 'name')
   return (
     <Stack gap="md">
       {dirty ? (
@@ -242,7 +238,16 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
           <Text size="sm">{clipBytes(failed.message, ERROR_TEXT_LIMIT_BYTES).text}</Text>
         </Callout>
       ) : null}
-      <Input label="Name" disabled={busy} value={form.name} invalid={nameMissing} onChange={(value) => change({ name: value })} />
+      <Input
+        label="Name"
+        disabled={busy}
+        value={form.name}
+        invalid={nameInvalid}
+        onChange={(value) => {
+          touchField(key, 'name')
+          change({ name: value })
+        }}
+      />
       <Input label="Description" disabled={busy} placeholder="Optional" value={form.description} onChange={(value) => change({ description: value })} />
       {id === null ? (
         <RadioGroup
