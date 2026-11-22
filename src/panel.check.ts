@@ -1,7 +1,7 @@
 // `orca plugin check` dessine le panneau une fois par scénario ; le worker y est remplacé par des
 // réponses figées, donc aucun appel réseau et aucune clé.
 import { defineCheck } from 'orca/testing'
-import type { SessionDetail, SessionRow, StreamState, ThreadRow } from './protocol'
+import type { CreateFormOptions, SessionDetail, SessionRow, StreamState, ThreadRow } from './protocol'
 
 const WITH_KEY = {
   hasKey: true,
@@ -54,6 +54,18 @@ export default defineCheck({
   'rejected key': {
     requests: { 'workspace.info': { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null } }
   },
+  'new session form': newSessionScenario({
+    'newSession.agentId': 'agent_check',
+    'newSession.environmentId': 'env_check',
+    'newSession.vaultIds': ['vlt_check'],
+    'newSession.budget': '5.00'
+  }),
+  'new session not budgetable': newSessionScenario({
+    'newSession.agentId': 'agent_check',
+    'newSession.environmentId': 'env_check',
+    'newSession.budget': '5.00',
+    'newSession.notBudgetable': 'This agent uses a model that does not support session budgets. Create the session without a budget instead.'
+  }),
   'session with approval': sessionScenario({
     row: sessionRow({ badge: 'needs_approval', pendingApprovals: 1, status: 'idle' }),
     rows: [
@@ -142,6 +154,28 @@ function hugeText(index: number): string {
   let body = ''
   while (body.length + paragraph.length <= 16_000) body += paragraph
   return body.padEnd(16_000, '.')
+}
+
+/** Le formulaire de création, ouvert avec une saisie persistée (le check ne sait pas cliquer). */
+function newSessionScenario(typed: Record<string, unknown>) {
+  const options: CreateFormOptions = {
+    agents: [
+      { kind: 'agent', id: 'agent_check', name: 'Writer', summary: 'v4 · claude-haiku-5-5' },
+      { kind: 'agent', id: 'agent_other', name: 'Reviewer', summary: 'v1 · claude-sonnet-5' }
+    ],
+    environments: [{ kind: 'environment', id: 'env_check', name: 'Sandbox', summary: 'cloud' }],
+    vaults: [{ kind: 'vault', id: 'vlt_check', name: 'GitHub', summary: '1 credential' }],
+    memoryStores: [{ kind: 'memory_store', id: 'memstore_check', name: 'Notes', summary: '4 memories' }]
+  }
+  return {
+    persisted: { plugin: { nav: [{ view: 'home' }, { view: 'newSession' }], ...typed } },
+    requests: {
+      'workspace.info': WITH_KEY,
+      'sessions.visibility': null,
+      'sessions.list': { ok: true as const, value: [] },
+      'createForm.options': { ok: true as const, value: options }
+    }
+  }
 }
 
 function sessionScenario(input: { row: SessionRow; rows: ThreadRow[] }) {

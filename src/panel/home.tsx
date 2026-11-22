@@ -21,8 +21,9 @@ import {
 } from 'orca'
 import { formatMoney } from '../shared/money'
 import { badgeLabel, badgeTone, sortSessions } from '../shared/sessions'
+import { openNewSession, restoreNewSession } from './new-session'
 import { openSession, restoreOpenSession } from './session-view'
-import { loadSessions, nav, pushView, run, sectionsOpen, sessionRows, workspace } from './state'
+import { loadSessions, run, sectionsOpen, sessionRows, workspace } from './state'
 
 const keyDraft = atom('')
 const KEY_REJECTED = 'The API key was rejected (401).'
@@ -36,7 +37,7 @@ async function saveKey(): Promise<void> {
     set(sessionRows, null)
     await loadSessions()
     // Une vue de session restée au sommet de la pile (clé absente ou refusée au démarrage) n'a jamais chargé son fil.
-    await restoreOpenSession()
+    await Promise.all([restoreOpenSession(), restoreNewSession()])
     return
   }
   // Le worker a supprimé la clé refusée ; le brouillon reste, pour être corrigé sans tout retaper.
@@ -108,7 +109,7 @@ function SessionsSection() {
     >
       <Stack gap="sm">
         {/* `Collapsible.title` n'accepte qu'une chaîne : le bouton est la première ligne du corps. */}
-        <Button icon="add" onPress={() => update(nav, (stack) => pushView(stack, { view: 'newSession' }))}>
+        <Button icon="add" onPress={openNewSession}>
           New session
         </Button>
         {loaded === null ? (

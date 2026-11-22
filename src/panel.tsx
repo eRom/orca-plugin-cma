@@ -3,6 +3,7 @@
 import { Callout, plugin, read, set, Spinner, Stack, Text, type PanelContext } from 'orca'
 import { POLL_VISIBLE_MS } from './protocol'
 import { Home } from './panel/home'
+import { NewSessionView, restoreNewSession } from './panel/new-session'
 import { restoreOpenSession, SessionView, sessionSubscriptions } from './panel/session-view'
 import { clipBytes } from './shared/text'
 import { ERROR_TEXT_LIMIT_BYTES, loadSessions, loadWorkspace, nav, notice, run, sessionRows, workspace } from './panel/state'
@@ -23,7 +24,7 @@ export function setup(ctx: PanelContext): void {
     await loadWorkspace()
     const info = read(workspace)
     // La pile persistée peut garder une session ouverte : on la rouvre, si une clé utilisable l'autorise.
-    const reopen = info?.hasKey && !info.keyRejected ? restoreOpenSession() : Promise.resolve()
+    const reopen = info?.hasKey && !info.keyRejected ? Promise.all([restoreOpenSession(), restoreNewSession()]) : Promise.resolve()
     await Promise.all([loadSessions(), reopen])
   })
 
@@ -50,7 +51,9 @@ function CurrentView() {
   switch (top?.view) {
     case 'session':
       return <SessionView sessionId={top.sessionId} />
-    // Les autres vues (détail de configuration, nouvelle session) arrivent avec les tâches suivantes.
+    case 'newSession':
+      return <NewSessionView />
+    // Les autres vues (détail de configuration) arrivent avec les tâches suivantes.
     default:
       return <Home />
   }
