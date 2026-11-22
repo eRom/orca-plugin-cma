@@ -211,21 +211,47 @@ test('opens the form from the home button', async () => {
   await view.unmount()
 })
 
-test('keeps the typed form across a panel restart and reloads the lists', async () => {
+test('restarts with a clean form and fresh lists, ignoring stale persisted ids', async () => {
   const persisted = {
     plugin: {
       nav: [{ view: 'home' }, { view: 'newSession' }],
-      'newSession.agentId': 'agent_b',
-      'newSession.environmentId': 'env_a',
-      'newSession.firstMessage': 'Draft survives',
-      'newSession.budget': '1.25'
+      'newSession.agentId': 'agent_gone',
+      'newSession.environmentId': 'env_gone',
+      'newSession.vaultIds': ['vlt_gone'],
+      'newSession.firstMessage': 'Old draft'
     }
   }
-  const host = mockHost({ requests: requests(() => ({ ok: true, value: { sessionId: 'sesn_new' } })) as never })
+  let reads = 0
+  const host = mockHost({
+    requests: requests(() => ({ ok: true, value: { sessionId: 'sesn_new' } }), {
+      'createForm.options': () => {
+        reads += 1
+        return { ok: true, value: OPTIONS }
+      }
+    }) as never
+  })
   const view = await mount(panel, { host, persisted })
-  assert.equal(view.valueOf({ label: 'Agent' }), 'agent_b')
-  assert.equal(view.valueOf({ label: 'First message' }), 'Draft survives')
-  assert.ok(view.find({ role: 'button', text: 'Create session · Reviewer · Sandbox · $1.25' }))
+  assert.equal(reads, 1)
+  assert.equal(view.valueOf({ label: 'Agent' }), '')
+  assert.equal(view.valueOf({ label: 'First message' }), '')
+  assert.equal(view.valueOf({ label: 'Budget (USD)' }), '5.00')
+  assert.equal(view.find({ role: 'button', text: /Create session/ })?.disabled, true)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('removes the budget warning and its button when the agent changes', async () => {
+  const host = mockHost({
+    requests: requests(() => ({ ok: false, code: 'model_not_budgetable', error: 'This model does not support a budget.' })) as never
+  })
+  const view = await mount(panel, { host, persisted: OPEN_FORM })
+  await view.select({ label: 'Agent' }, 'agent_a')
+  await view.select({ label: 'Environment' }, 'env_a')
+  await view.press({ role: 'button', text: /Create session/ })
+  assert.ok(view.find({ role: 'button', text: 'Create without budget' }))
+  await view.select({ label: 'Agent' }, 'agent_b')
+  assert.equal(view.find({ role: 'button', text: 'Create without budget' }), null)
+  assert.equal(view.find({ type: 'Callout', text: /does not support a budget/ }), null)
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })

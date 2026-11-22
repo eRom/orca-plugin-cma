@@ -54,18 +54,7 @@ export default defineCheck({
   'rejected key': {
     requests: { 'workspace.info': { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null } }
   },
-  'new session form': newSessionScenario({
-    'newSession.agentId': 'agent_check',
-    'newSession.environmentId': 'env_check',
-    'newSession.vaultIds': ['vlt_check'],
-    'newSession.budget': '5.00'
-  }),
-  'new session not budgetable': newSessionScenario({
-    'newSession.agentId': 'agent_check',
-    'newSession.environmentId': 'env_check',
-    'newSession.budget': '5.00',
-    'newSession.notBudgetable': 'This agent uses a model that does not support session budgets. Create the session without a budget instead.'
-  }),
+  'new session form': newSessionScenario(),
   'session with approval': sessionScenario({
     row: sessionRow({ badge: 'needs_approval', pendingApprovals: 1, status: 'idle' }),
     rows: [
@@ -156,8 +145,8 @@ function hugeText(index: number): string {
   return body.padEnd(16_000, '.')
 }
 
-/** Le formulaire de création, ouvert avec une saisie persistée (le check ne sait pas cliquer). */
-function newSessionScenario(typed: Record<string, unknown>) {
+/** Le formulaire de création, ouvert et vierge (rien n'y est persisté ; le check ne sait pas cliquer). */
+function newSessionScenario() {
   const options: CreateFormOptions = {
     agents: [
       { kind: 'agent', id: 'agent_check', name: 'Writer', summary: 'v4 · claude-haiku-5-5' },
@@ -168,7 +157,7 @@ function newSessionScenario(typed: Record<string, unknown>) {
     memoryStores: [{ kind: 'memory_store', id: 'memstore_check', name: 'Notes', summary: '4 memories' }]
   }
   return {
-    persisted: { plugin: { nav: [{ view: 'home' }, { view: 'newSession' }], ...typed } },
+    persisted: { plugin: { nav: [{ view: 'home' }, { view: 'newSession' }] } },
     requests: {
       'workspace.info': WITH_KEY,
       'sessions.visibility': null,

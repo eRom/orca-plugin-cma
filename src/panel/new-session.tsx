@@ -1,6 +1,6 @@
 // Formulaire de création d'une session : l'agent, l'env et le budget sont montrés avant tout lancement.
-// La saisie est persistée (comme la pile de navigation) : un redémarrage du panneau ne la perd pas.
-// `openNewSession`, `goBack` et une création réussie la remettent à zéro. Les listes, elles, se relisent.
+// Rien n'est persisté ici (seule la pile `nav` l'est) : une session est facturée, donc le formulaire
+// repart vierge après un redémarrage et ne lance que des ids présents dans les listes fraîchement lues.
 import { atom, Button, Callout, Checkbox, Input, plugin, read, Row, Select, set, Spinner, Stack, Text, Textarea, update } from 'orca'
 import { DEFAULT_BUDGET_DOLLARS, type ConfigRow, type CreateFormOptions } from '../protocol'
 import { dollarsToMinor } from '../shared/money'
@@ -12,19 +12,19 @@ import { ERROR_TEXT_LIMIT_BYTES, nav, popView, pushView, run } from './state'
 const LABEL_NAME_LIMIT_BYTES = 80
 
 const options = atom<CreateFormOptions | null>(null)
-const agentId = atom('newSession.agentId', '', { persist: 'plugin' })
-const environmentId = atom('newSession.environmentId', '', { persist: 'plugin' })
-const title = atom('newSession.title', '', { persist: 'plugin' })
-const vaultIds = atom<string[]>('newSession.vaultIds', [], { persist: 'plugin' })
-const memoryStoreIds = atom<string[]>('newSession.memoryStoreIds', [], { persist: 'plugin' })
-const budget = atom('newSession.budget', DEFAULT_BUDGET_DOLLARS, { persist: 'plugin' })
-const firstMessage = atom('newSession.firstMessage', '', { persist: 'plugin' })
+const agentId = atom('')
+const environmentId = atom('')
+const title = atom('')
+const vaultIds = atom<string[]>([])
+const memoryStoreIds = atom<string[]>([])
+const budget = atom(DEFAULT_BUDGET_DOLLARS)
+const firstMessage = atom('')
 /** Vrai pendant la création : une session est facturée, un double appui coûte. */
 const creating = atom(false)
 /** Erreur de lecture des listes ou de création, hors `model_not_budgetable`. */
 const failure = atom<string | null>(null)
 /** Le refus `model_not_budgetable`, avec le texte de l'API : le formulaire propose de créer sans budget. */
-const notBudgetable = atom<string | null>('newSession.notBudgetable', null, { persist: 'plugin' })
+const notBudgetable = atom<string | null>(null)
 
 function resetForm(): void {
   set(options, null)
@@ -57,9 +57,10 @@ export function openNewSession(): void {
   run(loadFormOptions)
 }
 
-/** Au redémarrage du panneau, la pile persistée peut avoir le formulaire au sommet : la saisie est gardée, seules les listes se relisent. */
+/** Au redémarrage du panneau, la pile persistée peut avoir le formulaire au sommet : il repart vierge, les listes se relisent. */
 export async function restoreNewSession(): Promise<void> {
   if (read(nav).at(-1)?.view === 'newSession') {
+    resetForm()
     await loadFormOptions()
   }
 }
@@ -74,9 +75,11 @@ async function createSession(budgetOverride: 'typed' | 'none'): Promise<void> {
   if (read(creating)) return
   const typedBudget = read(budget).trim()
   if (budgetOverride === 'typed' && typedBudget !== '' && dollarsToMinor(typedBudget) === null) return
+  const form = read(options)
   const agent = read(agentId)
   const environment = read(environmentId)
-  if (!agent || !environment) return
+  // Seuls des ids présents dans les listes lues partent : jamais une ressource que l'on ne voit pas.
+  if (!form || !form.agents.some((row) => row.id === agent) || !form.environments.some((row) => row.id === environment)) return
   set(creating, true)
   set(failure, null)
   set(notBudgetable, null)
@@ -85,8 +88,8 @@ async function createSession(budgetOverride: 'typed' | 'none'): Promise<void> {
       agentId: agent,
       environmentId: environment,
       title: read(title).trim() || null,
-      vaultIds: read(vaultIds),
-      memoryStoreIds: read(memoryStoreIds),
+      vaultIds: read(vaultIds).filter((id) => form.vaults.some((row) => row.id === id)),
+      memoryStoreIds: read(memoryStoreIds).filter((id) => form.memoryStores.some((row) => row.id === id)),
       budgetDollars: budgetOverride === 'none' || typedBudget === '' ? null : typedBudget,
       firstMessage: read(firstMessage).trim() || null
     })
@@ -154,7 +157,8 @@ export function NewSessionView() {
   const busy = read(creating)
   const agentName = form?.agents.find((row) => row.id === agent)?.name
   const environmentName = form?.environments.find((row) => row.id === environment)?.name
-  const ready = Boolean(agent && environment)
+  // Prêt seulement si l'agent et l'env existent dans les listes lues : jamais sur un id que l'on ne voit pas.
+  const ready = Boolean(agentName && environmentName)
   const summary =
     agentName && environmentName
       ? [
@@ -187,7 +191,11 @@ export function NewSessionView() {
             placeholder="Choose an agent"
             value={agent}
             options={asOptions(form.agents)}
-            onChange={(value) => set(agentId, value)}
+            onChange={(value) => {
+              set(agentId, value)
+              // Le refus vaut pour le modèle de l'agent d'avant : un autre agent efface l'avertissement.
+              set(notBudgetable, null)
+            }}
           />
           <Select
             label="Environment"
