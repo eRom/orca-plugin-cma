@@ -129,7 +129,11 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     return { bootId, watching: watcher.watching() }
   })
 
-  const sessions = createSessionHandlers(store)
+  // Le détail reprend le classement `idle` du sondeur (accords en attente, budget atteint) pour la session lue.
+  const sessions = createSessionHandlers(store, (sessionId) => {
+    const row = poller.snapshot().find((candidate) => candidate.id === sessionId)
+    return row?.status === 'idle' ? { badge: row.badge, pendingApprovals: row.pendingApprovals } : null
+  })
   // Un envoi, un accord ou une interruption réussi change le statut de la session : on le relit sans attendre.
   const thenRefresh =
     <I, T>(handler: (input: I) => Promise<ApiResult<T>>) =>

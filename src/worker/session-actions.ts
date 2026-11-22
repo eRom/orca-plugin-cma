@@ -57,19 +57,34 @@ function toMoney(amount: BetaMonetaryAmount | null | undefined): Money | null {
   return amount ? { minor: amount.amount, currency: amount.currency } : null
 }
 
+/** Vrai quand le coût a rejoint le plafond (comparaison exacte en unités mineures). */
+function capReached(cost: Money | null, budget: Money | null): boolean {
+  return budget !== null && BigInt(cost?.minor ?? '0') >= BigInt(budget.minor)
+}
+
 export function toSessionRow(session: BetaManagedAgentsSession, idle: IdleClassification | null): SessionRow {
+  const cost = toMoney(session.usage.list_cost)
+  const budget = toMoney(session.budget?.max_list_cost)
+  // Un classement `idle` ne vaut que pour une session `idle` : une autre l'a déjà quitté.
+  const applied = session.status === 'idle' ? idle : null
+  // Sans classement `idle`, le badge reprend le statut tel quel.
+  let badge: SessionBadge = applied?.badge ?? session.status
+  // Le classement garde le dernier arrêt tant qu'aucun tour ne tourne : un budget relevé depuis laisserait
+  // « Budget reached » collé. Il ne vaut que tant que le coût a rejoint le plafond.
+  if (badge === 'budget_reached' && !capReached(cost, budget)) {
+    badge = 'idle'
+  }
   return {
     id: session.id,
     title: session.title,
     agentId: session.agent.id,
     agentName: session.agent.name,
     status: session.status,
-    // Sans classement `idle`, le badge reprend le statut tel quel.
-    badge: idle?.badge ?? session.status,
-    cost: toMoney(session.usage.list_cost),
-    budget: toMoney(session.budget?.max_list_cost),
+    badge,
+    cost,
+    budget,
     updatedAt: session.updated_at,
-    pendingApprovals: idle?.pendingApprovals ?? 0
+    pendingApprovals: applied?.pendingApprovals ?? 0
   }
 }
 
@@ -106,16 +121,20 @@ export function toSessionDetail(
 /** Le nom de l'environnement est un complément : son échec ne fait pas perdre le détail. */
 async function readDetail(
   client: Awaited<ReturnType<ClientStore['get']>>,
-  sessionId: string
+  sessionId: string,
+  idleOf: IdleLookup
 ): Promise<SessionDetail> {
   const session = await client.beta.sessions.retrieve(sessionId)
   const environmentName = await client.beta.environments.retrieve(session.environment_id).then(
     (environment) => environment.name,
     () => null
   )
-  // Le classement `idle` vient du sondeur (tâche suivante) : sans lui, le badge suit le statut.
-  return toSessionDetail(session, environmentName, null)
+  // Le classement `idle` vient du sondeur : sans lui, le badge suit le statut.
+  return toSessionDetail(session, environmentName, idleOf(sessionId))
 }
+
+/** Le classement `idle` que le sondeur connaît d'une session ; null quand il n'en a pas. */
+export type IdleLookup = (sessionId: string) => IdleClassification | null
 
 export type SessionHandlers = {
   send(input: { sessionId: string; text: string }): Promise<ApiResult<null>>
@@ -132,7 +151,7 @@ export type SessionHandlers = {
   testSpend(): Promise<ApiResult<{ sessions: number; total: Money | null }>>
 }
 
-export function createSessionHandlers(store: ClientStore): SessionHandlers {
+export function createSessionHandlers(store: ClientStore, idleOf: IdleLookup = () => null): SessionHandlers {
   return {
     send: ({ sessionId, text }) =>
       attempt(store, async (client) => {
@@ -174,10 +193,10 @@ export function createSessionHandlers(store: ClientStore): SessionHandlers {
     raiseBudget: ({ sessionId, dollars }) =>
       attempt(store, async (client) => {
         await client.beta.sessions.update(sessionId, { budget: budgetOf(dollars) })
-        return readDetail(client, sessionId)
+        return readDetail(client, sessionId, idleOf)
       }),
 
-    detail: ({ sessionId }) => attempt(store, (client) => readDetail(client, sessionId)),
+    detail: ({ sessionId }) => attempt(store, (client) => readDetail(client, sessionId, idleOf)),
 
     testSpend: () =>
       attempt(store, async (client) => {

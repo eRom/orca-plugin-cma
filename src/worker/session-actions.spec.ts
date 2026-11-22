@@ -235,3 +235,69 @@ test('raiseBudget refuses an invalid amount without calling the API', async () =
   const result = await createSessionHandlers(store).raiseBudget({ sessionId: 's', dollars: 'lots' })
   expect(result.ok).toBe(false)
 })
+
+const CAP = { type: 'limit', max_list_cost: { amount: '50', currency: 'USD' } } as const
+
+test('toSessionRow keeps budget_reached only while the cost has reached the budget', () => {
+  const reached = { badge: 'budget_reached', pendingApprovals: 0 } as const
+  const at = (cost: string, budget: { type: 'limit'; max_list_cost: { amount: string; currency: string } } | null) =>
+    toSessionRow(
+      fakeSession({ status: 'idle', usage: { list_cost: { amount: cost, currency: 'USD' } }, budget } as never),
+      reached
+    ).badge
+  expect(at('50', CAP)).toBe('budget_reached')
+  expect(at('51', CAP)).toBe('budget_reached')
+  // Budget relevé depuis le dernier arrêt : le dernier `status_idle` est périmé.
+  expect(at('50', { type: 'limit', max_list_cost: { amount: '100', currency: 'USD' } })).toBe('idle')
+  expect(at('49', CAP)).toBe('idle')
+  expect(at('0', null)).toBe('idle')
+})
+
+test('toSessionRow ignores an idle classification on a session that is no longer idle', () => {
+  const row = toSessionRow(fakeSession({ status: 'running' }), { badge: 'needs_approval', pendingApprovals: 2 })
+  expect(row.badge).toBe('running')
+  expect(row.pendingApprovals).toBe(0)
+})
+
+/** Faux client de détail : une session lisible et un environnement nommé ou illisible. */
+function detailStore(session: unknown, environment: 'ok' | 'fails' = 'ok') {
+  const calls = { retrieve: 0, update: [] as unknown[] }
+  const client = {
+    beta: {
+      sessions: {
+        retrieve: async () => {
+          calls.retrieve++
+          return session
+        },
+        update: async (_id: string, params: unknown) => {
+          calls.update.push(params)
+          return session
+        }
+      },
+      environments: {
+        retrieve: async () => {
+          if (environment === 'fails') throw new Error('environment unreadable')
+          return { name: 'Sandbox' }
+        }
+      }
+    }
+  }
+  return { calls, store: { get: async () => client, reset() {}, hasKey: async () => true } as unknown as ClientStore }
+}
+
+test('detail reuses the poller classification, bounded by the cost against the budget', async () => {
+  const reached = { badge: 'budget_reached', pendingApprovals: 0 } as const
+  const capped = fakeSession({ status: 'idle', usage: { list_cost: { amount: '50', currency: 'USD' } }, budget: CAP } as never)
+  const atCap = await createSessionHandlers(detailStore(capped).store, () => reached).detail({ sessionId: 'sesn_1' })
+  expect(atCap.ok && atCap.value.badge).toBe('budget_reached')
+  // Sans classement du sondeur, le badge suit le statut.
+  const unknown = await createSessionHandlers(detailStore(capped).store, () => null).detail({ sessionId: 'sesn_1' })
+  expect(unknown.ok && unknown.value.badge).toBe('idle')
+  const raised = fakeSession({
+    status: 'idle',
+    usage: { list_cost: { amount: '50', currency: 'USD' } },
+    budget: { type: 'limit', max_list_cost: { amount: '100', currency: 'USD' } }
+  } as never)
+  const afterRaise = await createSessionHandlers(detailStore(raised).store, () => reached).detail({ sessionId: 'sesn_1' })
+  expect(afterRaise.ok && afterRaise.value.badge).toBe('idle')
+})
