@@ -21,7 +21,7 @@ import {
 } from '../protocol'
 import { clipBytesEnd } from '../shared/text'
 import { describeError, isFatal, type ClientStore } from './client'
-import { applyEvent, createThreadState, pendingToolUseIds, rowsBefore, tail, type ThreadState } from './thread'
+import { applyEvent, createThreadState, rowsBefore, tail, type ThreadState } from './thread'
 
 const FLUSH_MS = 150
 /** Plafond d'un envoi vers le panneau, sous la limite du canal. */
@@ -46,7 +46,6 @@ export type Watcher = {
   watch(sessionId: string): WatchAnswer
   leave(sessionId: string): void
   loadEarlier(sessionId: string, beforeId: string): { rows: ThreadRow[]; hasEarlier: boolean } | null
-  pendingToolUseIds(sessionId: string): string[]
   stop(): void
 }
 
@@ -336,9 +335,6 @@ export function createWatcher(source: EventSource, sink: WatchSink, options: Wat
     loadEarlier(sessionId, beforeId) {
       if (!current || current.sessionId !== sessionId) return null
       return rowsBefore(current.thread, beforeId, THREAD_WINDOW_ROWS)
-    },
-    pendingToolUseIds(sessionId) {
-      return current?.sessionId === sessionId ? pendingToolUseIds(current.thread) : []
     },
     stop
   }

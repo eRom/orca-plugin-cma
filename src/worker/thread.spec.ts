@@ -14,7 +14,7 @@ import type {
 import { expect, test } from 'bun:test'
 import { THREAD_WINDOW_BYTES, TOOL_IO_LIMIT_BYTES, type ThreadRow } from '../protocol'
 import { rowBytes } from '../shared/thread-window'
-import { applyEvent, createThreadState, pendingToolUseIds, rowsBefore, tail } from './thread'
+import { applyEvent, createThreadState, rowsBefore, tail } from './thread'
 
 const T = '2026-11-22T10:00:00Z'
 
@@ -105,7 +105,6 @@ test('walks an MCP approval to done', () => {
   expect(allowed.id).toBe(call.id)
   expect(done.id).toBe(call.id)
   expect(done.result?.text).toBe('issue created')
-  expect(pendingToolUseIds(state)).toEqual([])
   expect(tail(state, 10).rows.length).toBe(1)
 })
 
@@ -121,9 +120,11 @@ test('tracks two pending approvals', () => {
   const state = createThreadState()
   applyEvent(state, toolUse('sevt_1', 'ask'))
   applyEvent(state, toolUse('sevt_2', 'ask'))
-  expect(pendingToolUseIds(state)).toEqual(['sevt_1', 'sevt_2'])
+  const awaiting = (): string[] =>
+    tail(state, 10).rows.flatMap((row) => (row.kind === 'tool' && row.needsConfirmation ? [row.id] : []))
+  expect(awaiting()).toEqual(['sevt_1', 'sevt_2'])
   applyEvent(state, confirmation('evt_3', 'sevt_1', 'allow'))
-  expect(pendingToolUseIds(state)).toEqual(['sevt_2'])
+  expect(awaiting()).toEqual(['sevt_2'])
 })
 
 test('clips a 200 KB tool result', () => {

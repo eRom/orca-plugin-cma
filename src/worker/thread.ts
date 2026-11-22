@@ -19,12 +19,10 @@ export type ThreadState = {
   indexById: Map<string, number>
   /** Id d'événement vers son `processed_at` à la première livraison, pour le dédoublonnage. */
   seen: Map<string, string | null>
-  /** Appels d'outil en attente d'un accord, dans l'ordre. */
-  pending: Set<string>
 }
 
 export function createThreadState(): ThreadState {
-  return { rows: [], indexById: new Map(), seen: new Map(), pending: new Set() }
+  return { rows: [], indexById: new Map(), seen: new Map() }
 }
 
 /** Concatène le texte des blocs `text` ; les images, documents et blocs masqués n'ont pas de texte. */
@@ -64,7 +62,6 @@ function toolRowOf(state: ThreadState, toolUseId: string): ToolRow | null {
 function updateTool(state: ThreadState, toolUseId: string, change: Partial<ToolRow>): ThreadRow[] {
   const row = toolRowOf(state, toolUseId)
   if (!row) return []
-  state.pending.delete(toolUseId)
   return replaceRow(state, { ...row, ...change, needsConfirmation: false })
 }
 
@@ -110,9 +107,7 @@ function reduceEvent(state: ThreadState, event: BetaManagedAgentsSessionEvent): 
       // `agent.custom_tool_use` n'a pas de `evaluated_permission` : il n'attend jamais d'accord.
       const permission = event.type === 'agent.custom_tool_use' ? undefined : event.evaluated_permission
       const server = event.type === 'agent.mcp_tool_use' ? event.mcp_server_name : null
-      const row = newToolRow(event, server, permission)
-      if (row.needsConfirmation) state.pending.add(row.id)
-      return appendRow(state, row)
+      return appendRow(state, newToolRow(event, server, permission))
     }
     case 'user.tool_confirmation':
       return updateTool(state, event.tool_use_id, { state: event.result === 'allow' ? 'allowed' : 'denied' })
@@ -192,9 +187,4 @@ export function rowsBefore(state: ThreadState, beforeId: string, count: number, 
   const end = state.indexById.get(beforeId)
   if (end === undefined) return { rows: [], hasEarlier: false }
   return pageBefore(state, end, count, maxBytes)
-}
-
-/** Ids des appels d'outil qui attendent encore un `user.tool_confirmation`. */
-export function pendingToolUseIds(state: ThreadState): string[] {
-  return [...state.pending]
 }
