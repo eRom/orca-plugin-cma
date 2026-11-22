@@ -75,6 +75,11 @@ export function toSessionRow(session: BetaManagedAgentsSession, idle: IdleClassi
   if (badge === 'budget_reached' && !capReached(cost, budget)) {
     badge = 'idle'
   }
+  // À l'inverse, un tour fini normalement pile au plafond laisse un dernier arrêt `end_turn` alors que l'API
+  // refuse déjà tout nouvel événement (AC-13 rejoué le 22/11) : seul le coût le dit.
+  if (session.status === 'idle' && capReached(cost, budget)) {
+    badge = 'budget_reached'
+  }
   return {
     id: session.id,
     title: session.title,

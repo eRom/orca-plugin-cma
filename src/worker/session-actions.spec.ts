@@ -253,6 +253,26 @@ test('toSessionRow keeps budget_reached only while the cost has reached the budg
   expect(at('0', null)).toBe('idle')
 })
 
+// Joué le 22/11 (AC-13, `sesn_01KHikXVbiq8NBtFijSXeoy8`) : un tour fini normalement pile au plafond laisse
+// un dernier arrêt `end_turn`, coût 2 pour un budget 2, et la console refuse déjà tout nouvel événement.
+test('toSessionRow marks an idle session at its cap as budget_reached whatever its last stop', () => {
+  const at = (cost: string, idle: { badge: 'idle' | 'needs_approval'; pendingApprovals: number } | null) =>
+    toSessionRow(
+      fakeSession({ status: 'idle', usage: { list_cost: { amount: cost, currency: 'USD' } }, budget: CAP } as never),
+      idle
+    ).badge
+  expect(at('50', { badge: 'idle', pendingApprovals: 0 })).toBe('budget_reached')
+  expect(at('50', null)).toBe('budget_reached')
+  expect(at('50', { badge: 'needs_approval', pendingApprovals: 1 })).toBe('budget_reached')
+  expect(at('49', { badge: 'idle', pendingApprovals: 0 })).toBe('idle')
+  // Une session qui tourne garde son statut : l'API l'arrêtera après le tour en cours.
+  const running = toSessionRow(
+    fakeSession({ status: 'running', usage: { list_cost: { amount: '50', currency: 'USD' } }, budget: CAP } as never),
+    null
+  )
+  expect(running.badge).toBe('running')
+})
+
 test('toSessionRow ignores an idle classification on a session that is no longer idle', () => {
   const row = toSessionRow(fakeSession({ status: 'running' }), { badge: 'needs_approval', pendingApprovals: 2 })
   expect(row.badge).toBe('running')
@@ -290,9 +310,12 @@ test('detail reuses the poller classification, bounded by the cost against the b
   const capped = fakeSession({ status: 'idle', usage: { list_cost: { amount: '50', currency: 'USD' } }, budget: CAP } as never)
   const atCap = await createSessionHandlers(detailStore(capped).store, () => reached).detail({ sessionId: 'sesn_1' })
   expect(atCap.ok && atCap.value.badge).toBe('budget_reached')
-  // Sans classement du sondeur, le badge suit le statut.
+  // Sans classement du sondeur, le coût au plafond suffit ; sous le plafond, le badge suit le statut.
   const unknown = await createSessionHandlers(detailStore(capped).store, () => null).detail({ sessionId: 'sesn_1' })
-  expect(unknown.ok && unknown.value.badge).toBe('idle')
+  expect(unknown.ok && unknown.value.badge).toBe('budget_reached')
+  const below = fakeSession({ status: 'idle', usage: { list_cost: { amount: '49', currency: 'USD' } }, budget: CAP } as never)
+  const plain = await createSessionHandlers(detailStore(below).store, () => null).detail({ sessionId: 'sesn_1' })
+  expect(plain.ok && plain.value.badge).toBe('idle')
   const raised = fakeSession({
     status: 'idle',
     usage: { list_cost: { amount: '50', currency: 'USD' } },
