@@ -60,6 +60,9 @@ export function unwrap<T>(result: ApiResult<T>): T | null {
   return null
 }
 
+/** Texte d'erreur de l'API borné pour un `Text` : un plafond d'Orca dépassé refuserait tout le rendu. */
+export const ERROR_TEXT_LIMIT_BYTES = 8_000
+
 /** Lance une action du panneau ; un refus d'Orca ou du worker s'affiche au lieu de se perdre. */
 export function run(action: () => Promise<void>): void {
   set(notice, null)
@@ -111,6 +114,8 @@ export const sessionUsage = atom<{ cost: Money | null; budget: Money | null } | 
 /** Vrai une fois la première réponse de `session.watch` reçue (réussie ou non). */
 export const threadLoaded = atom(false)
 export const loadingEarlier = atom(false)
+/** Vrai pendant l'envoi d'un message : une session est facturée, un double envoi coûte. */
+export const sending = atom(false)
 /** Texte du composeur. */
 export const draft = atom('')
 /** Motif de refus saisi, par id d'appel d'outil. */
@@ -135,6 +140,7 @@ export function resetSessionView(sessionId: string | null): void {
   set(sessionUsage, null)
   set(threadLoaded, false)
   set(loadingEarlier, false)
+  set(sending, false)
   set(draft, '')
   set(denyDraft, {})
   set(confirming, [])

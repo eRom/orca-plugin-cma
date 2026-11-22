@@ -1,10 +1,11 @@
 // Panneau Managed Agents : aucun réseau ici, tout passe par le worker (`plugin.request`).
 // Il route sur le sommet de la pile de navigation ; une vue inconnue retombe sur l'accueil.
-import { Callout, plugin, read, set, Spinner, Stack, type PanelContext } from 'orca'
+import { Callout, plugin, read, set, Spinner, Stack, Text, type PanelContext } from 'orca'
 import { POLL_VISIBLE_MS } from './protocol'
 import { Home } from './panel/home'
 import { restoreOpenSession, SessionView, sessionSubscriptions } from './panel/session-view'
-import { loadSessions, loadWorkspace, nav, notice, run, sessionRows, workspace } from './panel/state'
+import { clipBytes } from './shared/text'
+import { ERROR_TEXT_LIMIT_BYTES, loadSessions, loadWorkspace, nav, notice, run, sessionRows, workspace } from './panel/state'
 
 export function setup(ctx: PanelContext): void {
   // Le worker pousse la liste des sessions ; une liste vide peut aussi signer une clé refusée.
@@ -60,7 +61,11 @@ export default function Panel() {
   const loaded = read(workspace) !== null
   return (
     <Stack gap="md">
-      {error ? <Callout tone="danger" title={error} /> : null}
+      {error ? (
+        <Callout tone="danger" title="Something went wrong">
+          <Text size="sm">{clipBytes(error, ERROR_TEXT_LIMIT_BYTES).text}</Text>
+        </Callout>
+      ) : null}
       {loaded ? <CurrentView /> : error ? null : <Spinner label="Loading" />}
     </Stack>
   )

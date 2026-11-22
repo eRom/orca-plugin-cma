@@ -27,10 +27,12 @@ import {
 import type { ApiResult, ThreadRow, ToolState } from '../protocol'
 import { dollarsToMinor, formatMoney } from '../shared/money'
 import { badgeLabel, badgeTone } from '../shared/sessions'
+import { clipBytes } from '../shared/text'
 import { pageWindow } from '../shared/thread-window'
 import {
   confirming,
   denyDraft,
+  ERROR_TEXT_LIMIT_BYTES,
   draft,
   hasEarlier,
   loadingEarlier,
@@ -45,6 +47,7 @@ import {
   raiseNotice,
   resetSessionView,
   run,
+  sending,
   sessionDetail,
   sessionNotice,
   sessionRows,
@@ -163,14 +166,20 @@ function unwrapHere<T>(result: ApiResult<T>): T | null {
 
 async function sendMessage(sessionId: string): Promise<void> {
   const text = read(draft).trim()
-  if (!text) return
-  const result = await plugin.request('session.send', { sessionId, text })
-  if (!result.ok) {
-    set(sessionNotice, result.error)
-    return
+  // Un envoi déjà en route : un second Cmd+Enter enverrait le message deux fois à une session facturée.
+  if (!text || read(sending)) return
+  set(sending, true)
+  try {
+    const result = await plugin.request('session.send', { sessionId, text })
+    if (!result.ok) {
+      set(sessionNotice, result.error)
+      return
+    }
+    // Si la saisie a changé pendant l'envoi, on ne l'écrase pas.
+    if (read(draft).trim() === text) set(draft, '')
+  } finally {
+    set(sending, false)
   }
-  // Si la saisie a changé pendant l'envoi, on ne l'écrase pas.
-  if (read(draft).trim() === text) set(draft, '')
 }
 
 async function interrupt(sessionId: string): Promise<void> {
@@ -506,12 +515,21 @@ function Thread({ sessionId }: { sessionId: string }) {
   )
 }
 
+/** Erreur brute de l'API : le titre reste un libellé fixe, le texte va en enfant (un libellé de plus de 1 Kio fait refuser le rendu). */
+function ErrorCallout({ message }: { message: string }) {
+  return (
+    <Callout tone="danger" title="Action failed">
+      <Text size="sm">{clipBytes(message, ERROR_TEXT_LIMIT_BYTES).text}</Text>
+    </Callout>
+  )
+}
+
 function Composer({ sessionId, running, terminated }: { sessionId: string; running: boolean; terminated: boolean }) {
   const notice = read(sessionNotice)
   const text = read(draft)
   return (
     <Stack gap="sm">
-      {notice ? <Callout tone="danger" title={notice} /> : null}
+      {notice ? <ErrorCallout message={notice} /> : null}
       {terminated ? (
         <Text muted size="sm">
           This session has ended.
@@ -528,7 +546,7 @@ function Composer({ sessionId, running, terminated }: { sessionId: string; runni
             onSubmit={() => act(() => sendMessage(sessionId))}
           />
           <Row gap="sm" wrap>
-            <Button disabled={!text.trim()} onPress={() => act(() => sendMessage(sessionId))}>
+            <Button disabled={!text.trim() || read(sending)} onPress={() => act(() => sendMessage(sessionId))}>
               Send
             </Button>
             <Button variant="outline" tone="danger" icon="stop" disabled={!running} onPress={() => act(() => interrupt(sessionId))}>

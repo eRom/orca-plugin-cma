@@ -21,7 +21,7 @@ import {
 } from 'orca'
 import { formatMoney } from '../shared/money'
 import { badgeLabel, badgeTone, sortSessions } from '../shared/sessions'
-import { openSession } from './session-view'
+import { openSession, restoreOpenSession } from './session-view'
 import { loadSessions, nav, pushView, run, sectionsOpen, sessionRows, workspace } from './state'
 
 const keyDraft = atom('')
@@ -35,6 +35,8 @@ async function saveKey(): Promise<void> {
     // Les sessions de l'ancienne clé ne valent plus rien : on relit celles de la nouvelle.
     set(sessionRows, null)
     await loadSessions()
+    // Une vue de session restée au sommet de la pile (clé absente ou refusée au démarrage) n'a jamais chargé son fil.
+    await restoreOpenSession()
     return
   }
   // Le worker a supprimé la clé refusée ; le brouillon reste, pour être corrigé sans tout retaper.

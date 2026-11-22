@@ -336,3 +336,80 @@ test('windows an 800 KB thread under the render caps and offers Load earlier', a
   assert.deepEqual(view.warnings, [])
   await view.unmount()
 })
+
+test('loads a restored session once a rejected key is replaced', async () => {
+  const watched: unknown[] = []
+  const detailed: unknown[] = []
+  let infoCalls = 0
+  const host = mockHost({
+    requests: requests([message('m1', 'Back again')], {
+      'workspace.info': () => {
+        infoCalls += 1
+        return infoCalls === 1 ? { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null } : WITH_KEY
+      },
+      'key.set': { ok: true, value: WITH_KEY },
+      'session.watch': (input: unknown) => {
+        watched.push(input)
+        return { ok: true, value: { rows: [message('m1', 'Back again')], hasEarlier: false, stream: OPEN_STREAM } }
+      },
+      'session.detail': (input: unknown) => {
+        detailed.push(input)
+        return { ok: true, value: sessionDetail() }
+      }
+    }) as never
+  })
+  const view = await mount(panel, { host, persisted: OPEN_S1 })
+  // Clé refusée : l'accueil montre le formulaire, aucune session n'est chargée.
+  assert.ok(view.find({ label: 'API key' }))
+  assert.deepEqual(watched, [])
+  await view.type({ label: 'API key' }, 'sk-ant-fresh')
+  await view.press({ role: 'button', text: 'Save key' })
+  assert.deepEqual(watched, [{ sessionId: 's1' }])
+  assert.deepEqual(detailed, [{ sessionId: 's1' }])
+  assert.ok(view.find({ text: /Back again/ }))
+  await view.unmount()
+})
+
+test('sends a message once on a double submit', async () => {
+  const sent: unknown[] = []
+  const host = mockHost({
+    requests: requests([message('m1')], {
+      'session.send': async (input: unknown) => {
+        sent.push(input)
+        await new Promise((resolve) => setTimeout(resolve, 30))
+        return { ok: true, value: null }
+      }
+    }) as never
+  })
+  const view = await mount(panel, { host, persisted: OPEN_S1 })
+  await view.type({ label: 'Message' }, 'Run it')
+  const field = { label: 'Message' }
+  await Promise.all([view.submit(field), view.submit(field)])
+  assert.equal(sent.length, 1)
+  await view.unmount()
+})
+
+test('renders a 5000-character API error without a refused render', async () => {
+  const long = 'E'.repeat(5_000)
+  const host = mockHost({
+    requests: requests([message('m1')], { 'session.send': { ok: false, code: 'other', error: long } }) as never
+  })
+  const view = await mount(panel, { host, persisted: OPEN_S1 })
+  await view.type({ label: 'Message' }, 'hello')
+  await view.press({ role: 'button', text: 'Send' })
+  assert.ok(view.find({ type: 'Callout', text: /EEEE/ }))
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
+  await view.unmount()
+})
+
+test('renders a 5000-character panel notice without a refused render', async () => {
+  const long = 'F'.repeat(5_000)
+  const host = mockHost({
+    requests: requests([message('m1')], { 'sessions.list': { ok: false, code: 'other', error: long } }) as never
+  })
+  const view = await mount(panel, { host, persisted: OPEN_S1 })
+  assert.ok(view.find({ type: 'Callout', text: /FFFF/ }))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
