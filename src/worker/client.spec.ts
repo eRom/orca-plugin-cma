@@ -121,3 +121,24 @@ test('workspaceInfo survives a failing organization call', async () => {
     organizationName: null
   })
 })
+
+test('describeError shows only the API message of a standard error body', () => {
+  const error = new Anthropic.BadRequestError(
+    400,
+    {
+      type: 'error',
+      error: { type: 'invalid_request_error', message: 'auth.mcp_server_url must use HTTPS' },
+      request_id: 'req_plugin_test'
+    },
+    undefined,
+    new Headers()
+  )
+  expect(describeError(error)).toEqual({ message: 'API error 400: auth.mcp_server_url must use HTTPS', code: 'other' })
+})
+
+test('describeError falls back to the SDK message when the body carries no API message', () => {
+  const noBody = new Anthropic.InternalServerError(500, undefined, 'upstream down', new Headers())
+  expect(describeError(noBody)).toEqual({ message: `API error 500: ${noBody.message}`, code: 'other' })
+  const emptyMessage = new Anthropic.BadRequestError(400, { type: 'error', error: { type: 'x', message: '' } }, undefined, new Headers())
+  expect(describeError(emptyMessage).message).toBe(`API error 400: ${emptyMessage.message}`)
+})

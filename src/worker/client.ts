@@ -106,7 +106,10 @@ export function describeError(error: unknown): { message: string; code: ApiError
     }
   }
   if (error instanceof Anthropic.APIError) {
-    return { message: `API error ${error.status}: ${error.message}`, code: 'other' }
+    // Pour un corps standard, `error.message` du SDK porte le statut puis tout le JSON : on garde le seul texte de l'API.
+    const apiMessage = error.apiMessage
+    const readable = typeof apiMessage === 'string' && apiMessage.trim() !== '' ? apiMessage : error.message
+    return { message: `API error ${error.status}: ${readable}`, code: 'other' }
   }
   return { message: error instanceof Error ? error.message : String(error), code: 'other' }
 }
