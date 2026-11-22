@@ -58,8 +58,13 @@ export type Poller = {
   /** Ping du panneau visible, à l'instant `at` : rapproche le prochain tour si besoin. */
   visible(at: number): void
   snapshot(): SessionRow[]
-  /** Un tour à la demande (les appels simultanés partagent le même tour) ; lève l'erreur de l'API. */
-  refresh(): Promise<SessionRow[]>
+  /**
+   * Un tour à la demande ; lève l'erreur de l'API. Appelé pendant qu'un tour tourne, il n'adopte pas ce
+   * tour (sa lecture a pu précéder le changement qui motive l'appel) : un seul tour de rattrapage suit,
+   * partagé par tous les appelants du moment. Avec `shared`, l'appelant n'attend aucun changement
+   * précis et adopte le tour en cours.
+   */
+  refresh(options?: { shared?: boolean }): Promise<SessionRow[]>
   /** Arrête, oublie l'instantané et remet la barre d'état à `Managed`. */
   stop(): void
 }
@@ -76,6 +81,8 @@ export function createPoller(deps: PollerDeps): Poller {
   let armedAt = 0
   let dueAt = 0
   let inflight: Promise<SessionRow[]> | null = null
+  /** Le tour de rattrapage en attente de la fin du tour en cours ; un seul à la fois. */
+  let trailing: Promise<SessionRow[]> | null = null
   let lastVisibleAt: number | null = null
   let rows: SessionRow[] = []
   let published: string | null = null
@@ -96,6 +103,7 @@ export function createPoller(deps: PollerDeps): Poller {
     cancelTimer?.()
     cancelTimer = null
     inflight = null
+    trailing = null
     rows = []
     published = null
     idleCache.clear()
@@ -149,10 +157,32 @@ export function createPoller(deps: PollerDeps): Poller {
     return rows
   }
 
-  function refresh(): Promise<SessionRow[]> {
+  function refresh(options: { shared?: boolean } = {}): Promise<SessionRow[]> {
     if (inflight) {
-      return inflight
+      if (options.shared) {
+        return inflight
+      }
+      if (trailing) {
+        return trailing
+      }
+      const asked = epoch
+      const queued: Promise<SessionRow[]> = inflight
+        .then(
+          () => undefined,
+          () => undefined
+        )
+        .then(() => {
+          if (trailing === queued) trailing = null
+          // Un arrêt ou un redémarrage entre-temps a jeté le tour en cours : celui-ci n'a plus d'objet.
+          return asked === epoch ? startTurn() : rows
+        })
+      trailing = queued
+      return queued
     }
+    return startTurn()
+  }
+
+  function startTurn(): Promise<SessionRow[]> {
     const mine = epoch
     const current: Promise<SessionRow[]> = turn()
       .catch((error: unknown) => {
@@ -181,7 +211,7 @@ export function createPoller(deps: PollerDeps): Poller {
   function loop(): void {
     cancelTimer = null
     const mine = epoch
-    refresh()
+    refresh({ shared: true })
       .catch((error: unknown) => {
         // Pas de clé ou clé refusée : rien d'anormal à journaliser, le panneau le montre déjà.
         const { code, message } = describeError(error)

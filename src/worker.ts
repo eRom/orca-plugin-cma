@@ -28,6 +28,11 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     }
   })
 
+  // Un tour de rattrapage à la demande (jamais attendu) : le `sessions.changed` qui en résulte rejoint le panneau.
+  const refreshSessions = (): void => {
+    poller.refresh().catch((error: unknown) => orca.log(`sessions refresh failed: ${describeError(error).message}`))
+  }
+
   // Le suivi en direct d'une session : le worker pousse, le panneau reçoit par `panels.post`.
   const watcher = createWatcher(sdkEventSource(store), {
     thread: (payload) => orca.panels.post('session.thread', payload),
@@ -44,10 +49,11 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
         cost,
         budget
       })
-      // Un événement d'usage prouve que la session bouge : on rattrape l'instantané tout de suite
-      // (un seul tour à la fois), et le `sessions.changed` qui en résulte rejoint le panneau.
-      poller.refresh().catch((error: unknown) => orca.log(`sessions refresh failed: ${describeError(error).message}`))
+      // Un événement d'usage prouve que la session bouge : on rattrape l'instantané tout de suite.
+      refreshSessions()
     },
+    // Le statut change sur le flux bien avant le prochain tour du sondeur (10 à 60 s) : on le rattrape.
+    statusChanged: () => refreshSessions(),
     log: (message) => orca.log(message)
   })
 
@@ -100,11 +106,13 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   orca.panels.handle('sessions.list', async (): Promise<ApiResult<SessionRow[]>> => {
     const snapshot = poller.snapshot()
     if (snapshot.length > 0) {
-      poller.refresh().catch((error: unknown) => orca.log(`sessions refresh failed: ${describeError(error).message}`))
+      poller
+        .refresh({ shared: true })
+        .catch((error: unknown) => orca.log(`sessions refresh failed: ${describeError(error).message}`))
       return { ok: true, value: snapshot }
     }
     try {
-      return { ok: true, value: await poller.refresh() }
+      return { ok: true, value: await poller.refresh({ shared: true }) }
     } catch (error) {
       return failure(error)
     }
@@ -119,11 +127,19 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   })
 
   const sessions = createSessionHandlers(store)
-  orca.panels.handle('session.send', sessions.send)
-  orca.panels.handle('session.confirm', sessions.confirm)
-  orca.panels.handle('session.interrupt', sessions.interrupt)
+  // Un envoi, un accord ou une interruption réussi change le statut de la session : on le relit sans attendre.
+  const thenRefresh =
+    <I, T>(handler: (input: I) => Promise<ApiResult<T>>) =>
+    async (input: I): Promise<ApiResult<T>> => {
+      const result = await handler(input)
+      if (result.ok) refreshSessions()
+      return result
+    }
+  orca.panels.handle('session.send', thenRefresh(sessions.send))
+  orca.panels.handle('session.confirm', thenRefresh(sessions.confirm))
+  orca.panels.handle('session.interrupt', thenRefresh(sessions.interrupt))
   orca.panels.handle('session.create', sessions.create)
-  orca.panels.handle('session.raiseBudget', sessions.raiseBudget)
+  orca.panels.handle('session.raiseBudget', thenRefresh(sessions.raiseBudget))
   orca.panels.handle('session.detail', sessions.detail)
   orca.panels.handle('diagnostics.testSpend', sessions.testSpend)
 

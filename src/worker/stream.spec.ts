@@ -78,9 +78,11 @@ function recordingSink() {
   const threads: Array<{ sessionId: string; rows: ThreadRow[]; previews: Array<{ id: string; text: string }>; hasEarlier?: boolean }> = []
   const states: StreamState[] = []
   const usages: Array<{ cost: Money | null; budget: Money | null }> = []
+  const statusChanges: Array<{ sessionId: string; type: string }> = []
   const logs: string[] = []
   const waiters: Array<() => void> = []
   const sink: WatchSink = {
+    statusChanged: (sessionId, type) => statusChanges.push({ sessionId, type }),
     thread: (payload) => {
       threads.push(payload)
       waiters.splice(0).forEach((wake) => wake())
@@ -101,7 +103,7 @@ function recordingSink() {
   const postedIds = () => threads.flatMap((post) => post.rows.map((row) => row.id))
   const phases = (): StreamPhase[] => states.map((state) => state.phase)
   const closed = () => until(() => states.at(-1)?.phase === 'closed')
-  return { sink, threads, states, usages, logs, until, postedIds, phases, closed }
+  return { sink, threads, states, usages, statusChanges, logs, until, postedIds, phases, closed }
 }
 
 const immediate = async () => {}
@@ -230,6 +232,37 @@ test('reports usage from the stream', async () => {
   await recorder.closed()
   expect(recorder.usages).toEqual([
     { cost: { minor: '250', currency: 'USD' }, budget: { minor: '5000', currency: 'USD' } }
+  ])
+})
+
+test('reports each session status event from the stream, not from the history', async () => {
+  const { source } = fakeSource({
+    history: [[{ id: 'h1', type: 'session.status_running', processed_at: T }]],
+    streams: [
+      () =>
+        emit(
+          { id: 's1', type: 'session.status_running', processed_at: T },
+          message('m1'),
+          { id: 's2', type: 'session.status_rescheduled', processed_at: T },
+          {
+            id: 's3',
+            type: 'session.status_idle',
+            processed_at: T,
+            stop_details: null,
+            stop_reason: { type: 'end_turn' }
+          },
+          { id: 's4', type: 'session.status_terminated', processed_at: T }
+        )
+    ]
+  })
+  const recorder = recordingSink()
+  createWatcher(source, recorder.sink, options).watch(SESSION)
+  await recorder.closed()
+  expect(recorder.statusChanges).toEqual([
+    { sessionId: SESSION, type: 'session.status_running' },
+    { sessionId: SESSION, type: 'session.status_rescheduled' },
+    { sessionId: SESSION, type: 'session.status_idle' },
+    { sessionId: SESSION, type: 'session.status_terminated' }
   ])
 })
 

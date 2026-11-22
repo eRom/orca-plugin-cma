@@ -39,8 +39,16 @@ export type WatchSink = {
   thread(payload: { sessionId: string; rows: ThreadRow[]; previews: Preview[]; hasEarlier?: boolean }): void
   state(payload: StreamState): void
   usage(sessionId: string, cost: Money | null, budget: Money | null): void
+  /** Un changement de statut vu sur le flux en direct (jamais sur la relecture de l'historique). */
+  statusChanged(sessionId: string, type: StatusEventType): void
   log(message: string): void
 }
+
+export type StatusEventType =
+  | 'session.status_running'
+  | 'session.status_idle'
+  | 'session.status_rescheduled'
+  | 'session.status_terminated'
 
 export type Watcher = {
   watch(sessionId: string): WatchAnswer
@@ -186,6 +194,13 @@ export function createWatcher(source: EventSource, sink: WatchSink, options: Wat
         watch.previewsDirty = true
       } else if (event.type === 'session.usage') {
         sink.usage(watch.sessionId, toMoney(event.usage.list_cost), toMoney(event.budget?.max_list_cost))
+      } else if (
+        event.type === 'session.status_running' ||
+        event.type === 'session.status_idle' ||
+        event.type === 'session.status_rescheduled' ||
+        event.type === 'session.status_terminated'
+      ) {
+        sink.statusChanged(watch.sessionId, event.type)
       }
       enqueue(watch, applyEvent(watch.thread, event))
     }

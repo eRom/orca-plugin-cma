@@ -301,3 +301,57 @@ test('a turn from before a restart publishes, writes and arms nothing', async ()
   expect(h.poller.snapshot().map((row) => row.id)).toEqual(['sesn_new'])
   h.poller.stop()
 })
+
+test('a refresh asked during a turn in flight runs one trailing turn that sees the change', async () => {
+  const h = harness({ sessions: [fakeSession({ id: 'sesn_a', status: 'running' })] })
+  let release: () => void = () => {}
+  h.state.hold = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  // Premier tour retenu : il lira `running`.
+  const first = h.poller.refresh()
+  await settle()
+  expect(h.calls.list).toBe(1)
+  // La session passe `idle` pendant le tour ; deux appels simultanés partagent le tour de rattrapage.
+  h.state.sessions = [fakeSession({ id: 'sesn_a', status: 'idle' })]
+  const second = h.poller.refresh()
+  const third = h.poller.refresh()
+  release()
+  await first
+  const seen = await second
+  await third
+  expect(h.calls.list).toBe(2)
+  expect(seen.map((row) => row.status)).toEqual(['idle'])
+  expect(h.poller.snapshot().map((row) => row.status)).toEqual(['idle'])
+})
+
+test('a shared refresh joins the turn in flight without a trailing turn', async () => {
+  const h = harness({ sessions: [fakeSession({ id: 'sesn_a', status: 'running' })] })
+  let release: () => void = () => {}
+  h.state.hold = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const first = h.poller.refresh()
+  await settle()
+  const joined = h.poller.refresh({ shared: true })
+  release()
+  await Promise.all([first, joined])
+  expect(h.calls.list).toBe(1)
+})
+
+test('a trailing turn queued before a stop is dropped', async () => {
+  const h = harness({ sessions: [fakeSession({ id: 'sesn_a', status: 'running' })] })
+  let release: () => void = () => {}
+  h.state.hold = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  h.poller.start()
+  await settle()
+  const queued = h.poller.refresh()
+  h.poller.stop()
+  release()
+  await queued
+  await settle()
+  expect(h.calls.list).toBe(1)
+  expect(h.poller.snapshot()).toEqual([])
+})
