@@ -1,7 +1,7 @@
 // État du panneau : pile de navigation, réglages de l'accueil, avis d'erreur et identité du
 // workspace. Les atomes `persist: 'plugin'` survivent à un redémarrage du module du panneau.
-import { atom, plugin, set } from 'orca'
-import type { ApiResult, ConfigKind, WorkspaceInfo } from '../protocol'
+import { atom, plugin, read, set } from 'orca'
+import type { ApiResult, ConfigKind, SessionRow, WorkspaceInfo } from '../protocol'
 
 export type NavEntry =
   | { view: 'home' }
@@ -58,4 +58,26 @@ export function run(action: () => Promise<void>): void {
 
 export async function loadWorkspace(): Promise<void> {
   set(workspace, await plugin.request('workspace.info'))
+}
+
+/** Les sessions telles que le worker les voit (le worker les pousse par `sessions.changed`) ; null avant la première lecture. */
+export const sessionRows = atom<SessionRow[] | null>('sessions.rows', null)
+
+/**
+ * Lit la liste des sessions. Sans clé utilisable, il n'y a rien à lire. Un 401 est l'état « clé
+ * refusée » : on relit l'identité du workspace, qui remontre le formulaire.
+ */
+export async function loadSessions(): Promise<void> {
+  const info = read(workspace)
+  if (!info?.hasKey || info.keyRejected) {
+    return
+  }
+  const result = await plugin.request('sessions.list')
+  if (result.ok) {
+    set(sessionRows, result.value)
+  } else if (result.code === 'unauthorized') {
+    await loadWorkspace()
+  } else {
+    set(notice, result.error)
+  }
 }

@@ -1,7 +1,27 @@
-// Accueil du panneau. Pour l'instant : la section « Anthropic workspace » (clé et identité).
-// Les sections Configurations et Sessions arrivent avec les tâches suivantes.
-import { atom, Button, Callout, Collapsible, Input, Link, plugin, read, Row, set, Stack, Text, update } from 'orca'
-import { run, sectionsOpen, workspace } from './state'
+// Accueil du panneau : les sections « Anthropic workspace » (clé et identité) et « Sessions ».
+// La section Configurations arrive avec une tâche suivante.
+import {
+  atom,
+  Badge,
+  Button,
+  Callout,
+  Collapsible,
+  Input,
+  Link,
+  List,
+  ListItem,
+  plugin,
+  read,
+  Row,
+  set,
+  Spinner,
+  Stack,
+  Text,
+  update
+} from 'orca'
+import { formatMoney } from '../shared/money'
+import { badgeLabel, badgeTone, sortSessions } from '../shared/sessions'
+import { loadSessions, nav, pushView, run, sectionsOpen, sessionRows, workspace } from './state'
 
 const keyDraft = atom('')
 const KEY_REJECTED = 'The API key was rejected (401).'
@@ -11,6 +31,9 @@ async function saveKey(): Promise<void> {
   if (result.ok) {
     set(keyDraft, '')
     set(workspace, result.value)
+    // Les sessions de l'ancienne clé ne valent plus rien : on relit celles de la nouvelle.
+    set(sessionRows, null)
+    await loadSessions()
     return
   }
   // Le worker a supprimé la clé refusée ; le brouillon reste, pour être corrigé sans tout retaper.
@@ -24,6 +47,7 @@ async function saveKey(): Promise<void> {
 
 async function forgetKey(): Promise<void> {
   set(workspace, await plugin.request('key.clear'))
+  set(sessionRows, null)
 }
 
 function KeyForm({ rejected }: { rejected: boolean }) {
@@ -70,6 +94,45 @@ function WorkspaceLine() {
   )
 }
 
+function SessionsSection() {
+  const loaded = read(sessionRows)
+  const rows = sortSessions(loaded ?? [])
+  return (
+    <Collapsible
+      title="Sessions"
+      open={read(sectionsOpen).sessions}
+      onChange={(next) => update(sectionsOpen, (current) => ({ ...current, sessions: next }))}
+    >
+      <Stack gap="sm">
+        {/* `Collapsible.title` n'accepte qu'une chaîne : le bouton est la première ligne du corps. */}
+        <Button icon="add" onPress={() => update(nav, (stack) => pushView(stack, { view: 'newSession' }))}>
+          New session
+        </Button>
+        {loaded === null ? (
+          <Spinner label="Loading sessions" />
+        ) : rows.length === 0 ? (
+          <Text muted size="sm">
+            No sessions yet.
+          </Text>
+        ) : (
+          <List label="Sessions">
+            {rows.map((row) => (
+              <ListItem
+                key={row.id}
+                title={row.title ?? row.id}
+                description={[row.agentName, formatMoney(row.cost)].filter(Boolean).join(' · ')}
+                onPress={() => update(nav, (stack) => pushView(stack, { view: 'session', sessionId: row.id }))}
+              >
+                <Badge tone={badgeTone(row.badge)}>{badgeLabel(row.badge)}</Badge>
+              </ListItem>
+            ))}
+          </List>
+        )}
+      </Stack>
+    </Collapsible>
+  )
+}
+
 export function Home() {
   const info = read(workspace)
   if (!info) {
@@ -87,6 +150,7 @@ export function Home() {
       >
         {needsKey ? <KeyForm rejected={info.keyRejected} /> : <WorkspaceLine />}
       </Collapsible>
+      {needsKey ? null : <SessionsSection />}
     </Stack>
   )
 }
