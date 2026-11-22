@@ -118,20 +118,27 @@ export function toSessionDetail(
   }
 }
 
+type Client = Awaited<ReturnType<ClientStore['get']>>
+
 /** Le nom de l'environnement est un complément : son échec ne fait pas perdre le détail. */
-async function readDetail(
-  client: Awaited<ReturnType<ClientStore['get']>>,
-  sessionId: string,
-  idleOf: IdleLookup
-): Promise<SessionDetail> {
-  const session = await client.beta.sessions.retrieve(sessionId)
+async function detailOf(client: Client, session: BetaManagedAgentsSession, idleOf: IdleLookup): Promise<SessionDetail> {
   const environmentName = await client.beta.environments.retrieve(session.environment_id).then(
     (environment) => environment.name,
     () => null
   )
   // Le classement `idle` vient du sondeur : sans lui, le badge suit le statut.
-  return toSessionDetail(session, environmentName, idleOf(sessionId))
+  return toSessionDetail(session, environmentName, idleOf(session.id))
 }
+
+async function readDetail(client: Client, sessionId: string, idleOf: IdleLookup): Promise<SessionDetail> {
+  return detailOf(client, await client.beta.sessions.retrieve(sessionId), idleOf)
+}
+
+/**
+ * Une session est facturée : le SDK ne réessaie jamais seul un envoi ou une création dont la réponse
+ * se perd (un nouvel essai après un délai dépassé dupliquerait le message ou la session).
+ */
+const NO_RETRY = { maxRetries: 0 } as const
 
 /** Le classement `idle` que le sondeur connaît d'une session ; null quand il n'en a pas. */
 export type IdleLookup = (sessionId: string) => IdleClassification | null
@@ -155,45 +162,52 @@ export function createSessionHandlers(store: ClientStore, idleOf: IdleLookup = (
   return {
     send: ({ sessionId, text }) =>
       attempt(store, async (client) => {
-        await client.beta.sessions.events.send(sessionId, {
-          events: [{ type: 'user.message', content: [{ type: 'text', text }] }]
-        })
+        await client.beta.sessions.events.send(
+          sessionId,
+          { events: [{ type: 'user.message', content: [{ type: 'text', text }] }] },
+          NO_RETRY
+        )
         return null
       }),
 
     confirm: ({ sessionId, toolUseId, allow, denyMessage }) =>
       attempt(store, async (client) => {
         const message = denyMessage?.trim()
-        await client.beta.sessions.events.send(sessionId, {
-          events: [
-            {
-              type: 'user.tool_confirmation',
-              tool_use_id: toolUseId,
-              result: allow ? 'allow' : 'deny',
-              // L'API n'accepte `deny_message` que sur un refus.
-              ...(!allow && message ? { deny_message: message } : {})
-            }
-          ]
-        })
+        await client.beta.sessions.events.send(
+          sessionId,
+          {
+            events: [
+              {
+                type: 'user.tool_confirmation',
+                tool_use_id: toolUseId,
+                result: allow ? 'allow' : 'deny',
+                // L'API n'accepte `deny_message` que sur un refus.
+                ...(!allow && message ? { deny_message: message } : {})
+              }
+            ]
+          },
+          NO_RETRY
+        )
         return null
       }),
 
     interrupt: ({ sessionId }) =>
       attempt(store, async (client) => {
-        await client.beta.sessions.events.send(sessionId, { events: [{ type: 'user.interrupt' }] })
+        await client.beta.sessions.events.send(sessionId, { events: [{ type: 'user.interrupt' }] }, NO_RETRY)
         return null
       }),
 
     create: (input) =>
       attempt(store, async (client) => {
-        const session = await client.beta.sessions.create(toCreateParams(input))
+        const session = await client.beta.sessions.create(toCreateParams(input), NO_RETRY)
         return { sessionId: session.id }
       }),
 
     raiseBudget: ({ sessionId, dollars }) =>
       attempt(store, async (client) => {
-        await client.beta.sessions.update(sessionId, { budget: budgetOf(dollars) })
-        return readDetail(client, sessionId, idleOf)
+        // Le détail part de la session rendue par la mise à jour : une relecture ratée ne dirait pas échec d'un relèvement réussi.
+        const updated = await client.beta.sessions.update(sessionId, { budget: budgetOf(dollars) })
+        return detailOf(client, updated, idleOf)
       }),
 
     detail: ({ sessionId }) => attempt(store, (client) => readDetail(client, sessionId, idleOf)),

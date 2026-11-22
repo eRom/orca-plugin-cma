@@ -10,6 +10,8 @@ import { ERROR_TEXT_LIMIT_BYTES, nav, popView, pushView, run } from './state'
 
 /** Plafond d'un nom dans le libellé du bouton : un libellé de plus de 1 Kio fait refuser le rendu. */
 const LABEL_NAME_LIMIT_BYTES = 80
+/** Délai d'une création de session : plus long que le défaut d'Orca, la première lecture d'un agent peut traîner. */
+const CREATE_TIMEOUT_MS = 120_000
 
 const options = atom<CreateFormOptions | null>(null)
 const agentId = atom('')
@@ -84,15 +86,20 @@ async function createSession(budgetOverride: 'typed' | 'none'): Promise<void> {
   set(failure, null)
   set(notBudgetable, null)
   try {
-    const result = await plugin.request('session.create', {
-      agentId: agent,
-      environmentId: environment,
-      title: read(title).trim() || null,
-      vaultIds: read(vaultIds).filter((id) => form.vaults.some((row) => row.id === id)),
-      memoryStoreIds: read(memoryStoreIds).filter((id) => form.memoryStores.some((row) => row.id === id)),
-      budgetDollars: budgetOverride === 'none' || typedBudget === '' ? null : typedBudget,
-      firstMessage: read(firstMessage).trim() || null
-    })
+    // Le worker ne réessaie jamais seul une création (facturée) : on laisse au premier essai le temps de finir.
+    const result = await plugin.request(
+      'session.create',
+      {
+        agentId: agent,
+        environmentId: environment,
+        title: read(title).trim() || null,
+        vaultIds: read(vaultIds).filter((id) => form.vaults.some((row) => row.id === id)),
+        memoryStoreIds: read(memoryStoreIds).filter((id) => form.memoryStores.some((row) => row.id === id)),
+        budgetDollars: budgetOverride === 'none' || typedBudget === '' ? null : typedBudget,
+        firstMessage: read(firstMessage).trim() || null
+      },
+      { timeoutMs: CREATE_TIMEOUT_MS }
+    )
     if (!result.ok) {
       if (result.code === 'model_not_budgetable') {
         set(notBudgetable, clipBytes(result.error, ERROR_TEXT_LIMIT_BYTES).text)

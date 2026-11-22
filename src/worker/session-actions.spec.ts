@@ -301,3 +301,54 @@ test('detail reuses the poller classification, bounded by the cost against the b
   const afterRaise = await createSessionHandlers(detailStore(raised).store, () => reached).detail({ sessionId: 'sesn_1' })
   expect(afterRaise.ok && afterRaise.value.badge).toBe('idle')
 })
+
+test('raiseBudget builds the detail from the updated session, without a second read of it', async () => {
+  const raised = fakeSession({
+    status: 'idle',
+    usage: { list_cost: { amount: '50', currency: 'USD' } },
+    budget: { type: 'limit', max_list_cost: { amount: '100', currency: 'USD' } }
+  } as never)
+  const { store, calls } = detailStore(raised)
+  const result = await createSessionHandlers(store, () => ({ badge: 'budget_reached', pendingApprovals: 0 })).raiseBudget({
+    sessionId: 'sesn_1',
+    dollars: '1.00'
+  })
+  expect(calls.update).toEqual([{ budget: { type: 'limit', max_list_cost: { amount: '100', currency: 'USD' } } }])
+  expect(calls.retrieve).toBe(0)
+  expect(result.ok && result.value.budget?.minor).toBe('100')
+  expect(result.ok && result.value.badge).toBe('idle')
+  expect(result.ok && result.value.environmentName).toBe('Sandbox')
+})
+
+test('raiseBudget still reports success when the environment name cannot be read', async () => {
+  const { store } = detailStore(fakeSession({ status: 'idle' }), 'fails')
+  const result = await createSessionHandlers(store).raiseBudget({ sessionId: 'sesn_1', dollars: '1.00' })
+  expect(result.ok && result.value.environmentName).toBe(null)
+})
+
+// Une session est facturée : un nouvel essai automatique du SDK après un délai dépassé dupliquerait la facturation.
+test('billed calls never retry on their own', async () => {
+  const optionsSeen: unknown[] = []
+  const client = {
+    beta: {
+      sessions: {
+        create: async (_params: unknown, options: unknown) => {
+          optionsSeen.push(options)
+          return { id: 'sesn_new' }
+        },
+        events: {
+          send: async (_id: string, _params: unknown, options: unknown) => {
+            optionsSeen.push(options)
+          }
+        }
+      }
+    }
+  }
+  const store = { get: async () => client, reset() {}, hasKey: async () => true } as unknown as ClientStore
+  const handlers = createSessionHandlers(store)
+  await handlers.create(baseInput)
+  await handlers.send({ sessionId: 's', text: 'hi' })
+  await handlers.confirm({ sessionId: 's', toolUseId: 't', allow: true, denyMessage: null })
+  await handlers.interrupt({ sessionId: 's' })
+  expect(optionsSeen).toEqual([{ maxRetries: 0 }, { maxRetries: 0 }, { maxRetries: 0 }, { maxRetries: 0 }])
+})
