@@ -1,9 +1,19 @@
+import http from 'node:http'
+import type { AddressInfo } from 'node:net'
 import Anthropic from '@anthropic-ai/sdk'
 import type { BetaManagedAgentsSession } from '@anthropic-ai/sdk/resources/beta/sessions/sessions'
 import { expect, test } from 'bun:test'
 import { SESSION_CREATE_WAIT_MS, type SessionCreateInput } from '../protocol'
-import { describeError, type ClientStore } from './client'
-import { CONFIRM_UNCONFIRMED, createSessionHandlers, SEND_UNCONFIRMED, toCreateParams, toSessionDetail, toSessionRow } from './session-actions'
+import { createClientStore, describeError, type ClientStore } from './client'
+import {
+  CONFIRM_UNCONFIRMED,
+  CREATE_UNCONFIRMED,
+  createSessionHandlers,
+  SEND_UNCONFIRMED,
+  toCreateParams,
+  toSessionDetail,
+  toSessionRow
+} from './session-actions'
 
 const baseInput: SessionCreateInput = {
   agentId: 'agent_x',
@@ -446,6 +456,24 @@ test('create bounds the whole request with an abort signal', async () => {
   expect(seen.timeout).toBe(90_000)
 })
 
+// Un signal qui n'expire jamais passerait le test ci-dessus : la durée demandée à `AbortSignal.timeout` est vérifiée ici.
+test('the create abort signal expires before the panel stops waiting', async () => {
+  const requested: number[] = []
+  const original = AbortSignal.timeout
+  AbortSignal.timeout = (milliseconds: number) => {
+    requested.push(milliseconds)
+    return original.call(AbortSignal, milliseconds)
+  }
+  try {
+    const store = creatingStore(async () => ({ id: 'sesn_new' }))
+    await createSessionHandlers(store).create(baseInput)
+  } finally {
+    AbortSignal.timeout = original
+  }
+  expect(requested).toEqual([90_000])
+  expect((requested[0] ?? Infinity) < SESSION_CREATE_WAIT_MS).toBe(true)
+})
+
 test('create gives each call its own abort signal', async () => {
   const signals: unknown[] = []
   const store = creatingStore(async (_params, options) => {
@@ -458,7 +486,7 @@ test('create gives each call its own abort signal', async () => {
   expect(signals[0] === signals[1]).toBe(false)
 })
 
-// Le signal qui expire pendant la lecture du corps lève une `APIUserAbortError`, pas une `APIConnectionError`.
+// Le signal qui expire avant l'arrivée des en-têtes lève une `APIUserAbortError` (`client.js` du SDK).
 test('a creation aborted by its signal warns that the session may exist', async () => {
   const store = creatingStore(async () => {
     throw new Anthropic.APIUserAbortError()
@@ -474,6 +502,110 @@ test('a creation aborted while reading the body warns that the session may exist
   })
   const result = await createSessionHandlers(store).create(baseInput)
   expect(!result.ok && result.error.includes('sessions list')).toBe(true)
+})
+
+// Constaté par la revue : une coupure après les en-têtes remonte une `TypeError` brute, hors de toute classe du SDK.
+test('a creation cut off by a raw network error warns that the session may exist', async () => {
+  const store = creatingStore(async () => {
+    throw new TypeError('terminated')
+  })
+  const result = await createSessionHandlers(store).create(baseInput)
+  expect(!result.ok && result.error.includes('sessions list')).toBe(true)
+})
+
+test('an invalid budget keeps its own message and sends nothing', async () => {
+  let sent = false
+  const store = creatingStore(async () => {
+    sent = true
+    return { id: 'sesn_new' }
+  })
+  const result = await createSessionHandlers(store).create({ ...baseInput, budgetDollars: 'abc' })
+  expect(sent).toBe(false)
+  expect(!result.ok && result.error.includes('may still have been created')).toBe(false)
+  expect(!result.ok && result.error.includes('budget')).toBe(true)
+})
+
+test('a missing key stays a missing key on create', async () => {
+  const store = createClientStore({ get: async () => null } as never)
+  const result = await createSessionHandlers(store).create(baseInput)
+  expect(!result.ok && result.code).toBe('no_key')
+})
+
+test('send and confirm report unconfirmed on a raw network error', async () => {
+  const store = sendingStore(async () => {
+    throw new TypeError('terminated')
+  })
+  const handlers = createSessionHandlers(store)
+  expect(await handlers.send({ sessionId: 's', text: 'hi' })).toEqual({ ok: false, code: 'other', error: SEND_UNCONFIRMED })
+  expect(await handlers.confirm({ sessionId: 's', toolUseId: 't', allow: true, denyMessage: null })).toEqual({
+    ok: false,
+    code: 'other',
+    error: CONFIRM_UNCONFIRMED
+  })
+})
+
+// Vrai serveur local, vrai client du SDK : la forme de l'erreur après les en-têtes vient du SDK, pas d'une doublure.
+type Reply = 'reset-mid-body' | 'bad-request'
+
+async function serveReplies(reply: Reply): Promise<{ store: ClientStore; close: () => void }> {
+  const server = http.createServer((request, response) => {
+    request.resume()
+    request.on('end', () => {
+      if (reply === 'bad-request') {
+        response.writeHead(400, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'nope' } }))
+        return
+      }
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.write('{"id":')
+      setTimeout(() => request.socket.destroy(), 50)
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address() as AddressInfo
+  const client = new Anthropic({ apiKey: 'plugin-test-token-QUOKKA-xyz', baseURL: `http://127.0.0.1:${port}` })
+  const store = { get: async () => client, reset() {}, hasKey: async () => true } as unknown as ClientStore
+  return {
+    store,
+    close: () => {
+      server.closeAllConnections()
+      server.close()
+    }
+  }
+}
+
+const CONFIRM_INPUT = { sessionId: 'sesn_x', toolUseId: 'tool_x', allow: true, denyMessage: null }
+
+test('a connection reset after the headers is unconfirmed on create, send and confirm', async () => {
+  const { store, close } = await serveReplies('reset-mid-body')
+  try {
+    const handlers = createSessionHandlers(store)
+    expect(await handlers.create(baseInput)).toEqual({ ok: false, code: 'other', error: CREATE_UNCONFIRMED })
+    expect(await handlers.send({ sessionId: 'sesn_x', text: 'hi' })).toEqual({ ok: false, code: 'other', error: SEND_UNCONFIRMED })
+    expect(await handlers.confirm(CONFIRM_INPUT)).toEqual({ ok: false, code: 'other', error: CONFIRM_UNCONFIRMED })
+  } finally {
+    close()
+  }
+})
+
+// Témoin : un refus que le serveur a bel et bien prononcé reste un échec confirmé.
+test('a real 400 from the server stays a confirmed failure on create, send and confirm', async () => {
+  const { store, close } = await serveReplies('bad-request')
+  try {
+    const handlers = createSessionHandlers(store)
+    const results = [
+      await handlers.create(baseInput),
+      await handlers.send({ sessionId: 'sesn_x', text: 'hi' }),
+      await handlers.confirm(CONFIRM_INPUT)
+    ]
+    for (const result of results) {
+      expect(result.ok).toBe(false)
+      expect(!result.ok && result.error.startsWith('API error 400')).toBe(true)
+      expect(!result.ok && [CREATE_UNCONFIRMED, SEND_UNCONFIRMED, CONFIRM_UNCONFIRMED].includes(result.error)).toBe(false)
+    }
+  } finally {
+    close()
+  }
 })
 
 // CONSTRUITS d'après la doc (https://platform.claude.com/docs/en/managed-agents/budgets), jamais capturés :

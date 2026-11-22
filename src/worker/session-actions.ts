@@ -155,7 +155,7 @@ const NO_RETRY = { maxRetries: 0 } as const
 const CREATE_TIMEOUT_MS = 90_000
 const CREATE_OPTIONS = { ...NO_RETRY, timeout: CREATE_TIMEOUT_MS } as const
 
-const CREATE_UNCONFIRMED =
+export const CREATE_UNCONFIRMED =
   'The API did not confirm the creation. The session may still have been created: check the sessions list before trying again.'
 
 /** Un envoi dont la réponse se perd a pu partir : le dire évite que la personne renvoie le même message. */
@@ -163,16 +163,15 @@ export const SEND_UNCONFIRMED = 'The message may have been sent: check the threa
 export const CONFIRM_UNCONFIRMED = 'Your answer may have been sent: check the thread.'
 
 /**
- * Le signal expiré pendant la lecture du corps remonte brut (une `DOMException`), non enveloppé par le SDK :
- * constaté par la sonde `docs/superpowers/runs/lot2/t1-create-probe.ts`.
+ * Une fois la requête partie, seule une réponse du serveur (une `APIError` au `status` numérique) prouve qu'elle
+ * a échoué. Tout le reste (connexion coupée, délai, signal expiré, erreur brute du fetch) laisse un doute : le SDK
+ * 1.8.0 n'enveloppe en `APIConnectionError` que les échecs avant les en-têtes, une coupure pendant le corps
+ * remonte brute (`TypeError`, `DOMException`). Le doute devient le message « non confirmé », la cause est gardée.
  */
-function isSignalAbort(error: unknown): boolean {
-  return error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')
-}
-
-/** Une connexion coupée après l'envoi ne dit pas que la requête a échoué : l'erreur devient le message « non confirmé ». */
-function unconfirmedOnConnectionError(error: unknown, message: string): unknown {
-  return error instanceof Anthropic.APIConnectionError ? new Error(message) : error
+function unconfirmedUnlessAnswered(error: unknown, message: string): unknown {
+  return error instanceof Anthropic.APIError && typeof error.status === 'number'
+    ? error
+    : new Error(message, { cause: error })
 }
 
 /** Le classement `idle` que le sondeur connaît d'une session ; null quand il n'en a pas. */
@@ -204,7 +203,7 @@ export function createSessionHandlers(store: ClientStore, idleOf: IdleLookup = (
             NO_RETRY
           )
         } catch (error) {
-          throw unconfirmedOnConnectionError(error, SEND_UNCONFIRMED)
+          throw unconfirmedUnlessAnswered(error, SEND_UNCONFIRMED)
         }
         return null
       }),
@@ -229,7 +228,7 @@ export function createSessionHandlers(store: ClientStore, idleOf: IdleLookup = (
             NO_RETRY
           )
         } catch (error) {
-          throw unconfirmedOnConnectionError(error, CONFIRM_UNCONFIRMED)
+          throw unconfirmedUnlessAnswered(error, CONFIRM_UNCONFIRMED)
         }
         return null
       }),
@@ -242,24 +241,18 @@ export function createSessionHandlers(store: ClientStore, idleOf: IdleLookup = (
 
     create: (input) =>
       attempt(store, async (client) => {
+        // Hors du `try` : une saisie invalide n'a rien envoyé, son message ne doit jamais dire « peut exister ».
+        const params = toCreateParams(input)
         try {
-          const session = await client.beta.sessions.create(toCreateParams(input), {
+          const session = await client.beta.sessions.create(params, {
             ...CREATE_OPTIONS,
             signal: AbortSignal.timeout(CREATE_TIMEOUT_MS)
           })
           return { sessionId: session.id }
         } catch (error) {
-          // Un délai dépassé, une connexion coupée ou le signal expiré en lisant le corps ne disent pas que la
-          // création a échoué : la requête a pu aboutir côté API. Une fausse alerte coûte un coup d'œil à la liste,
-          // un faux échec une session en double.
-          if (
-            error instanceof Anthropic.APIConnectionError ||
-            error instanceof Anthropic.APIUserAbortError ||
-            isSignalAbort(error)
-          ) {
-            throw new Error(CREATE_UNCONFIRMED)
-          }
-          throw error
+          // Sans réponse du serveur, la requête a pu aboutir côté API. Une fausse alerte coûte un coup d'œil à la
+          // liste, un faux échec une session en double.
+          throw unconfirmedUnlessAnswered(error, CREATE_UNCONFIRMED)
         }
       }),
 
