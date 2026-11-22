@@ -144,11 +144,12 @@ const NO_RETRY = { maxRetries: 0 } as const
 /**
  * Une création abandonne bien avant que le panneau cesse d'attendre (SESSION_CREATE_WAIT_MS) : sinon il
  * rend la main pendant que l'appel court encore, la personne relance, et deux sessions sont facturées.
+ * Limite : le SDK 1.8.0 arrête ce délai à l'arrivée des en-têtes, la lecture du corps n'est pas bornée.
  */
 const CREATE_OPTIONS = { ...NO_RETRY, timeout: 90_000 } as const
 
-const CREATE_TIMED_OUT =
-  'The API did not answer in time. The session may still have been created: check the sessions list before trying again.'
+const CREATE_UNCONFIRMED =
+  'The API did not confirm the creation. The session may still have been created: check the sessions list before trying again.'
 
 /** Le classement `idle` que le sondeur connaît d'une session ; null quand il n'en a pas. */
 export type IdleLookup = (sessionId: string) => IdleClassification | null
@@ -213,8 +214,9 @@ export function createSessionHandlers(store: ClientStore, idleOf: IdleLookup = (
           const session = await client.beta.sessions.create(toCreateParams(input), CREATE_OPTIONS)
           return { sessionId: session.id }
         } catch (error) {
-          // Un délai dépassé ne dit pas que la création a échoué : la requête a pu aboutir côté API.
-          if (error instanceof Anthropic.APIConnectionTimeoutError) throw new Error(CREATE_TIMED_OUT)
+          // Un délai dépassé ou une connexion coupée ne dit pas que la création a échoué : la requête a pu
+          // aboutir côté API. Une fausse alerte coûte un coup d'œil à la liste, un faux échec une session en double.
+          if (error instanceof Anthropic.APIConnectionError) throw new Error(CREATE_UNCONFIRMED)
           throw error
         }
       }),

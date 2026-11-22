@@ -61,7 +61,7 @@ import {
 
 type ToolRow = Extract<ThreadRow, { kind: 'tool' }>
 
-/** Plafond du titre de l'en-tête : un titre de l'API peut être long, et un texte trop lourd fait refuser le rendu. */
+/** Plafond du titre de l'en-tête : un titre de l'API peut être long, l'en-tête reste lisible dans un panneau étroit. */
 const HEADER_TITLE_LIMIT_BYTES = 300
 
 const TOOL_STATE_LABELS: Record<ToolState, string> = {

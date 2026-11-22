@@ -380,6 +380,15 @@ test('a timed-out creation warns that the session may exist', async () => {
   expect(!result.ok && result.error.includes('sessions list')).toBe(true)
 })
 
+// Une connexion coupée après l'envoi est aussi ambiguë qu'un délai dépassé : la session a pu être créée.
+test('a creation cut off mid-request warns that the session may exist', async () => {
+  const store = creatingStore(async () => {
+    throw new Anthropic.APIConnectionError({ message: 'other side closed' })
+  })
+  const result = await createSessionHandlers(store).create(baseInput)
+  expect(!result.ok && result.error.includes('sessions list')).toBe(true)
+})
+
 // CONSTRUITS d'après la doc (https://platform.claude.com/docs/en/managed-agents/budgets), jamais capturés :
 // seuls les messages y sont documentés, le corps réel de ces refus reste inconnu.
 test('maps the documented model_not_budgetable message', () => {

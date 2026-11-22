@@ -1,7 +1,9 @@
 import { assert, mockHost, mount, test } from 'orca/testing'
 import type { SessionDetail, SessionRow, StreamState, ThreadRow, ToolState } from '../protocol'
 import * as panel from '../panel'
+import { set } from 'orca'
 import { restoreOpenSession } from './session-view'
+import { sending, sessionNotice } from './state'
 
 const WITH_KEY = {
   hasKey: true,
@@ -465,6 +467,21 @@ test('keeps the typed message when the open session is reopened behind it', asyn
   const field = view.find({ label: 'Message' })
   assert.ok(field)
   assert.equal(view.valueOf(field), 'Half-written thought')
+  await view.unmount()
+})
+
+// Un envoi encore en route au moment de la réouverture garde Send bloqué, et l'erreur affichée reste :
+// sans elle, le texte gardé inviterait à renvoyer un message peut-être déjà facturé.
+test('keeps the send guard and the notice when the open session is reopened', async () => {
+  const host = mockHost({ requests: requests([message('m1')]) as never })
+  const view = await mount(panel, { host, persisted: OPEN_S1 })
+  await view.type({ label: 'Message' }, 'Pending message')
+  set(sending, true)
+  set(sessionNotice, 'Worker unavailable')
+  await restoreOpenSession()
+  await view.settled()
+  assert.equal(view.find({ role: 'button', text: 'Send' })?.disabled, true)
+  assert.ok(view.find({ text: /Worker unavailable/ }))
   await view.unmount()
 })
 
