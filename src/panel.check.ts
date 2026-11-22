@@ -121,9 +121,11 @@ export default defineCheck({
     kind: 'vault',
     id: 'vlt_check',
     name: 'GitHub',
+    updatedAt: '2026-11-22T10:00:00Z',
+    form: { name: 'GitHub' },
     credentials: [
-      { id: 'vcrd_a', name: 'GitHub OAuth', type: 'mcp_oauth', mcpServerUrl: 'https://api.githubcopilot.com/mcp/', expiresAt: '2027-01-01T00:00:00Z' },
-      { id: 'vcrd_b', name: 'DEPLOY_TOKEN', type: 'environment_variable', mcpServerUrl: null, expiresAt: null }
+      { id: 'vcrd_a', name: 'GitHub OAuth', type: 'mcp_oauth', mcpServerUrl: 'https://api.githubcopilot.com/mcp/', expiresAt: '2027-01-01T00:00:00Z', updatedAt: '2026-11-22T10:00:00Z', form: null },
+      { id: 'vcrd_b', name: 'DEPLOY_TOKEN', type: 'environment_variable', mcpServerUrl: null, expiresAt: null, updatedAt: '2026-11-22T10:00:00Z', form: null }
     ]
   }),
   'session with approval': sessionScenario({

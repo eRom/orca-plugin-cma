@@ -36,7 +36,7 @@ import {
 } from '../protocol'
 import { clipBytes } from '../shared/text'
 import { attempt, type ClientStore } from './client'
-import { toEnvironmentForm } from './config-writes'
+import { toCredentialForm, toEnvironmentForm } from './config-writes'
 
 type ConfigObjects = {
   agent: BetaManagedAgentsAgent
@@ -235,7 +235,7 @@ export function toEnvironmentDetail(env: BetaEnvironment): EnvironmentDetail {
   }
 }
 
-/** Un identifiant sans secret : seuls le type, le nom, l'URL du serveur MCP et l'expiration passent. */
+/** Un identifiant sans secret : seuls le type, le nom, l'URL du serveur MCP, l'expiration, l'horodatage et le formulaire (secrets vides) passent. */
 function toCredentialRow(credential: BetaManagedAgentsCredential): CredentialRow {
   const { auth } = credential
   const fallbackName = auth.type === 'environment_variable' ? auth.secret_name : auth.mcp_server_url
@@ -244,7 +244,9 @@ function toCredentialRow(credential: BetaManagedAgentsCredential): CredentialRow
     name: credential.display_name || fallbackName,
     type: auth.type,
     mcpServerUrl: auth.type === 'environment_variable' ? null : auth.mcp_server_url,
-    expiresAt: auth.type === 'mcp_oauth' ? (auth.expires_at ?? null) : null
+    expiresAt: auth.type === 'mcp_oauth' ? (auth.expires_at ?? null) : null,
+    updatedAt: credential.updated_at,
+    form: toCredentialForm(credential)
   }
 }
 
@@ -253,6 +255,8 @@ export function toVaultDetail(vault: BetaManagedAgentsVault, credentials: BetaMa
     kind: 'vault',
     id: vault.id,
     name: vault.display_name,
+    updatedAt: vault.updated_at,
+    form: { name: vault.display_name },
     credentials: credentials.filter((credential) => !credential.archived_at).map(toCredentialRow)
   }
 }

@@ -259,8 +259,20 @@ test('maps the vault credentials without a secret', () => {
     name: 'GitHub',
     type: 'mcp_oauth',
     mcpServerUrl: 'https://api.githubcopilot.com/mcp',
-    expiresAt: '2026-11-22T13:56:49Z'
+    expiresAt: '2026-11-22T13:56:49Z',
+    updatedAt: '2026-11-22T05:56:49.664790Z',
+    // Un identifiant OAuth ne se modifie pas ici : pas de formulaire.
+    form: null
   })
+})
+
+test('the vault detail carries the update stamp and the name form', () => {
+  const detail = toVaultDetail(vault, credentials)
+  expect(detail.updatedAt).toBe('2026-11-22T05:55:36.200138Z')
+  expect(detail.form).toEqual({ name: 'Incident commander vault' })
+  for (const row of detail.credentials) {
+    expect(row.form).toBe(null)
+  }
 })
 
 test('never exposes credential secrets', () => {
@@ -313,15 +325,39 @@ test('maps bearer and environment variable credentials and skips archived ones',
       auth: {
         type: 'environment_variable',
         secret_name: 'SENTRY_DSN',
-        injection_location: { type: 'environment_variable' },
-        networking: { type: 'unrestricted' }
+        injection_location: { header: true, body: false },
+        networking: { type: 'limited', allowed_hosts: ['example.test'] }
       }
     } as unknown as BetaManagedAgentsCredential,
     { ...base, id: 'vcrd_old', archived_at: '2026-11-22T10:00:00Z' }
   ])
+  const stamp = '2026-11-22T05:56:49.664790Z'
   expect(detail.credentials).toEqual([
-    { id: 'vcrd_bearer', name: 'https://example.test/mcp', type: 'static_bearer', mcpServerUrl: 'https://example.test/mcp', expiresAt: null },
-    { id: 'vcrd_env', name: 'SENTRY_DSN', type: 'environment_variable', mcpServerUrl: null, expiresAt: null }
+    {
+      id: 'vcrd_bearer',
+      name: 'https://example.test/mcp',
+      type: 'static_bearer',
+      mcpServerUrl: 'https://example.test/mcp',
+      expiresAt: null,
+      updatedAt: stamp,
+      form: { type: 'static_bearer', name: '', mcpServerUrl: 'https://example.test/mcp', token: '' }
+    },
+    {
+      id: 'vcrd_env',
+      name: 'SENTRY_DSN',
+      type: 'environment_variable',
+      mcpServerUrl: null,
+      expiresAt: null,
+      updatedAt: stamp,
+      form: {
+        type: 'environment_variable',
+        name: '',
+        secretName: 'SENTRY_DSN',
+        secretValue: '',
+        network: { mode: 'limited', allowedHosts: ['example.test'] },
+        injection: { header: true, body: false }
+      }
+    }
   ])
 })
 

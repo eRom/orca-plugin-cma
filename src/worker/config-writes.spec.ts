@@ -1,18 +1,31 @@
 import type { BetaEnvironment } from '@anthropic-ai/sdk/resources/beta/environments/environments'
+import type { BetaManagedAgentsCredential } from '@anthropic-ai/sdk/resources/beta/vaults/credentials'
+import type { BetaManagedAgentsVault } from '@anthropic-ai/sdk/resources/beta/vaults/vaults'
 import { expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
-import { PACKAGE_MANAGERS, type EnvironmentForm, type ResourceRef, type SaveInput } from '../protocol'
+import {
+  PACKAGE_MANAGERS,
+  type CredentialForm,
+  type EnvironmentForm,
+  type ResourceRef,
+  type SaveInput,
+  type VaultForm
+} from '../protocol'
 import type { ClientStore } from './client'
 import {
   CONFLICT_MESSAGE,
   createWriteHandlers,
+  credentialCreateParams,
+  credentialUpdateParams,
   environmentCreateParams,
   environmentUpdateParams,
   isStale,
   metadataPatch,
+  toCredentialForm,
   toEnvironmentForm
 } from './config-writes'
 import { toEnvironmentDetail } from './configs'
+import { validateCredentialForm } from '../shared/credential-rules'
 import { metadataTextProblem, validateEnvironmentForm } from '../shared/environment-rules'
 
 // Les fixtures sont des réponses réelles de l'API (capturées le 22/11), chargées sans `resolveJsonModule`.
@@ -21,6 +34,53 @@ function fixture<T>(name: string): T {
 }
 
 const environment = fixture<BetaEnvironment>('environment')
+const vault = fixture<BetaManagedAgentsVault>('vault')
+const oauthCredentials = fixture<BetaManagedAgentsCredential[]>('credentials')
+
+// Le jeton de test : forme non hexadécimale, jamais écrit dans un fichier de preuve.
+const TOKEN = 'plugin-test-token-QUOKKA'
+
+// SYNTHÉTIQUES : le coffre de test n'a que des identifiants OAuth.
+function bearerCredential(over: Partial<BetaManagedAgentsCredential> = {}): BetaManagedAgentsCredential {
+  return {
+    ...oauthCredentials[0],
+    id: 'vcrd_bearer',
+    display_name: 'Bearer',
+    updated_at: 'cred-stamp',
+    auth: { type: 'static_bearer', mcp_server_url: 'https://example.com/mcp' },
+    ...over
+  } as BetaManagedAgentsCredential
+}
+
+function variableCredential(): BetaManagedAgentsCredential {
+  return {
+    ...bearerCredential(),
+    id: 'vcrd_var',
+    display_name: 'Variable',
+    auth: {
+      type: 'environment_variable',
+      secret_name: 'PLUGIN_TEST_VAR',
+      injection_location: { header: true, body: false },
+      networking: { type: 'limited', allowed_hosts: ['example.com'] }
+    }
+  } as unknown as BetaManagedAgentsCredential
+}
+
+function bearerForm(over: Partial<Extract<CredentialForm, { type: 'static_bearer' }>> = {}): CredentialForm {
+  return { type: 'static_bearer', name: 'Bearer', mcpServerUrl: 'https://example.com/mcp', token: TOKEN, ...over }
+}
+
+function variableForm(over: Partial<Extract<CredentialForm, { type: 'environment_variable' }>> = {}): CredentialForm {
+  return {
+    type: 'environment_variable',
+    name: 'Variable',
+    secretName: 'PLUGIN_TEST_VAR',
+    secretValue: 'plugin-test-secret',
+    network: { mode: 'limited', allowedHosts: ['example.com'] },
+    injection: { header: true, body: false },
+    ...over
+  }
+}
 
 const noPackages = { apt: [], cargo: [], gem: [], go: [], npm: [], pip: [] }
 
@@ -205,9 +265,13 @@ test('isStale compares the update stamp unless the save is forced', () => {
 // Faux client : note chaque appel (méthode et arguments) et sert l'environnement donné.
 type Call = { method: string; args: unknown[] }
 
-function fakeStore(options: { current?: BetaEnvironment; fail?: Error } = {}) {
+function fakeStore(
+  options: { current?: BetaEnvironment; fail?: Error; vault?: BetaManagedAgentsVault; credential?: BetaManagedAgentsCredential } = {}
+) {
   const calls: Call[] = []
   const current = options.current ?? environment
+  const currentVault = options.vault ?? vault
+  const currentCredential = options.credential ?? bearerCredential()
   const record =
     (method: string, result: unknown = {}) =>
     async (...args: unknown[]) => {
@@ -228,7 +292,18 @@ function fakeStore(options: { current?: BetaEnvironment; fail?: Error } = {}) {
         retrieve: record('environments.retrieve', current),
         update: record('environments.update', { ...current, updated_at: 'updated-stamp' })
       },
-      vaults: { ...family('vaults'), credentials: family('credentials') },
+      vaults: {
+        ...family('vaults'),
+        create: record('vaults.create', { ...currentVault, id: 'vlt_new', updated_at: 'created-stamp' }),
+        retrieve: record('vaults.retrieve', currentVault),
+        update: record('vaults.update', { ...currentVault, updated_at: 'updated-stamp' }),
+        credentials: {
+          ...family('credentials'),
+          create: record('credentials.create', { ...currentCredential, id: 'vcrd_new', updated_at: 'created-stamp' }),
+          retrieve: record('credentials.retrieve', currentCredential),
+          update: record('credentials.update', { ...currentCredential, updated_at: 'updated-stamp' })
+        }
+      },
       memoryStores: { ...family('memoryStores'), memories: { delete: record('memories.delete') } },
       sessions: family('sessions')
     }
@@ -394,4 +469,228 @@ test('saveEnvironment sends only the packages when only the packages changed', a
   const update = calls.find((call) => call.method === 'environments.update')
   const body = update?.args[1] as { config?: Record<string, unknown> }
   expect(Object.keys(body.config ?? {})).toEqual(['type', 'packages'])
+})
+
+test('toCredentialForm maps no OAuth credential and never carries a secret', () => {
+  expect(oauthCredentials.length).toBe(4)
+  for (const credential of oauthCredentials) {
+    expect(toCredentialForm(credential)).toBe(null)
+  }
+  expect(toCredentialForm(bearerCredential())).toEqual({
+    type: 'static_bearer',
+    name: 'Bearer',
+    mcpServerUrl: 'https://example.com/mcp',
+    token: ''
+  })
+  expect(toCredentialForm(bearerCredential({ display_name: null }))).toEqual({
+    type: 'static_bearer',
+    name: '',
+    mcpServerUrl: 'https://example.com/mcp',
+    token: ''
+  })
+  expect(toCredentialForm(variableCredential())).toEqual({
+    type: 'environment_variable',
+    name: 'Variable',
+    secretName: 'PLUGIN_TEST_VAR',
+    secretValue: '',
+    network: { mode: 'limited', allowedHosts: ['example.com'] },
+    injection: { header: true, body: false }
+  })
+})
+
+test('validateCredentialForm reports each rule with its exact message', () => {
+  expect(validateCredentialForm(bearerForm({ token: '' }), true)).toBe('Enter the token.')
+  expect(validateCredentialForm(bearerForm({ token: '   ' }), true)).toBe('Enter the token.')
+  expect(validateCredentialForm(variableForm({ secretValue: '' }), true)).toBe('Enter the value.')
+  expect(validateCredentialForm(bearerForm({ mcpServerUrl: ' ' }), true)).toBe('Enter the MCP server URL.')
+  expect(validateCredentialForm(variableForm({ secretName: '' }), true)).toBe('Enter the variable name.')
+  const seventeen = Array.from({ length: 17 }, (_, index) => `host${index}.example.com`)
+  expect(validateCredentialForm(variableForm({ network: { mode: 'limited', allowedHosts: seventeen } }), true)).toBe(
+    'At most 16 allowed hosts.'
+  )
+  expect(validateCredentialForm(variableForm({ injection: { header: false, body: false } }), true)).toBe(
+    'Inject the value in a header, the body, or both.'
+  )
+  expect(validateCredentialForm(variableForm({ injection: { header: false, body: true } }), true)).toBe(null)
+  // À la modification, un secret vide veut dire « inchangé ».
+  expect(validateCredentialForm(bearerForm({ token: '' }), false)).toBe(null)
+  expect(validateCredentialForm(variableForm({ secretValue: '' }), false)).toBe(null)
+  expect(validateCredentialForm(bearerForm(), true)).toBe(null)
+})
+
+test('credentialCreateParams trims the bearer token, the URL and the name', () => {
+  const params = credentialCreateParams(
+    bearerForm({ token: `  ${TOKEN}\n`, mcpServerUrl: ' https://example.com/mcp ', name: '  Bearer ' })
+  )
+  expect(params).toEqual({
+    display_name: 'Bearer',
+    auth: { type: 'static_bearer', mcp_server_url: 'https://example.com/mcp', token: TOKEN }
+  })
+  expect(credentialCreateParams(bearerForm({ name: ' ' })).display_name).toBe(undefined)
+})
+
+test('credentialCreateParams sends the variable with its network and injection', () => {
+  expect(credentialCreateParams(variableForm({ network: { mode: 'limited', allowedHosts: [' example.com ', ''] } }))).toEqual({
+    display_name: 'Variable',
+    auth: {
+      type: 'environment_variable',
+      secret_name: 'PLUGIN_TEST_VAR',
+      secret_value: 'plugin-test-secret',
+      networking: { type: 'limited', allowed_hosts: ['example.com'] },
+      injection_location: { header: true, body: false }
+    }
+  })
+  const open = credentialCreateParams(variableForm({ network: { mode: 'unrestricted' } }))
+  expect((open.auth as { networking: unknown }).networking).toEqual({ type: 'unrestricted' })
+})
+
+test('credentialUpdateParams sends no auth when only the name changed and the token is empty', () => {
+  const base = bearerForm({ token: '' })
+  const params = credentialUpdateParams(bearerForm({ token: '', name: 'x' }), base)
+  expect(params).toEqual({ display_name: 'x' })
+  expect('auth' in params).toBe(false)
+  expect(credentialUpdateParams(base, base)).toEqual({})
+  expect(credentialUpdateParams(bearerForm({ token: '', name: '' }), base)).toEqual({ display_name: null })
+})
+
+test('credentialUpdateParams sends a typed token and never the immutable URL', () => {
+  const base = bearerForm({ token: '' })
+  expect(credentialUpdateParams(bearerForm({ token: ` ${TOKEN} ` }), base)).toEqual({
+    auth: { type: 'static_bearer', token: TOKEN }
+  })
+  expect(credentialUpdateParams(bearerForm({ token: '', mcpServerUrl: 'https://other.example/mcp' }), base)).toEqual({})
+})
+
+test('credentialUpdateParams sends only the changed part of a variable', () => {
+  const base = variableForm({ secretValue: '' })
+  expect(credentialUpdateParams(variableForm({ secretValue: '' }), base)).toEqual({})
+  expect(credentialUpdateParams(variableForm({ secretValue: 'new' }), base)).toEqual({
+    auth: { type: 'environment_variable', secret_value: 'new' }
+  })
+  expect(
+    credentialUpdateParams(variableForm({ secretValue: '', network: { mode: 'limited', allowedHosts: ['example.com', 'b.example.com'] } }), base)
+  ).toEqual({
+    auth: { type: 'environment_variable', networking: { type: 'limited', allowed_hosts: ['example.com', 'b.example.com'] } }
+  })
+  expect(credentialUpdateParams(variableForm({ secretValue: '', injection: { header: true, body: true } }), base)).toEqual({
+    auth: { type: 'environment_variable', injection_location: { header: true, body: true } }
+  })
+  expect(credentialUpdateParams(variableForm({ secretValue: '', secretName: 'OTHER' }), base)).toEqual({})
+})
+
+function vaultInput(over: Partial<SaveInput<VaultForm>> = {}): SaveInput<VaultForm> {
+  return { id: vault.id, baseUpdatedAt: vault.updated_at, force: false, form: { name: 'renamed' }, base: { name: vault.display_name }, ...over }
+}
+
+test('saveVault creates a vault and returns its id and stamp', async () => {
+  const { handlers, calls } = fakeStore()
+  const result = await handlers.saveVault(vaultInput({ id: null, baseUpdatedAt: null, base: null, form: { name: ' plugin-test-vault-t5 ' } }))
+  expect(result).toEqual({ ok: true, value: { id: 'vlt_new', updatedAt: 'created-stamp' } })
+  expect(calls).toEqual([{ method: 'vaults.create', args: [{ display_name: 'plugin-test-vault-t5' }] }])
+})
+
+test('saveVault renames with the matching stamp, refuses a stale one, and forces on request', async () => {
+  const fresh = fakeStore()
+  expect(await fresh.handlers.saveVault(vaultInput())).toEqual({ ok: true, value: { id: vault.id, updatedAt: 'updated-stamp' } })
+  expect(fresh.calls.find((call) => call.method === 'vaults.update')?.args).toEqual([vault.id, { display_name: 'renamed' }])
+
+  const moved = fakeStore({ vault: { ...vault, updated_at: 'moved' } })
+  expect(await moved.handlers.saveVault(vaultInput())).toEqual({ ok: false, code: 'conflict', error: CONFLICT_MESSAGE })
+  expect(moved.calls.map((call) => call.method)).toEqual(['vaults.retrieve'])
+
+  const forced = fakeStore({ vault: { ...vault, updated_at: 'moved' } })
+  expect((await forced.handlers.saveVault(vaultInput({ force: true }))).ok).toBe(true)
+  expect(forced.calls.some((call) => call.method === 'vaults.update')).toBe(true)
+})
+
+test('saveVault rejects a blank name and an update without a loaded form, with no network call', async () => {
+  const { handlers, calls } = fakeStore()
+  expect(await handlers.saveVault(vaultInput({ form: { name: ' ' } }))).toEqual({ ok: false, code: 'invalid', error: 'A name is required.' })
+  const noBase = await handlers.saveVault(vaultInput({ base: null }))
+  expect(!noBase.ok && noBase.code).toBe('invalid')
+  expect(calls).toEqual([])
+})
+
+test('saveVault writes nothing when the name did not change', async () => {
+  const { handlers, calls } = fakeStore()
+  const result = await handlers.saveVault(vaultInput({ form: { name: vault.display_name } }))
+  expect(result).toEqual({ ok: true, value: { id: vault.id, updatedAt: vault.updated_at } })
+  expect(calls.map((call) => call.method)).toEqual(['vaults.retrieve'])
+})
+
+function credentialInput(over: Partial<SaveInput<CredentialForm> & { vaultId: string }> = {}): SaveInput<CredentialForm> & { vaultId: string } {
+  const base = bearerForm({ token: '' })
+  return {
+    vaultId: vault.id,
+    id: 'vcrd_bearer',
+    baseUpdatedAt: 'cred-stamp',
+    force: false,
+    form: bearerForm({ token: TOKEN }),
+    base,
+    ...over
+  }
+}
+
+test('saveCredential creates a bearer in its vault and the result carries no secret', async () => {
+  const { handlers, calls, logs } = fakeStore()
+  const result = await handlers.saveCredential(credentialInput({ id: null, baseUpdatedAt: null, base: null }))
+  expect(result).toEqual({ ok: true, value: { id: 'vcrd_new', updatedAt: 'created-stamp' } })
+  expect(calls[0]?.method).toBe('credentials.create')
+  expect(calls[0]?.args[0]).toBe(vault.id)
+  expect((calls[0]?.args[1] as { auth: { token: string } }).auth.token).toBe(TOKEN)
+  expect(JSON.stringify(result).includes(TOKEN)).toBe(false)
+  expect(logs.join('\n').includes(TOKEN)).toBe(false)
+})
+
+test('saveCredential replaces the token on a matching stamp and sends the vault id', async () => {
+  const { handlers, calls } = fakeStore()
+  const result = await handlers.saveCredential(credentialInput())
+  expect(result).toEqual({ ok: true, value: { id: 'vcrd_bearer', updatedAt: 'updated-stamp' } })
+  expect(calls[0]).toEqual({ method: 'credentials.retrieve', args: ['vcrd_bearer', { vault_id: vault.id }] })
+  expect(calls[1]).toEqual({
+    method: 'credentials.update',
+    args: ['vcrd_bearer', { vault_id: vault.id, auth: { type: 'static_bearer', token: TOKEN } }]
+  })
+})
+
+test('saveCredential refuses a stale stamp unless forced, and writes nothing when nothing changed', async () => {
+  const moved = fakeStore({ credential: bearerCredential({ updated_at: 'moved' }) })
+  expect(await moved.handlers.saveCredential(credentialInput())).toEqual({ ok: false, code: 'conflict', error: CONFLICT_MESSAGE })
+  expect(moved.calls.map((call) => call.method)).toEqual(['credentials.retrieve'])
+
+  const forced = fakeStore({ credential: bearerCredential({ updated_at: 'moved' }) })
+  expect((await forced.handlers.saveCredential(credentialInput({ force: true }))).ok).toBe(true)
+
+  const same = fakeStore()
+  const unchanged = await same.handlers.saveCredential(credentialInput({ form: bearerForm({ token: '' }) }))
+  expect(unchanged).toEqual({ ok: true, value: { id: 'vcrd_bearer', updatedAt: 'cred-stamp' } })
+  expect(same.calls.map((call) => call.method)).toEqual(['credentials.retrieve'])
+})
+
+test('saveCredential rejects an invalid form, a missing base and a type change, with no network call', async () => {
+  const { handlers, calls } = fakeStore()
+  expect(await handlers.saveCredential(credentialInput({ id: null, baseUpdatedAt: null, base: null, form: bearerForm({ token: '' }) }))).toEqual({
+    ok: false,
+    code: 'invalid',
+    error: 'Enter the token.'
+  })
+  expect((await handlers.saveCredential(credentialInput({ base: null }))).ok).toBe(false)
+  const typeChange = await handlers.saveCredential(credentialInput({ form: variableForm() }))
+  expect(!typeChange.ok && typeChange.code).toBe('invalid')
+  expect(calls).toEqual([])
+})
+
+test('saveCredential never leaks the secret through an API failure or the log', async () => {
+  for (const secretValue of [TOKEN, 'plugin-test-secret']) {
+    const form = secretValue === TOKEN ? bearerForm() : variableForm()
+    const { handlers, logs } = fakeStore({ fail: new Error(`Rejected value ${secretValue} for the credential`) })
+    const result = await handlers.saveCredential(credentialInput({ id: null, baseUpdatedAt: null, base: null, form }))
+    expect(result).toEqual({ ok: false, code: 'other', error: 'Rejected value [secret] for the credential' })
+    expect(logs).toEqual(['credential.save failed: Rejected value [secret] for the credential'])
+  }
+  // Même échec à la modification (le garde `retrieve` lève avant l'écriture).
+  const update = fakeStore({ fail: new Error(`bad ${TOKEN}`) })
+  const failed = await update.handlers.saveCredential(credentialInput())
+  expect(JSON.stringify(failed).includes(TOKEN)).toBe(false)
+  expect(update.logs.join('\n').includes(TOKEN)).toBe(false)
 })

@@ -159,6 +159,8 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
 
   const writes = createWriteHandlers(store, (message) => orca.log(message))
   orca.panels.handle('environment.save', writes.saveEnvironment)
+  orca.panels.handle('vault.save', writes.saveVault)
+  orca.panels.handle('credential.save', writes.saveCredential)
   // Archiver ou supprimer une session change la liste que le sondeur porte : on la relit sans attendre.
   const thenRefreshSessions =
     (handler: (ref: ResourceRef) => Promise<ApiResult<null>>) =>

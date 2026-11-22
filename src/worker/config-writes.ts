@@ -9,16 +9,29 @@ import type {
   EnvironmentUpdateParams
 } from '@anthropic-ai/sdk/resources/beta/environments/environments'
 import type {
+  BetaManagedAgentsCredential,
+  BetaManagedAgentsCredentialNetworkingParams,
+  CredentialCreateParams,
+  CredentialUpdateParams
+} from '@anthropic-ai/sdk/resources/beta/vaults/credentials'
+import type {
   ApiResult,
+  CredentialForm,
+  CredentialNetworkForm,
   EnvironmentForm,
   KeyValueItem,
   PackageLists,
   ResourceRef,
   SaveInput,
-  Saved
+  Saved,
+  VaultForm
 } from '../protocol'
+import { validateCredentialForm } from '../shared/credential-rules'
 import { cleaned, validateEnvironmentForm } from '../shared/environment-rules'
 import { attempt, failure, type ClientStore } from './client'
+
+// La règle vit dans `shared/` pour que le panneau la lise aussi ; elle reste importable d'ici.
+export { validateCredentialForm }
 
 export const CONFLICT_MESSAGE = 'Changed elsewhere since you opened it.'
 
@@ -146,6 +159,92 @@ export function environmentUpdateParams(form: EnvironmentForm, base: Environment
   return params
 }
 
+/** Le formulaire d'un identifiant ; null pour `mcp_oauth`, qui ne se modifie pas ici. Aucun secret n'en sort. */
+export function toCredentialForm(credential: BetaManagedAgentsCredential): CredentialForm | null {
+  const { auth } = credential
+  const name = credential.display_name ?? ''
+  switch (auth.type) {
+    case 'static_bearer':
+      return { type: 'static_bearer', name, mcpServerUrl: auth.mcp_server_url, token: '' }
+    case 'environment_variable':
+      return {
+        type: 'environment_variable',
+        name,
+        secretName: auth.secret_name,
+        secretValue: '',
+        network:
+          auth.networking.type === 'limited'
+            ? { mode: 'limited', allowedHosts: [...auth.networking.allowed_hosts] }
+            : { mode: 'unrestricted' },
+        injection: { header: auth.injection_location.header, body: auth.injection_location.body }
+      }
+    default:
+      return null
+  }
+}
+
+function credentialNetworking(network: CredentialNetworkForm): BetaManagedAgentsCredentialNetworkingParams {
+  return network.mode === 'limited'
+    ? { type: 'limited', allowed_hosts: cleaned(network.allowedHosts) }
+    : { type: 'unrestricted' }
+}
+
+/** À la création, le secret et l'URL partent coupés aux bords : un collage traîne souvent un retour à la ligne. */
+export function credentialCreateParams(form: CredentialForm): CredentialCreateParams {
+  const name = form.name.trim()
+  return {
+    ...(name !== '' && { display_name: name }),
+    auth:
+      form.type === 'static_bearer'
+        ? { type: 'static_bearer', mcp_server_url: form.mcpServerUrl.trim(), token: form.token.trim() }
+        : {
+            type: 'environment_variable',
+            secret_name: form.secretName.trim(),
+            secret_value: form.secretValue.trim(),
+            networking: credentialNetworking(form.network),
+            injection_location: { header: form.injection.header, body: form.injection.body }
+          }
+  }
+}
+
+/** La partie `auth` d'une modification, ou null quand rien d'elle ne change. L'URL et le nom de variable sont immuables. */
+function credentialAuthUpdate(form: CredentialForm, base: CredentialForm): CredentialUpdateParams['auth'] | null {
+  if (form.type === 'static_bearer') {
+    const token = form.token.trim()
+    return token === '' ? null : { type: 'static_bearer', token }
+  }
+  const secret = form.secretValue.trim()
+  const previous = base.type === 'environment_variable' ? base : null
+  const networkChanged =
+    !previous || JSON.stringify(credentialNetworking(form.network)) !== JSON.stringify(credentialNetworking(previous.network))
+  const injectionChanged =
+    !previous || form.injection.header !== previous.injection.header || form.injection.body !== previous.injection.body
+  if (secret === '' && !networkChanged && !injectionChanged) {
+    return null
+  }
+  return {
+    type: 'environment_variable',
+    ...(secret !== '' && { secret_value: secret }),
+    ...(networkChanged && { networking: credentialNetworking(form.network) }),
+    ...(injectionChanged && { injection_location: { header: form.injection.header, body: form.injection.body } })
+  }
+}
+
+/** Seul ce qui diffère de `base` part ; un secret vide n'est jamais envoyé, il garde l'ancien. */
+export function credentialUpdateParams(form: CredentialForm, base: CredentialForm): Omit<CredentialUpdateParams, 'vault_id'> {
+  const params: Omit<CredentialUpdateParams, 'vault_id'> = {}
+  const name = form.name.trim()
+  if (name !== base.name.trim()) {
+    // Un nom vidé se dit par `null`.
+    params.display_name = name === '' ? null : name
+  }
+  const auth = credentialAuthUpdate(form, base)
+  if (auth) {
+    params.auth = auth
+  }
+  return params
+}
+
 /** Vrai quand l'objet a bougé depuis son ouverture ; un enregistrement forcé passe. */
 export function isStale(currentUpdatedAt: string, input: { baseUpdatedAt: string | null; force: boolean }): boolean {
   return !input.force && currentUpdatedAt !== input.baseUpdatedAt
@@ -153,6 +252,8 @@ export function isStale(currentUpdatedAt: string, input: { baseUpdatedAt: string
 
 export type WriteHandlers = {
   saveEnvironment(input: SaveInput<EnvironmentForm>): Promise<ApiResult<Saved>>
+  saveVault(input: SaveInput<VaultForm>): Promise<ApiResult<Saved>>
+  saveCredential(input: SaveInput<CredentialForm> & { vaultId: string }): Promise<ApiResult<Saved>>
   archive(ref: ResourceRef): Promise<ApiResult<null>>
   remove(ref: ResourceRef): Promise<ApiResult<null>>
 }
@@ -246,6 +347,83 @@ export function createWriteHandlers(store: ClientStore, log: (message: string) =
     }
   }
 
+  async function saveVault(input: SaveInput<VaultForm>): Promise<ApiResult<Saved>> {
+    const name = input.form.name.trim()
+    if (name === '') {
+      return invalid('A name is required.')
+    }
+    const { id, base } = input
+    if (id === null) {
+      return attempt(store, async (client) => {
+        const created = await client.beta.vaults.create({ display_name: name })
+        return { id: created.id, updatedAt: created.updated_at }
+      })
+    }
+    if (base === null) {
+      return invalid('The loaded version is missing.')
+    }
+    try {
+      const client = await store.get()
+      const current = await client.beta.vaults.retrieve(id)
+      if (isStale(current.updated_at, input)) {
+        return { ok: false, code: 'conflict', error: CONFLICT_MESSAGE }
+      }
+      if (name === base.name.trim()) {
+        return { ok: true, value: { id: current.id, updatedAt: current.updated_at } }
+      }
+      const updated = await client.beta.vaults.update(id, { display_name: name })
+      return { ok: true, value: { id: updated.id, updatedAt: updated.updated_at } }
+    } catch (error) {
+      return failure(error)
+    }
+  }
+
+  async function writeCredential(input: SaveInput<CredentialForm> & { vaultId: string }): Promise<ApiResult<Saved>> {
+    const { id, base, vaultId, form } = input
+    const problem = validateCredentialForm(form, id === null)
+    if (problem) {
+      return invalid(problem)
+    }
+    if (id === null) {
+      return attempt(store, async (client) => {
+        const created = await client.beta.vaults.credentials.create(vaultId, credentialCreateParams(form))
+        return { id: created.id, updatedAt: created.updated_at }
+      })
+    }
+    if (base === null) {
+      return invalid('The loaded version is missing.')
+    }
+    if (base.type !== form.type) {
+      return invalid('The credential type cannot change.')
+    }
+    try {
+      const client = await store.get()
+      const current = await client.beta.vaults.credentials.retrieve(id, { vault_id: vaultId })
+      if (isStale(current.updated_at, input)) {
+        return { ok: false, code: 'conflict', error: CONFLICT_MESSAGE }
+      }
+      const params = credentialUpdateParams(form, base)
+      if (Object.keys(params).length === 0) {
+        return { ok: true, value: { id: current.id, updatedAt: current.updated_at } }
+      }
+      const updated = await client.beta.vaults.credentials.update(id, { vault_id: vaultId, ...params })
+      return { ok: true, value: { id: updated.id, updatedAt: updated.updated_at } }
+    } catch (error) {
+      return failure(error)
+    }
+  }
+
+  // Le secret envoyé ne doit pas ressortir dans un message d'erreur de l'API, ni dans le journal.
+  async function saveCredential(input: SaveInput<CredentialForm> & { vaultId: string }): Promise<ApiResult<Saved>> {
+    const result = await writeCredential(input)
+    if (result.ok) {
+      return result
+    }
+    const secret = input.form.type === 'static_bearer' ? input.form.token : input.form.secretValue
+    const variants = [secret, secret.trim()].filter((variant) => variant !== '')
+    return { ...result, error: variants.reduce((text, variant) => text.split(variant).join('[secret]'), result.error) }
+  }
+
   async function archive(ref: ResourceRef): Promise<ApiResult<null>> {
     if (ref.kind === 'memory') {
       return invalid('Memories can only be deleted.')
@@ -268,6 +446,8 @@ export function createWriteHandlers(store: ClientStore, log: (message: string) =
 
   return {
     saveEnvironment: (input) => logged('environment.save', saveEnvironment(input)),
+    saveVault: (input) => logged('vault.save', saveVault(input)),
+    saveCredential: (input) => logged('credential.save', saveCredential(input)),
     archive: (ref) => logged('resource.archive', archive(ref)),
     remove: (ref) => logged('resource.delete', remove(ref))
   }

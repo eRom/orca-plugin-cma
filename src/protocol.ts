@@ -127,15 +127,45 @@ export type MemoryContent = { id: string; memoryStoreId: string; path: string; u
 
 export type CredentialType = 'mcp_oauth' | 'static_bearer' | 'environment_variable'
 
+export type VaultForm = { name: string }
+
+export type CredentialNetworkForm = { mode: 'unrestricted' } | { mode: 'limited'; allowedHosts: string[] }
+
+/**
+ * L'identifiant tel que le formulaire le modifie. `token` et `secretValue` valent '' à la
+ * modification (secret inchangé) ; ils sont obligatoires à la création. Le worker ne rend jamais un secret.
+ */
+export type CredentialForm =
+  | { type: 'static_bearer'; name: string; mcpServerUrl: string; token: string }
+  | {
+      type: 'environment_variable'
+      name: string
+      secretName: string
+      secretValue: string
+      network: CredentialNetworkForm
+      injection: { header: boolean; body: boolean }
+    }
+
 export type CredentialRow = {
   id: string
   name: string
   type: CredentialType
   mcpServerUrl: string | null
   expiresAt: string | null
+  updatedAt: string
+  /** Null pour `mcp_oauth` : ce type ne se modifie pas ici. Les secrets y sont toujours ''. */
+  form: CredentialForm | null
 }
 
-export type VaultDetail = { kind: 'vault'; id: string; name: string; credentials: CredentialRow[] }
+export type VaultDetail = {
+  kind: 'vault'
+  id: string
+  name: string
+  /** Horodatage de la dernière modification : sert à détecter un changement ailleurs avant d'écrire. */
+  updatedAt: string
+  form: VaultForm
+  credentials: CredentialRow[]
+}
 
 export type ConfigDetail = AgentDetail | EnvironmentDetail | MemoryStoreDetail | VaultDetail
 
@@ -272,6 +302,8 @@ declare module 'orca' {
     'session.create': { input: SessionCreateInput; output: ApiResult<{ sessionId: string }> }
     'session.raiseBudget': { input: { sessionId: string; dollars: string }; output: ApiResult<SessionDetail> }
     'environment.save': { input: SaveInput<EnvironmentForm>; output: ApiResult<Saved> }
+    'vault.save': { input: SaveInput<VaultForm>; output: ApiResult<Saved> }
+    'credential.save': { input: SaveInput<CredentialForm> & { vaultId: string }; output: ApiResult<Saved> }
     'resource.archive': { input: ResourceRef; output: ApiResult<null> }
     'resource.delete': { input: ResourceRef; output: ApiResult<null> }
     'createForm.options': { output: ApiResult<CreateFormOptions> }
