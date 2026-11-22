@@ -8,6 +8,7 @@ import type {
   EnvironmentCreateParams,
   EnvironmentUpdateParams
 } from '@anthropic-ai/sdk/resources/beta/environments/environments'
+import type { MemoryStoreUpdateParams } from '@anthropic-ai/sdk/resources/beta/memory-stores/memory-stores'
 import type {
   BetaManagedAgentsCredential,
   BetaManagedAgentsCredentialNetworkingParams,
@@ -20,6 +21,7 @@ import type {
   CredentialNetworkForm,
   EnvironmentForm,
   KeyValueItem,
+  MemoryStoreForm,
   PackageLists,
   ResourceRef,
   SaveInput,
@@ -245,6 +247,18 @@ export function credentialUpdateParams(form: CredentialForm, base: CredentialFor
   return params
 }
 
+/** Seuls le nom et la description qui diffèrent de `base` partent ; une description vidée part en chaîne vide (l'API l'efface ainsi). */
+export function memoryStoreUpdateParams(form: MemoryStoreForm, base: MemoryStoreForm): MemoryStoreUpdateParams {
+  const params: MemoryStoreUpdateParams = {}
+  if (form.name.trim() !== base.name.trim()) {
+    params.name = form.name.trim()
+  }
+  if (form.description !== base.description) {
+    params.description = form.description
+  }
+  return params
+}
+
 /** Vrai quand l'objet a bougé depuis son ouverture ; un enregistrement forcé passe. */
 export function isStale(currentUpdatedAt: string, input: { baseUpdatedAt: string | null; force: boolean }): boolean {
   return !input.force && currentUpdatedAt !== input.baseUpdatedAt
@@ -253,6 +267,7 @@ export function isStale(currentUpdatedAt: string, input: { baseUpdatedAt: string
 export type WriteHandlers = {
   saveEnvironment(input: SaveInput<EnvironmentForm>): Promise<ApiResult<Saved>>
   saveVault(input: SaveInput<VaultForm>): Promise<ApiResult<Saved>>
+  saveMemoryStore(input: SaveInput<MemoryStoreForm>): Promise<ApiResult<Saved>>
   saveCredential(input: SaveInput<CredentialForm> & { vaultId: string }): Promise<ApiResult<Saved>>
   archive(ref: ResourceRef): Promise<ApiResult<null>>
   remove(ref: ResourceRef): Promise<ApiResult<null>>
@@ -382,6 +397,41 @@ export function createWriteHandlers(store: ClientStore, log: (message: string) =
     }
   }
 
+  async function saveMemoryStore(input: SaveInput<MemoryStoreForm>): Promise<ApiResult<Saved>> {
+    const name = input.form.name.trim()
+    if (name === '') {
+      return invalid('A name is required.')
+    }
+    const { id, base } = input
+    if (id === null) {
+      return attempt(store, async (client) => {
+        const created = await client.beta.memoryStores.create({
+          name,
+          ...(input.form.description !== '' && { description: input.form.description })
+        })
+        return { id: created.id, updatedAt: created.updated_at }
+      })
+    }
+    if (base === null) {
+      return invalid('The loaded version is missing.')
+    }
+    try {
+      const client = await store.get()
+      const current = await client.beta.memoryStores.retrieve(id)
+      if (isStale(current.updated_at, input)) {
+        return { ok: false, code: 'conflict', error: CONFLICT_MESSAGE }
+      }
+      const params = memoryStoreUpdateParams(input.form, base)
+      if (Object.keys(params).length === 0) {
+        return { ok: true, value: { id: current.id, updatedAt: current.updated_at } }
+      }
+      const updated = await client.beta.memoryStores.update(id, params)
+      return { ok: true, value: { id: updated.id, updatedAt: updated.updated_at } }
+    } catch (error) {
+      return failure(error)
+    }
+  }
+
   async function writeCredential(input: SaveInput<CredentialForm> & { vaultId: string }): Promise<ApiResult<Saved>> {
     const { id, base, vaultId, form } = input
     const problem = validateCredentialForm(form, id === null)
@@ -464,6 +514,7 @@ export function createWriteHandlers(store: ClientStore, log: (message: string) =
   return {
     saveEnvironment: (input) => logged('environment.save', saveEnvironment(input)),
     saveVault: (input) => logged('vault.save', saveVault(input)),
+    saveMemoryStore: (input) => logged('memoryStore.save', saveMemoryStore(input)),
     saveCredential: (input) => logged('credential.save', saveCredential(input)),
     archive: (ref) => logged('resource.archive', archive(ref)),
     remove: (ref) => logged('resource.delete', remove(ref))

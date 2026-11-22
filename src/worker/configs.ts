@@ -132,12 +132,21 @@ export function toMemoryContent(memory: BetaManagedAgentsMemory): MemoryContent 
     memoryStoreId: memory.memory_store_id,
     path: memory.path,
     updatedAt: memory.updated_at,
+    sha256: memory.content_sha256,
     content: clipBytes(memory.content ?? '', DETAIL_TEXT_LIMIT_BYTES)
   }
 }
 
 export function toMemoryStoreDetail(store: BetaManagedAgentsMemoryStore, memories: MemoryRow[]): MemoryStoreDetail {
-  return { kind: 'memory_store', id: store.id, name: store.name, description: store.description || null, memories }
+  return {
+    kind: 'memory_store',
+    id: store.id,
+    name: store.name,
+    description: store.description || null,
+    updatedAt: store.updated_at,
+    form: { name: store.name, description: store.description ?? '' },
+    memories
+  }
 }
 
 function isBuiltinToolset(tool: BetaManagedAgentsAgent['tools'][number]): tool is BetaManagedAgentsAgentToolset20260401 {

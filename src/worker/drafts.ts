@@ -31,6 +31,11 @@ type MemoryRef = Extract<DraftRef, { kind: 'memory' }>
 
 /** Un type de brouillon : comment le nommer, le lire à l'état actuel, et préparer son écriture. */
 export type DraftAdapter<R extends DraftRef> = {
+  /**
+   * Refus d'une référence avant tout accès au disque ou au réseau : le texte du problème, ou null.
+   * Il revient au panneau en `invalid`.
+   */
+  check?(ref: R): string | null
   /** Chemin du fichier, relatif au dossier de brouillons. */
   file(ref: R): Promise<string>
   readLive(ref: R): Promise<{ text: string; base: DraftBase }>
@@ -53,6 +58,13 @@ export type Drafts = {
    * Ne rejette jamais, l'envoi étant déjà fait : rend false (et journalise) quand le disque refuse.
    */
   rewrite(ref: DraftRef, text: string, base: DraftBase, sent: string): Promise<boolean>
+  /**
+   * Les brouillons du registre dont la référence vérifie `match`, avec leur fichier et leur état. Lecture
+   * seule, sans appel réseau, et hors de la file des opérations : un adaptateur peut l'appeler depuis
+   * `file`, `readLive` ou `prepare` sans bloquer. Un registre illisible se lit comme vide (il n'est mis de
+   * côté que par une vraie opération).
+   */
+  find(match: (ref: DraftRef) => boolean): Promise<{ ref: DraftRef; file: string; unapplied: boolean }[]>
 }
 
 type ReturnTo = { workspaceId: string; name: string }
@@ -81,15 +93,40 @@ const messageOf = (error: unknown): string => (error instanceof Error ? error.me
 
 const refuse = (code: ApiErrorCode, error: string): { ok: false; code: ApiErrorCode; error: string } => ({ ok: false, code, error })
 
-/** Deux références désignent le même brouillon quand tous leurs champs sont égaux. */
-function sameRef(a: DraftRef, b: DraftRef): boolean {
+/**
+ * Deux références désignent le même brouillon. Une mémoire se reconnaît à son id quand les deux en ont un
+ * (son chemin a pu changer par un renommage), sinon à son chemin : une création et la mémoire qu'elle a
+ * produite (l'entrée du registre a pris son id) restent un seul brouillon.
+ */
+export function sameRef(a: DraftRef, b: DraftRef): boolean {
   if (a.kind === 'agent' && b.kind === 'agent') {
     return a.agentId === b.agentId
   }
   if (a.kind === 'memory' && b.kind === 'memory') {
-    return a.memoryStoreId === b.memoryStoreId && a.memoryId === b.memoryId && a.path === b.path
+    if (a.memoryStoreId !== b.memoryStoreId) {
+      return false
+    }
+    return a.memoryId !== null && b.memoryId !== null ? a.memoryId === b.memoryId : a.path === b.path
   }
   return false
+}
+
+/**
+ * La référence à garder dans le registre : celle qui porte l'id d'une mémoire quand une seule en a un.
+ * Un brouillon rouvert par la référence de sa création (sans id) ne fait donc pas oublier la mémoire créée.
+ */
+function recordedRef(known: DraftRef | undefined, ref: DraftRef): DraftRef {
+  return known?.kind === 'memory' && ref.kind === 'memory' && ref.memoryId === null && known.memoryId !== null ? known : ref
+}
+
+/** Le registre lu tel quel ; lève quand son contenu n'est pas un registre. */
+function parseRegistry(raw: Buffer): Registry {
+  const parsed = JSON.parse(raw.toString('utf8')) as Partial<Registry> | null
+  const entries = parsed?.entries
+  if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
+    throw new Error('no entries object')
+  }
+  return { entries, lastReturnTo: parsed.lastReturnTo ?? null }
 }
 
 async function readOrNull(path: string): Promise<Buffer | null> {
@@ -150,12 +187,7 @@ export function createDrafts(deps: {
       return { entries: {}, lastReturnTo: null }
     }
     try {
-      const parsed = JSON.parse(raw.toString('utf8')) as Partial<Registry> | null
-      const entries = parsed?.entries
-      if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
-        throw new Error('no entries object')
-      }
-      return { entries, lastReturnTo: parsed.lastReturnTo ?? null }
+      return parseRegistry(raw)
     } catch (error) {
       // Un registre illisible est mis de côté, jamais jeté : Romain peut y retrouver ce qu'il suivait.
       const aside = `${registryPath}.corrupt-${stamp()}`
@@ -206,7 +238,13 @@ export function createDrafts(deps: {
     returnTo: ReturnTo | null
   ): Promise<RegistryEntry> {
     await writeAtomic(join(folder, file), text)
-    const entry: RegistryEntry = { ref, base, writtenSha256: sha256(text), writtenAt: now().toISOString(), returnTo }
+    const entry: RegistryEntry = {
+      ref: recordedRef(registry.entries[file]?.ref, ref),
+      base,
+      writtenSha256: sha256(text),
+      writtenAt: now().toISOString(),
+      returnTo
+    }
     registry.entries[file] = entry
     await writeRegistry(registry)
     return entry
@@ -214,12 +252,17 @@ export function createDrafts(deps: {
 
   /** Le fichier d'un brouillon (relatif, normalisé), ou le refus quand son nom sort du dossier ou est réservé. */
   async function locate(adapter: DraftAdapter<DraftRef>, ref: DraftRef): Promise<{ file: string } | ReturnType<typeof refuse>> {
+    const problem = adapter.check?.(ref)
+    if (problem) {
+      return refuse('invalid', problem)
+    }
     const file = relative(folder, resolve(folder, await adapter.file(ref)))
     if (file === '' || file === '..' || file.startsWith(`..${sep}`) || isAbsolute(file)) {
       return refuse('other', 'The draft path is outside the drafts folder.')
     }
-    // Le registre, son exemplaire mis de côté et les fichiers temporaires sont à nous.
-    if (file.startsWith(REGISTRY_FILE) || file.endsWith('.tmp')) {
+    // Le registre, son exemplaire mis de côté, les fichiers temporaires et les copies de secours
+    // (`.recovered-`) sont à nous : un brouillon ne s'y ouvre ni ne s'y écrit.
+    if (file.startsWith(REGISTRY_FILE) || file.endsWith('.tmp') || file.includes('.recovered-')) {
       return refuse('other', 'This draft file name is reserved.')
     }
     return { file }
@@ -232,6 +275,25 @@ export function createDrafts(deps: {
   }
 
   return {
+    async find(match) {
+      let entries: Registry['entries']
+      try {
+        const raw = await readOrNull(registryPath)
+        entries = raw === null ? {} : parseRegistry(raw).entries
+      } catch {
+        return []
+      }
+      const found: { ref: DraftRef; file: string; unapplied: boolean }[] = []
+      for (const [file, entry] of Object.entries(entries)) {
+        if (!match(entry.ref)) {
+          continue
+        }
+        const content = await readOrNull(join(folder, file)).catch(() => null)
+        found.push({ ref: entry.ref, file, unapplied: content !== null && sha256(content) !== entry.writtenSha256 })
+      }
+      return found
+    },
+
     async status() {
       try {
         return { folder, ready: (await findWorkspace()) !== null }
@@ -418,7 +480,7 @@ export function createDrafts(deps: {
           // Romain a sauvegardé autre chose pendant l'envoi : son fichier reste, et ce qu'il contient
           // se compare désormais à la nouvelle base, donc reste « non appliqué ».
           registry.entries[file] = {
-            ref,
+            ref: recordedRef(known?.ref, ref),
             base,
             writtenSha256: sha256(text),
             writtenAt: now().toISOString(),

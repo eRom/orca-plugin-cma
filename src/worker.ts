@@ -4,8 +4,9 @@ import type { ApiResult, ResourceRef, SessionRow, ThreadRow, WorkspaceInfo } fro
 import { SECRET_NAME, attempt, createClientStore, describeError, failure, setKey, workspaceInfo } from './worker/client'
 import { createWriteHandlers } from './worker/config-writes'
 import { createConfigHandlers } from './worker/configs'
-import { DRAFTS_FOLDER, createDrafts } from './worker/drafts'
+import { DRAFTS_FOLDER, createDrafts, type Drafts } from './worker/drafts'
 import { createEditorHost } from './worker/editor-host'
+import { createMemoryAdapter, createMemoryRename } from './worker/memory-drafts'
 import { createPendingWrites } from './worker/pending-writes'
 import { createSessionHandlers } from './worker/session-actions'
 import { createPoller, sdkPollSource } from './worker/session-poll'
@@ -163,6 +164,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   const writes = createWriteHandlers(store, (message) => orca.log(message))
   orca.panels.handle('environment.save', writes.saveEnvironment)
   orca.panels.handle('vault.save', writes.saveVault)
+  orca.panels.handle('memoryStore.save', writes.saveMemoryStore)
   orca.panels.handle('credential.save', writes.saveCredential)
   // Archiver ou supprimer une session change la liste que le sondeur porte : on la relit sans attendre.
   const thenRefreshSessions =
@@ -180,16 +182,18 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   const pendingWrites = createPendingWrites(() => Date.now())
   orca.panels.handle('write.commit', ({ token, force }) => pendingWrites.commit(token, force))
 
-  // Les brouillons : un fichier par agent ou mémoire, édité dans l'éditeur d'Orca. Les adaptateurs
-  // arrivent avec les tâches des agents et des mémoires ; sans eux, ces requêtes répondent « Not available yet ».
-  const drafts = createDrafts({
+  // Les brouillons : un fichier par agent ou mémoire, édité dans l'éditeur d'Orca. L'adaptateur des
+  // agents arrive avec sa tâche ; sans lui, leurs requêtes répondent « Not available yet ». Les
+  // adaptateurs reçoivent `drafts` par une fonction : ils servent à le construire.
+  const drafts: Drafts = createDrafts({
     folder: DRAFTS_FOLDER,
     host: createEditorHost(orca.host),
-    adapters: {},
+    adapters: { memory: createMemoryAdapter(store, () => drafts, (message) => orca.log(message)) },
     pending: pendingWrites,
     now: () => new Date(),
     log: (message) => orca.log(message)
   })
+  orca.panels.handle('memory.rename', createMemoryRename(store, () => drafts))
   orca.panels.handle('drafts.status', drafts.status)
   orca.panels.handle('draft.open', drafts.open)
   orca.panels.handle('draft.discard', drafts.discard)

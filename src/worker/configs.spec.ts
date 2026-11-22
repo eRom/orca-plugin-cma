@@ -222,6 +222,8 @@ test('flattens memories', () => {
   expect(detail.name).toBe('orca-memory-001')
   expect(detail.description).toBe('Ceci est un test')
   expect(detail.memories.length).toBe(1)
+  expect(detail.updatedAt).toBe('2026-11-22T07:32:22.451679Z')
+  expect(detail.form).toEqual({ name: 'orca-memory-001', description: 'Ceci est un test' })
 })
 
 // Un `memory_prefix` n'est qu'un marqueur sans id : il ne devient jamais une ligne de mémoire.
@@ -236,7 +238,10 @@ test('drops prefix markers and keeps full nested paths', () => {
 })
 
 test('gives an empty description to a memory store without one', () => {
-  expect(toMemoryStoreDetail({ ...memoryStore, description: '' }, []).description).toBe(null)
+  const detail = toMemoryStoreDetail({ ...memoryStore, description: '' }, [])
+  expect(detail.description).toBe(null)
+  // Le formulaire, lui, porte une chaîne vide : un champ de saisie ne reçoit jamais null.
+  expect(detail.form.description).toBe('')
 })
 
 test('maps a memory with its content clipped', () => {
@@ -245,6 +250,8 @@ test('maps a memory with its content clipped', () => {
   expect(content.id).toBe('mem_019QkfaDRwFebDCcpZEwq2S9')
   expect(content.memoryStoreId).toBe('memstore_014xvEA4PybjSgmsJNaUQVxu')
   expect(content.path).toBe('/SOULD.md')
+  // L'empreinte vient de l'API, jamais du texte tronqué : c'est elle qui garde un renommage.
+  expect(content.sha256).toBe('c7a02334648dd1e3bdf8fdb1725f6e22e4b117faf186e5fda822abb8033af437')
   expect(content.content.truncated).toBe(true)
   expect(toMemoryContent({ ...full, content: null }).content).toEqual({ text: '', truncated: false })
 })

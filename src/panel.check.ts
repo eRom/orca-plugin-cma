@@ -119,6 +119,8 @@ export default defineCheck({
     id: 'memstore_check',
     name: 'Notes',
     description: 'Runbooks of the team.',
+    updatedAt: '2026-11-21T10:00:00Z',
+    form: { name: 'Notes', description: 'Runbooks of the team.' },
     memories: [
       { id: 'mem_a', path: 'runbooks/deploy.md', sizeBytes: 2048, updatedAt: '2026-11-20T10:00:00Z' },
       { id: 'mem_b', path: 'runbooks/rollback.md', sizeBytes: 300, updatedAt: '2026-11-21T10:00:00Z' }

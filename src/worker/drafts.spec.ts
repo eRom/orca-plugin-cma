@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApiResult, DraftRef, PreparedWrite } from '../protocol'
-import { REGISTRY_FILE, createDrafts, slugify, type DraftAdapter, type DraftBase } from './drafts'
+import { REGISTRY_FILE, createDrafts, sameRef, slugify, type DraftAdapter, type DraftBase } from './drafts'
 import type { EditorHost } from './editor-host'
 import { createPendingWrites } from './pending-writes'
 
@@ -459,4 +459,110 @@ test('a draft path is normalised and the registry, its copies and temporary file
   }
   expect(fake.calls.length).toBe(2)
   cleanup()
+})
+
+test('a recovery copy name is reserved too: a path with the .recovered- infix never opens or overwrites a rescue copy', async () => {
+  const names = { value: 'agents/x.yaml.recovered-2026-11-22T10-00-00-000Z' }
+  const { drafts, fake } = setup({ file: () => names.value })
+  for (const reserved of [names.value, 'notes/x.recovered-1/y.yaml', 'notes/x.recovered-1.yaml']) {
+    names.value = reserved
+    expect(await drafts.open(AGENT)).toEqual({ ok: false, code: 'other', error: 'This draft file name is reserved.' })
+    expect(await drafts.discard(AGENT)).toEqual({ ok: false, code: 'other', error: 'This draft file name is reserved.' })
+  }
+  expect(fake.calls).toEqual([])
+  cleanup()
+})
+
+test('an adapter check refuses a ref as invalid before any file or live read, on every entry point', async () => {
+  const folder = tempFolder()
+  const fake = fakeHost(folder)
+  const reads = { count: 0 }
+  const checked: DraftAdapter<AgentRef> = {
+    check: () => 'Nope.',
+    async file() {
+      return 'agents/x.yaml'
+    },
+    async readLive() {
+      reads.count += 1
+      return { text: 'x', base: null }
+    },
+    async prepare() {
+      throw new Error('unreachable')
+    }
+  }
+  const drafts = createDrafts({ folder, host: fake.host, adapters: { agent: checked }, pending: createPendingWrites(() => 0), now: () => new Date(), log: () => {} })
+  const refused = { ok: false, code: 'invalid', error: 'Nope.' }
+  expect(await drafts.open(AGENT)).toEqual(refused)
+  expect(await drafts.state(AGENT)).toEqual(refused)
+  expect(await drafts.prepare(AGENT)).toEqual(refused)
+  expect(await drafts.discard(AGENT)).toEqual(refused)
+  expect(await drafts.rewrite(AGENT, 'x', null, 'x')).toBe(false)
+  expect(reads.count).toBe(0)
+  expect(readdirSync(folder)).toEqual([])
+  cleanup()
+})
+
+test('find lists the registered drafts a predicate keeps, with their file and unapplied state, and never writes', async () => {
+  const second: AgentRef = { kind: 'agent', agentId: 'agent_2' }
+  const { drafts, folder } = setup()
+  expect(await drafts.find(() => true)).toEqual([])
+  await drafts.open(AGENT)
+  await drafts.open(second)
+  writeFileSync(join(folder, FILE), 'name: My edit\n')
+  const registryBefore = readFileSync(join(folder, REGISTRY_FILE), 'utf8')
+  const found = await drafts.find((ref) => ref.kind === 'agent' && ref.agentId === 'agent_1')
+  expect(found).toEqual([{ ref: AGENT, file: FILE, unapplied: true }])
+  const all = await drafts.find(() => true)
+  expect(all.map((entry) => [entry.file, entry.unapplied])).toEqual([
+    [FILE, true],
+    ['agents/agent_2.yaml', false]
+  ])
+  expect(readFileSync(join(folder, REGISTRY_FILE), 'utf8')).toBe(registryBefore)
+  // Un fichier disparu n'est pas un brouillon non appliqué : rien n'y bloquerait plus personne.
+  rmSync(join(folder, FILE))
+  expect((await drafts.find((ref) => ref.kind === 'agent' && ref.agentId === 'agent_1'))[0]?.unapplied).toBe(false)
+  cleanup()
+})
+
+test('find from inside an adapter does not deadlock the draft queue, and ignores an unreadable registry', async () => {
+  const folder = tempFolder()
+  const fake = fakeHost(folder)
+  const seen: number[] = []
+  const holder: { drafts?: ReturnType<typeof createDrafts> } = {}
+  const probing: DraftAdapter<AgentRef> = {
+    async file(ref) {
+      seen.push((await holder.drafts!.find(() => true)).length)
+      return `agents/${ref.agentId}.yaml`
+    },
+    async readLive() {
+      return { text: 'x', base: null }
+    },
+    async prepare() {
+      throw new Error('unreachable')
+    }
+  }
+  holder.drafts = createDrafts({ folder, host: fake.host, adapters: { agent: probing }, pending: createPendingWrites(() => 0), now: () => new Date(), log: () => {} })
+  expect((await holder.drafts.open(AGENT)).ok).toBe(true)
+  writeFileSync(join(folder, REGISTRY_FILE), '{ not json')
+  expect(await holder.drafts.find(() => true)).toEqual([])
+  // La lecture seule ne met rien de côté : le registre abîmé est encore là pour la prochaine opération.
+  expect(readFileSync(join(folder, REGISTRY_FILE), 'utf8')).toBe('{ not json')
+  expect(seen).toEqual([0])
+  cleanup()
+})
+
+test('sameRef compares memories by id when both have one, and by path otherwise', () => {
+  const base = { kind: 'memory' as const, memoryStoreId: 'memstore_1' }
+  // Deux ids : le chemin peut avoir changé (renommage), l'identité reste.
+  expect(sameRef({ ...base, memoryId: 'mem_1', path: '/a.md' }, { ...base, memoryId: 'mem_1', path: '/b.md' })).toBe(true)
+  expect(sameRef({ ...base, memoryId: 'mem_1', path: '/a.md' }, { ...base, memoryId: 'mem_2', path: '/a.md' })).toBe(false)
+  // Une création et la mémoire qu'elle a créée : même chemin, l'un sans id.
+  expect(sameRef({ ...base, memoryId: null, path: '/a.md' }, { ...base, memoryId: 'mem_1', path: '/a.md' })).toBe(true)
+  expect(sameRef({ ...base, memoryId: 'mem_1', path: '/a.md' }, { ...base, memoryId: null, path: '/a.md' })).toBe(true)
+  expect(sameRef({ ...base, memoryId: null, path: '/a.md' }, { ...base, memoryId: 'mem_1', path: '/b.md' })).toBe(false)
+  expect(sameRef({ ...base, memoryId: null, path: '/a.md' }, { ...base, memoryId: null, path: '/a.md' })).toBe(true)
+  expect(sameRef({ ...base, memoryId: null, path: '/a.md' }, { ...base, memoryStoreId: 'memstore_2', memoryId: null, path: '/a.md' })).toBe(false)
+  expect(sameRef(AGENT, { kind: 'agent', agentId: 'agent_1' })).toBe(true)
+  expect(sameRef(AGENT, { kind: 'agent', agentId: 'agent_2' })).toBe(false)
+  expect(sameRef(AGENT, { ...base, memoryId: null, path: '/a.md' })).toBe(false)
 })

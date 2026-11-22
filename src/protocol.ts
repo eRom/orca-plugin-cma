@@ -121,15 +121,32 @@ export type EnvironmentDetail = {
 
 export type MemoryRow = { id: string; path: string; sizeBytes: number; updatedAt: string }
 
+/** La banque telle que le formulaire la modifie. */
+export type MemoryStoreForm = { name: string; description: string }
+
 export type MemoryStoreDetail = {
   kind: 'memory_store'
   id: string
   name: string
   description: string | null
+  /** Horodatage de la dernière modification : sert à détecter un changement ailleurs avant d'écrire. */
+  updatedAt: string
+  form: MemoryStoreForm
   memories: MemoryRow[]
 }
 
-export type MemoryContent = { id: string; memoryStoreId: string; path: string; updatedAt: string; content: ClippedText }
+export type MemoryContent = {
+  id: string
+  memoryStoreId: string
+  path: string
+  updatedAt: string
+  /** Le `content_sha256` de l'API : la base d'un renommage, qui échoue si le contenu a changé entre-temps. */
+  sha256: string
+  content: ClippedText
+}
+
+/** Renommer une mémoire (changer son chemin) ; `baseSha256` est celui que le panneau a lu. */
+export type MemoryRenameInput = { memoryStoreId: string; memoryId: string; path: string; baseSha256: string }
 
 export type CredentialType = 'mcp_oauth' | 'static_bearer' | 'environment_variable'
 
@@ -350,6 +367,8 @@ declare module 'orca' {
     'session.raiseBudget': { input: { sessionId: string; dollars: string }; output: ApiResult<SessionDetail> }
     'environment.save': { input: SaveInput<EnvironmentForm>; output: ApiResult<Saved> }
     'vault.save': { input: SaveInput<VaultForm>; output: ApiResult<Saved> }
+    'memoryStore.save': { input: SaveInput<MemoryStoreForm>; output: ApiResult<Saved> }
+    'memory.rename': { input: MemoryRenameInput; output: ApiResult<Saved> }
     'credential.save': { input: SaveInput<CredentialForm> & { vaultId: string }; output: ApiResult<Saved> }
     'resource.archive': { input: ResourceRef; output: ApiResult<null> }
     'resource.delete': { input: ResourceRef; output: ApiResult<null> }

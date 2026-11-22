@@ -1,5 +1,6 @@
 import type { BetaEnvironment } from '@anthropic-ai/sdk/resources/beta/environments/environments'
 import type { BetaManagedAgentsCredential } from '@anthropic-ai/sdk/resources/beta/vaults/credentials'
+import type { BetaManagedAgentsMemoryStore } from '@anthropic-ai/sdk/resources/beta/memory-stores/memory-stores'
 import type { BetaManagedAgentsVault } from '@anthropic-ai/sdk/resources/beta/vaults/vaults'
 import { expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
@@ -7,6 +8,7 @@ import {
   PACKAGE_MANAGERS,
   type CredentialForm,
   type EnvironmentForm,
+  type MemoryStoreForm,
   type ResourceRef,
   type SaveInput,
   type VaultForm
@@ -35,6 +37,7 @@ function fixture<T>(name: string): T {
 
 const environment = fixture<BetaEnvironment>('environment')
 const vault = fixture<BetaManagedAgentsVault>('vault')
+const memoryStore = fixture<BetaManagedAgentsMemoryStore>('memory-store')
 const oauthCredentials = fixture<BetaManagedAgentsCredential[]>('credentials')
 
 // Le jeton de test : forme non hexadécimale, jamais écrit dans un fichier de preuve.
@@ -266,11 +269,18 @@ test('isStale compares the update stamp unless the save is forced', () => {
 type Call = { method: string; args: unknown[] }
 
 function fakeStore(
-  options: { current?: BetaEnvironment; fail?: Error; vault?: BetaManagedAgentsVault; credential?: BetaManagedAgentsCredential } = {}
+  options: {
+    current?: BetaEnvironment
+    fail?: Error
+    vault?: BetaManagedAgentsVault
+    credential?: BetaManagedAgentsCredential
+    memoryStore?: BetaManagedAgentsMemoryStore
+  } = {}
 ) {
   const calls: Call[] = []
   const current = options.current ?? environment
   const currentVault = options.vault ?? vault
+  const currentMemoryStore = options.memoryStore ?? memoryStore
   const currentCredential = options.credential ?? bearerCredential()
   const record =
     (method: string, result: unknown = {}) =>
@@ -304,7 +314,13 @@ function fakeStore(
           update: record('credentials.update', { ...currentCredential, updated_at: 'updated-stamp' })
         }
       },
-      memoryStores: { ...family('memoryStores'), memories: { delete: record('memories.delete') } },
+      memoryStores: {
+        ...family('memoryStores'),
+        create: record('memoryStores.create', { ...currentMemoryStore, id: 'memstore_new', updated_at: 'created-stamp' }),
+        retrieve: record('memoryStores.retrieve', currentMemoryStore),
+        update: record('memoryStores.update', { ...currentMemoryStore, updated_at: 'updated-stamp' }),
+        memories: { delete: record('memories.delete') }
+      },
       sessions: family('sessions')
     }
   }
@@ -792,4 +808,63 @@ test('saveCredential redacts a secret echoed in the API message of a standard er
   )
   expect(result).toEqual({ ok: false, code: 'other', error: 'API error 400: token [secret] is not valid' })
   expect(logs.join('\n').includes(secret)).toBe(false)
+})
+
+function memoryStoreInput(over: Partial<SaveInput<MemoryStoreForm>> = {}): SaveInput<MemoryStoreForm> {
+  const base = { name: memoryStore.name, description: memoryStore.description }
+  return { id: memoryStore.id, baseUpdatedAt: memoryStore.updated_at, force: false, form: { ...base, description: 'new words' }, base, ...over }
+}
+
+test('saveMemoryStore creates a store with its trimmed name and a description only when there is one', async () => {
+  const created = fakeStore()
+  const result = await created.handlers.saveMemoryStore(
+    memoryStoreInput({ id: null, baseUpdatedAt: null, base: null, form: { name: ' plugin-test-memory-t9 ', description: 'Notes' } })
+  )
+  expect(result).toEqual({ ok: true, value: { id: 'memstore_new', updatedAt: 'created-stamp' } })
+  expect(created.calls).toEqual([{ method: 'memoryStores.create', args: [{ name: 'plugin-test-memory-t9', description: 'Notes' }] }])
+
+  const bare = fakeStore()
+  await bare.handlers.saveMemoryStore(memoryStoreInput({ id: null, baseUpdatedAt: null, base: null, form: { name: 'plugin-test-memory-t9', description: '' } }))
+  expect(bare.calls).toEqual([{ method: 'memoryStores.create', args: [{ name: 'plugin-test-memory-t9' }] }])
+})
+
+test('saveMemoryStore sends only the field that changed, and an emptied description clears it', async () => {
+  const described = fakeStore()
+  expect(await described.handlers.saveMemoryStore(memoryStoreInput())).toEqual({ ok: true, value: { id: memoryStore.id, updatedAt: 'updated-stamp' } })
+  expect(described.calls.find((call) => call.method === 'memoryStores.update')?.args).toEqual([memoryStore.id, { description: 'new words' }])
+
+  const renamed = fakeStore()
+  await renamed.handlers.saveMemoryStore(memoryStoreInput({ form: { name: ' renamed ', description: memoryStore.description } }))
+  expect(renamed.calls.find((call) => call.method === 'memoryStores.update')?.args).toEqual([memoryStore.id, { name: 'renamed' }])
+
+  const cleared = fakeStore()
+  await cleared.handlers.saveMemoryStore(memoryStoreInput({ form: { name: memoryStore.name, description: '' } }))
+  expect(cleared.calls.find((call) => call.method === 'memoryStores.update')?.args).toEqual([memoryStore.id, { description: '' }])
+})
+
+test('saveMemoryStore follows the same stale guard as the environments: conflict unless forced, no write when nothing changed', async () => {
+  const moved = fakeStore({ memoryStore: { ...memoryStore, updated_at: 'moved' } })
+  expect(await moved.handlers.saveMemoryStore(memoryStoreInput())).toEqual({ ok: false, code: 'conflict', error: CONFLICT_MESSAGE })
+  expect(moved.calls.map((call) => call.method)).toEqual(['memoryStores.retrieve'])
+
+  const forced = fakeStore({ memoryStore: { ...memoryStore, updated_at: 'moved' } })
+  expect((await forced.handlers.saveMemoryStore(memoryStoreInput({ force: true }))).ok).toBe(true)
+  expect(forced.calls.some((call) => call.method === 'memoryStores.update')).toBe(true)
+
+  const same = fakeStore()
+  const unchanged = await same.handlers.saveMemoryStore(memoryStoreInput({ form: { name: memoryStore.name, description: memoryStore.description } }))
+  expect(unchanged).toEqual({ ok: true, value: { id: memoryStore.id, updatedAt: memoryStore.updated_at } })
+  expect(same.calls.map((call) => call.method)).toEqual(['memoryStores.retrieve'])
+})
+
+test('saveMemoryStore rejects a blank name and an update without a loaded form, with no network call', async () => {
+  const { handlers, calls } = fakeStore()
+  expect(await handlers.saveMemoryStore(memoryStoreInput({ form: { name: ' ', description: '' } }))).toEqual({
+    ok: false,
+    code: 'invalid',
+    error: 'A name is required.'
+  })
+  const noBase = await handlers.saveMemoryStore(memoryStoreInput({ base: null }))
+  expect(!noBase.ok && noBase.code).toBe('invalid')
+  expect(calls).toEqual([])
 })
