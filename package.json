@@ -6,7 +6,8 @@
   "scripts": {
     "build": "bun build src/worker.ts --target=node --format=esm --outfile=dist/worker.mjs",
     "typecheck": "bunx tsc -p .",
-    "check": "bun run build && orca plugin check ."
+    "check": "bun run build && orca plugin check .",
+    "test": "orca plugin test ."
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0"
