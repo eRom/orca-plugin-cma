@@ -1,6 +1,7 @@
-import { Stack } from 'orca'
+import { atom, read, set, Stack } from 'orca'
 import { assert, mockHost, mount, test } from 'orca/testing'
 import { archiveQuestion, ConfirmAction, deleteQuestion } from './confirm'
+import { notice } from './state'
 
 let confirmed = { archive: 0, delete: 0 }
 let release: (() => void) | null = null
@@ -95,10 +96,105 @@ test('the confirm button stays disabled while onConfirm runs', async () => {
   await view.rerender()
   const button = view.find({ role: 'button', text: 'Confirm archive' })
   assert.ok(button)
-  assert.equal(JSON.stringify(view.tree()).includes('"disabled":true'), true)
+  assert.equal(button.props.disabled, true)
   release?.()
   await pressed
   await view.settled()
   assert.equal(view.find({ type: 'Callout' }), null)
+  await view.unmount()
+})
+
+test('a second press while onConfirm is pending does not call it again', async () => {
+  let calls = 0
+  function Counted() {
+    return (
+      <ConfirmAction
+        actionKey="counted"
+        label="Archive"
+        question="Archive counted?"
+        confirmLabel="Confirm archive"
+        onConfirm={() => {
+          calls += 1
+          return new Promise<void>((resolve) => {
+            release = resolve
+          })
+        }}
+      />
+    )
+  }
+  const view = await mount(Counted, { host: mockHost() })
+  await view.press({ role: 'button', text: 'Archive' })
+  const first = view.press({ role: 'button', text: 'Confirm archive' })
+  await view.rerender()
+  const second = view.press({ role: 'button', text: 'Confirm archive' }).catch(() => undefined)
+  await view.rerender()
+  assert.equal(calls, 1)
+  release?.()
+  await first
+  await second
+  await view.settled()
+  assert.equal(calls, 1)
+  await view.unmount()
+})
+
+test('a failing onConfirm keeps the question open, re-enables the button and sets the notice', async () => {
+  function Failing() {
+    return (
+      <ConfirmAction
+        actionKey="failing"
+        label="Archive"
+        question="Archive failing?"
+        confirmLabel="Confirm archive"
+        onConfirm={async () => {
+          throw new Error('Archive refused by the API')
+        }}
+      />
+    )
+  }
+  const view = await mount(Failing, { host: mockHost() })
+  await view.press({ role: 'button', text: 'Archive' })
+  await view.press({ role: 'button', text: 'Confirm archive' })
+  await view.settled()
+  assert.ok(view.find({ type: 'Callout', text: /Archive failing\?/ }))
+  const button = view.find({ role: 'button', text: 'Confirm archive' })
+  assert.ok(button)
+  assert.equal(button.props.disabled === true, false)
+  assert.equal(read(notice), 'Archive refused by the API')
+  await view.unmount()
+})
+
+const forceDisabled = atom(false)
+
+function Lockable() {
+  return (
+    <ConfirmAction
+      actionKey="lockable"
+      label="Archive"
+      question="Archive lockable?"
+      confirmLabel="Confirm archive"
+      onConfirm={async () => {
+        confirmed.archive += 1
+      }}
+      disabled={read(forceDisabled)}
+    />
+  )
+}
+
+test('disabled disables the open button and the confirm button', async () => {
+  confirmed = { archive: 0, delete: 0 }
+  const view = await mount(Lockable, { host: mockHost() })
+  const open = view.find({ role: 'button', text: 'Archive' })
+  assert.ok(open)
+  assert.equal(open.props.disabled === true, false)
+  set(forceDisabled, true)
+  await view.rerender()
+  assert.equal(view.find({ role: 'button', text: 'Archive' })?.props.disabled, true)
+  set(forceDisabled, false)
+  await view.rerender()
+  await view.press({ role: 'button', text: 'Archive' })
+  set(forceDisabled, true)
+  await view.rerender()
+  assert.equal(view.find({ role: 'button', text: 'Confirm archive' })?.props.disabled, true)
+  assert.equal(confirmed.archive, 0)
   await view.unmount()
 })
