@@ -4,7 +4,7 @@
 // garde et refuse quand un brouillon non appliqué existe.
 import type { BetaManagedAgentsMemory } from '@anthropic-ai/sdk/resources/beta/memory-stores/memories'
 import { createHash } from 'node:crypto'
-import type { ApiResult, Committed, DraftRef, MemoryRenameInput, Saved } from '../protocol'
+import type { ApiResult, Committed, DraftRef, MemoryRenameInput, ResourceRef, Saved } from '../protocol'
 import { INVALID_MEMORY_PATH, isSafeMemoryPath } from '../shared/memory-path'
 import { attempt, type ClientStore } from './client'
 import { diffDocuments } from './diff'
@@ -142,7 +142,11 @@ export function createMemoryAdapter(
  * Le renommage d'une mémoire, gardé par l'empreinte lue par le panneau. Il refuse tant qu'un brouillon non
  * appliqué existe pour cette mémoire : renommer sous un brouillon en cours le ferait écrire à côté.
  */
-export function createMemoryRename(store: ClientStore, drafts: () => Drafts): (input: MemoryRenameInput) => Promise<ApiResult<Saved>> {
+export function createMemoryRename(
+  store: ClientStore,
+  drafts: () => Drafts,
+  log: (message: string) => void = () => {}
+): (input: MemoryRenameInput) => Promise<ApiResult<Saved>> {
   return async (input) => {
     if (!isSafeMemoryPath(input.path)) {
       return { ok: false, code: 'invalid', error: INVALID_MEMORY_PATH }
@@ -153,7 +157,7 @@ export function createMemoryRename(store: ClientStore, drafts: () => Drafts): (i
     if (open.some((draft) => draft.unapplied)) {
       return { ok: false, code: 'invalid', error: OPEN_DRAFT_MESSAGE }
     }
-    return attempt(store, async (client) => {
+    const renamed = await attempt(store, async (client) => {
       const updated = await client.beta.memoryStores.memories.update(input.memoryId, {
         memory_store_id: input.memoryStoreId,
         path: input.path,
@@ -161,5 +165,34 @@ export function createMemoryRename(store: ClientStore, drafts: () => Drafts): (i
       })
       return { id: updated.id, updatedAt: updated.updated_at }
     })
+    if (renamed.ok) {
+      // Le brouillon propre garde l'ancien chemin : on l'oublie, pour que ce chemin serve à une autre mémoire.
+      await releaseDrafts(drafts, (ref) => ref.kind === 'memory' && ref.memoryStoreId === input.memoryStoreId && ref.memoryId === input.memoryId, log)
+    }
+    return renamed
+  }
+}
+
+/** Oublie les brouillons propres que `match` désigne. Le renommage ou la suppression étant faits, un échec ici se journalise seulement. */
+async function releaseDrafts(drafts: () => Drafts, match: (ref: DraftRef) => boolean, log: (message: string) => void): Promise<void> {
+  try {
+    const { kept } = await drafts().release(match)
+    for (const file of kept) {
+      log(`memory draft kept (unapplied edits): ${file}`)
+    }
+  } catch (error) {
+    log(`memory drafts not released: ${messageOf(error)}`)
+  }
+}
+
+/**
+ * Après la suppression d'une mémoire, ou d'une banque (toutes ses mémoires) : leurs brouillons propres sont
+ * oubliés. Tout autre type de ressource est sans effet.
+ */
+export async function releaseDeletedDrafts(ref: ResourceRef, drafts: () => Drafts, log: (message: string) => void = () => {}): Promise<void> {
+  if (ref.kind === 'memory') {
+    await releaseDrafts(drafts, (known) => known.kind === 'memory' && known.memoryStoreId === ref.memoryStoreId && known.memoryId === ref.id, log)
+  } else if (ref.kind === 'memory_store') {
+    await releaseDrafts(drafts, (known) => known.kind === 'memory' && known.memoryStoreId === ref.id, log)
   }
 }

@@ -6,7 +6,7 @@ import { createWriteHandlers } from './worker/config-writes'
 import { createConfigHandlers } from './worker/configs'
 import { DRAFTS_FOLDER, createDrafts, type Drafts } from './worker/drafts'
 import { createEditorHost } from './worker/editor-host'
-import { createMemoryAdapter, createMemoryRename } from './worker/memory-drafts'
+import { createMemoryAdapter, createMemoryRename, releaseDeletedDrafts } from './worker/memory-drafts'
 import { createPendingWrites } from './worker/pending-writes'
 import { createSessionHandlers } from './worker/session-actions'
 import { createPoller, sdkPollSource } from './worker/session-poll'
@@ -175,7 +175,6 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
       return result
     }
   orca.panels.handle('resource.archive', thenRefreshSessions(writes.archive))
-  orca.panels.handle('resource.delete', thenRefreshSessions(writes.remove))
 
   // Les écritures qui attendent une confirmation : un worker relancé repart d'un registre vide, et
   // le panneau reçoit alors `expired` (il relance l'écriture).
@@ -193,7 +192,16 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     now: () => new Date(),
     log: (message) => orca.log(message)
   })
-  orca.panels.handle('memory.rename', createMemoryRename(store, () => drafts))
+  orca.panels.handle('memory.rename', createMemoryRename(store, () => drafts, (message) => orca.log(message)))
+  // Une mémoire ou une banque supprimée n'a plus de brouillon propre à garder : son fichier et son nom se libèrent.
+  const removeThenRelease = thenRefreshSessions(writes.remove)
+  orca.panels.handle('resource.delete', async (ref) => {
+    const result = await removeThenRelease(ref)
+    if (result.ok) {
+      await releaseDeletedDrafts(ref, () => drafts, (message) => orca.log(message))
+    }
+    return result
+  })
   orca.panels.handle('drafts.status', drafts.status)
   orca.panels.handle('draft.open', drafts.open)
   orca.panels.handle('draft.discard', drafts.discard)

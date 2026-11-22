@@ -4,12 +4,12 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { DraftRef } from '../protocol'
+import type { DraftRef, ResourceRef } from '../protocol'
 import { INVALID_MEMORY_PATH, isSafeMemoryPath } from '../shared/memory-path'
 import { CONFLICT_MESSAGE, type ClientStore } from './client'
 import { REGISTRY_FILE, createDrafts, type Drafts } from './drafts'
 import type { EditorHost } from './editor-host'
-import { createMemoryAdapter, createMemoryRename, memoryFile } from './memory-drafts'
+import { createMemoryAdapter, createMemoryRename, memoryFile, releaseDeletedDrafts } from './memory-drafts'
 import { createPendingWrites } from './pending-writes'
 
 type MemoryRef = Extract<DraftRef, { kind: 'memory' }>
@@ -45,7 +45,7 @@ test('isSafeMemoryPath accepts a rooted path and refuses every unsafe shape', ()
   }
 })
 
-test('isSafeMemoryPath applies the API rules: 20 segments, NFC, no control or separator characters, 255 bytes per segment', () => {
+test('isSafeMemoryPath applies the API rules: 20 segments, NFC, no control or separator characters, 200 bytes per segment', () => {
   expect(isSafeMemoryPath(`/${'x/'.repeat(20)}y`)).toBe(false)
   expect(isSafeMemoryPath(`/a${char(7)}b`)).toBe(false)
   expect(isSafeMemoryPath(`/a${char(0)}b`)).toBe(false)
@@ -57,15 +57,16 @@ test('isSafeMemoryPath applies the API rules: 20 segments, NFC, no control or se
   // « é » décomposé (e + accent combinant) n'est pas en forme NFC.
   expect(isSafeMemoryPath(`/e${char(0x301)}.md`)).toBe(false)
   expect(isSafeMemoryPath('/é.md')).toBe(true)
-  expect(isSafeMemoryPath(`/${'x'.repeat(255)}`)).toBe(true)
-  expect(isSafeMemoryPath(`/${'x'.repeat(256)}`)).toBe(false)
-  // 255 octets, pas 255 caractères : 128 « é » font 256 octets.
-  expect(isSafeMemoryPath(`/${'é'.repeat(127)}`)).toBe(true)
-  expect(isSafeMemoryPath(`/${'é'.repeat(128)}`)).toBe(false)
-  // Le plafond de 1 024 octets du chemin entier, des segments eux-mêmes admis : 1 024 passe, 1 026 non.
-  const wide = Array.from({ length: 4 }, () => 'x'.repeat(255)).join('/')
+  expect(isSafeMemoryPath(`/${'x'.repeat(200)}`)).toBe(true)
+  expect(isSafeMemoryPath(`/${'x'.repeat(201)}`)).toBe(false)
+  // 200 octets, pas 200 caractères : 101 « é » font 202 octets.
+  expect(isSafeMemoryPath(`/${'é'.repeat(100)}`)).toBe(true)
+  expect(isSafeMemoryPath(`/${'é'.repeat(101)}`)).toBe(false)
+  // Le plafond de 1 024 octets du chemin entier, des segments eux-mêmes admis : 1 024 passe, 1 025 non.
+  const wide = `${Array.from({ length: 5 }, () => 'x'.repeat(200)).join('/')}/${'a'.repeat(18)}`
+  expect(Buffer.byteLength(`/${wide}`)).toBe(1024)
   expect(isSafeMemoryPath(`/${wide}`)).toBe(true)
-  expect(isSafeMemoryPath(`/${wide}/a`)).toBe(false)
+  expect(isSafeMemoryPath(`/${wide}a`)).toBe(false)
   expect(INVALID_MEMORY_PATH).toBe('A memory path starts with / and has no . or .. segments.')
 })
 
@@ -196,14 +197,15 @@ function setup() {
     log: (message) => logs.push(message)
   })
   holder.drafts = drafts
-  const rename = createMemoryRename(api.store, () => drafts)
+  const rename = createMemoryRename(api.store, () => drafts, (message) => logs.push(message))
+  const released = (ref: ResourceRef) => releaseDeletedDrafts(ref, () => drafts, (message) => logs.push(message))
   /** Le geste du panneau : `draft.prepare` puis `write.commit`. */
   const apply = async (ref: DraftRef, force = false) => {
     const prepared = await drafts.prepare(ref)
     return prepared.ok ? pending.commit(prepared.value.token, force) : prepared
   }
   const registry = () => JSON.parse(readFileSync(join(folder, REGISTRY_FILE), 'utf8')) as { entries: Record<string, { ref: DraftRef; base: unknown }> }
-  return { folder, fake, api, pending, logs, drafts, rename, apply, registry }
+  return { folder, fake, api, pending, logs, drafts, rename, released, apply, registry }
 }
 
 const only = (calls: Call[], method: string): Call[] => calls.filter((call) => call.method === method)
@@ -545,5 +547,141 @@ test('memory.rename is not blocked by the unapplied draft of another memory', as
   await drafts.open(NEW)
   writeFileSync(join(folder, NEW_FILE), 'unsent\n')
   expect((await rename(RENAME)).ok).toBe(true)
+  cleanup()
+})
+
+test('a memory whose path differs only by case from an open draft is refused, and the open draft keeps its unsent edit', async () => {
+  const { drafts, folder, api } = setup()
+  const upper: MemoryRef = { ...EXISTING, path: '/A.md' }
+  api.state.memories.set('mem_1', { path: '/A.md', content: 'hello\n' })
+  await drafts.open(upper)
+  const file = 'memories/notes--memstore_1/A.md'
+  writeFileSync(join(folder, file), 'MY UNSENT EDIT')
+  const lower: MemoryRef = { ...NEW, path: '/a.md' }
+  const refused = { ok: false, code: 'other', error: 'Another draft already uses this file name.' }
+  expect(await drafts.open(lower)).toEqual(refused)
+  expect(await drafts.discard(lower)).toEqual(refused)
+  expect(readFileSync(join(folder, file), 'utf8')).toBe('MY UNSENT EDIT')
+  // Aucune copie de secours : rien n'a été écrasé.
+  expect(readdirSync(join(folder, 'memories/notes--memstore_1'))).toEqual(['A.md'])
+  const state = await drafts.state(upper)
+  expect(state.ok && state.value?.unapplied).toBe(true)
+  cleanup()
+})
+
+test('state is null without any network call for a memory that has no registered draft, even offline', async () => {
+  const { drafts, api } = setup()
+  api.store.get = async () => {
+    throw new Error('offline')
+  }
+  expect(await drafts.state(EXISTING)).toEqual({ ok: true, value: null })
+  expect(await drafts.state(NEW)).toEqual({ ok: true, value: null })
+  expect(api.calls).toEqual([])
+  cleanup()
+})
+
+test('a renamed memory releases its clean draft: its old path is free again and a new memory there is not read as the renamed one', async () => {
+  const { drafts, folder, rename, api, registry } = setup()
+  await drafts.open(EXISTING)
+  expect((await rename(RENAME)).ok).toBe(true)
+  expect(existsSync(join(folder, EXISTING_FILE))).toBe(false)
+  expect(registry().entries).toEqual({})
+
+  // Une autre mémoire prend l'ancien chemin : un brouillon neuf, sans refus ni confusion avec la renommée.
+  const taker: MemoryRef = { ...NEW, path: '/notes/a.md' }
+  const opened = await drafts.open(taker)
+  expect(opened.ok && opened.value.file).toBe(EXISTING_FILE)
+  expect(readFileSync(join(folder, EXISTING_FILE), 'utf8')).toBe('')
+  expect(registry().entries[EXISTING_FILE]?.ref).toEqual(taker)
+  expect(only(api.calls, 'memories.update').length).toBe(1)
+  cleanup()
+})
+
+test('a rename that fails keeps the clean draft and its entry', async () => {
+  const { drafts, folder, rename, api } = setup()
+  await drafts.open(EXISTING)
+  api.state.updateError = new Error('boom')
+  expect((await rename(RENAME)).ok).toBe(false)
+  expect(existsSync(join(folder, EXISTING_FILE))).toBe(true)
+  const state = await drafts.state(EXISTING)
+  expect(state.ok && state.value?.unapplied).toBe(false)
+  cleanup()
+})
+
+test('deleting a memory releases its clean draft, and keeps and logs an unapplied one', async () => {
+  const { drafts, folder, released, logs, registry } = setup()
+  await drafts.open(EXISTING)
+  await released({ kind: 'memory', memoryStoreId: 'memstore_1', id: 'mem_1' })
+  expect(existsSync(join(folder, EXISTING_FILE))).toBe(false)
+  expect(registry().entries).toEqual({})
+
+  await drafts.open(EXISTING)
+  writeFileSync(join(folder, EXISTING_FILE), 'my edit\n')
+  await released({ kind: 'memory', memoryStoreId: 'memstore_1', id: 'mem_1' })
+  expect(readFileSync(join(folder, EXISTING_FILE), 'utf8')).toBe('my edit\n')
+  expect(registry().entries[EXISTING_FILE]?.ref).toEqual(EXISTING)
+  expect(logs.some((line) => line.includes('kept') && line.includes(EXISTING_FILE))).toBe(true)
+  cleanup()
+})
+
+test('deleting a store releases the clean drafts of all its memories and leaves other stores alone', async () => {
+  const { drafts, folder, released, api, registry } = setup()
+  api.state.memories.set('mem_2', { path: '/notes/b.md', content: 'two\n' })
+  await drafts.open(EXISTING)
+  await drafts.open({ ...EXISTING, memoryId: 'mem_2', path: '/notes/b.md' })
+  const other: MemoryRef = { kind: 'memory', memoryStoreId: 'memstore_2', memoryId: null, path: '/x.md' }
+  await drafts.open(other)
+  await released({ kind: 'memory_store', id: 'memstore_1' })
+  expect(Object.values(registry().entries).map((entry) => entry.ref)).toEqual([other])
+  expect(existsSync(join(folder, EXISTING_FILE))).toBe(false)
+  expect(existsSync(join(folder, 'memories/notes--memstore_1/notes/b.md'))).toBe(false)
+  cleanup()
+})
+
+test('releasing after the deletion of something other than a memory or a store does nothing', async () => {
+  const { drafts, folder, released } = setup()
+  await drafts.open(EXISTING)
+  await released({ kind: 'vault', id: 'vlt_1' })
+  await released({ kind: 'agent', id: 'agent_1' })
+  expect(existsSync(join(folder, EXISTING_FILE))).toBe(true)
+  cleanup()
+})
+
+test('an 80 kB memory goes through open, edit, prepare and commit unclipped, and the file takes back what the API kept', async () => {
+  const { drafts, folder, apply, api } = setup()
+  // Des lignes à fins CRLF et des caractères multi-octets : le serveur normalise les fins de ligne.
+  const line = 'Ligne de mémoire avec accents éàü et du texte ordinaire.'
+  const original = `${Array.from({ length: 1400 }, (_, index) => `${line} ${index}`).join('\n')}\n`
+  const edited = `${Array.from({ length: 1400 }, (_, index) => `${line} ${index} edited`).join('\r\n')}\r\n`
+  expect(Buffer.byteLength(original) >= 80_000).toBe(true)
+  api.state.memories.set('mem_1', { path: '/notes/a.md', content: original })
+  api.state.transform = (text) => text.replace(/\r\n/g, '\n')
+  await drafts.open(EXISTING)
+  expect(readFileSync(join(folder, EXISTING_FILE), 'utf8')).toBe(original)
+
+  writeFileSync(join(folder, EXISTING_FILE), edited)
+  const prepared = await drafts.prepare(EXISTING)
+  expect(prepared.ok && prepared.value.totalChanges).toBe(1)
+  const committed = await apply(EXISTING)
+  expect(committed.ok).toBe(true)
+
+  const sent = (only(api.calls, 'memories.update')[0]?.args[1] as { content: string }).content
+  expect(sent === edited).toBe(true)
+  const kept = api.state.memories.get('mem_1')?.content
+  expect(kept === edited.replace(/\r\n/g, '\n')).toBe(true)
+  expect(readFileSync(join(folder, EXISTING_FILE), 'utf8') === kept).toBe(true)
+  const state = await drafts.state(EXISTING)
+  expect(state.ok && state.value?.unapplied).toBe(false)
+  cleanup()
+})
+
+test('a memory whose segment has the longest accepted name still opens and applies, temporary suffix included', async () => {
+  const { drafts, folder, apply } = setup()
+  const path = `/${'x'.repeat(196)}.md`
+  expect(isSafeMemoryPath(path)).toBe(true)
+  const longest: MemoryRef = { ...NEW, path }
+  expect((await drafts.open(longest)).ok).toBe(true)
+  writeFileSync(join(folder, `memories/notes--memstore_1${path}`), 'text\n')
+  expect((await apply(longest)).ok).toBe(true)
   cleanup()
 })

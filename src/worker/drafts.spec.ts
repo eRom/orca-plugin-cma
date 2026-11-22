@@ -566,3 +566,87 @@ test('sameRef compares memories by id when both have one, and by path otherwise'
   expect(sameRef(AGENT, { kind: 'agent', agentId: 'agent_2' })).toBe(false)
   expect(sameRef(AGENT, { ...base, memoryId: null, path: '/a.md' })).toBe(false)
 })
+
+test('two refs whose files differ only by case never share a file: macOS folds the case, so the second is refused', async () => {
+  const second: AgentRef = { kind: 'agent', agentId: 'agent_2' }
+  const { drafts, folder, prepared } = setup({ file: (ref) => (ref.agentId === 'agent_1' ? 'agents/Draft.yaml' : 'agents/draft.yaml') })
+  await drafts.open(AGENT)
+  writeFileSync(join(folder, 'agents/Draft.yaml'), 'name: My unsent edit\n')
+  const refused = { ok: false, code: 'other', error: 'Another draft already uses this file name.' }
+  expect(await drafts.open(second)).toEqual(refused)
+  expect(await drafts.discard(second)).toEqual(refused)
+  expect(await drafts.rewrite(second, 'name: Other\n', null, 'name: Other\n')).toBe(false)
+  expect(await drafts.prepare(second)).toEqual({ ok: false, code: 'other', error: 'The draft file is gone: open it again.' })
+  expect(prepared.length).toBe(0)
+  expect(readFileSync(join(folder, 'agents/Draft.yaml'), 'utf8')).toBe('name: My unsent edit\n')
+  expect(readdirSync(join(folder, 'agents'))).toEqual(['Draft.yaml'])
+  const first = await drafts.state(AGENT)
+  expect(first.ok && first.value?.unapplied).toBe(true)
+  cleanup()
+})
+
+test('the same ref keeps working on its original file name when the adapter answers another case', async () => {
+  const names = { value: 'agents/Draft.yaml' }
+  const { drafts, folder } = setup({ file: () => names.value })
+  await drafts.open(AGENT)
+  names.value = 'agents/draft.yaml'
+  const again = await drafts.open(AGENT)
+  expect(again.ok && again.value.file).toBe('agents/Draft.yaml')
+  expect(Object.keys(JSON.parse(readFileSync(join(folder, REGISTRY_FILE), 'utf8')).entries)).toEqual(['agents/Draft.yaml'])
+  cleanup()
+})
+
+test('state answers null without asking the adapter for a file when no registered draft matches', async () => {
+  const folder = tempFolder()
+  const fake = fakeHost(folder)
+  const asked = { count: 0 }
+  const offline: DraftAdapter<AgentRef> = {
+    async file() {
+      asked.count += 1
+      throw new Error('offline')
+    },
+    async readLive() {
+      throw new Error('offline')
+    },
+    async prepare() {
+      throw new Error('unreachable')
+    }
+  }
+  const drafts = createDrafts({ folder, host: fake.host, adapters: { agent: offline }, pending: createPendingWrites(() => 0), now: () => new Date(), log: () => {} })
+  expect(await drafts.state(AGENT)).toEqual({ ok: true, value: null })
+  expect(asked.count).toBe(0)
+  cleanup()
+})
+
+test('release drops the clean drafts a predicate keeps, with their files, and never an unapplied one', async () => {
+  const second: AgentRef = { kind: 'agent', agentId: 'agent_2' }
+  const { drafts, folder } = setup()
+  await drafts.open(AGENT)
+  await drafts.open(second)
+  writeFileSync(join(folder, 'agents/agent_2.yaml'), 'name: Unsent\n')
+  const result = await drafts.release(() => true)
+  expect(result).toEqual({ released: [FILE], kept: ['agents/agent_2.yaml'] })
+  expect(existsSync(join(folder, FILE))).toBe(false)
+  expect(readFileSync(join(folder, 'agents/agent_2.yaml'), 'utf8')).toBe('name: Unsent\n')
+  expect(Object.keys(JSON.parse(readFileSync(join(folder, REGISTRY_FILE), 'utf8')).entries)).toEqual(['agents/agent_2.yaml'])
+  cleanup()
+})
+
+test('a released file name goes to another draft instead of being refused as taken', async () => {
+  const other: AgentRef = { kind: 'agent', agentId: 'agent_other' }
+  const { drafts } = setup({ file: () => 'agents/shared.yaml' })
+  await drafts.open(AGENT)
+  expect((await drafts.open(other)).ok).toBe(false)
+  await drafts.release((ref) => ref.kind === 'agent' && ref.agentId === 'agent_1')
+  expect((await drafts.open(other)).ok).toBe(true)
+  cleanup()
+})
+
+test('release of a draft whose file is already gone still drops its entry', async () => {
+  const { drafts, folder } = setup()
+  await drafts.open(AGENT)
+  rmSync(join(folder, FILE))
+  expect(await drafts.release(() => true)).toEqual({ released: [FILE], kept: [] })
+  expect(await drafts.state(AGENT)).toEqual({ ok: true, value: null })
+  cleanup()
+})

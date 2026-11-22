@@ -2,7 +2,7 @@
 // d'éditeur d'Orca. Le worker écrit le fichier, garde dans un registre ce qu'il y a écrit (empreinte,
 // base de lecture, workspace de retour), et sait donc dire si le fichier a été modifié depuis.
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { ApiErrorCode, ApiResult, DraftInfo, DraftRef, DraftsStatus, PreparedWrite } from '../protocol'
@@ -65,6 +65,12 @@ export type Drafts = {
    * côté que par une vraie opération).
    */
   find(match: (ref: DraftRef) => boolean): Promise<{ ref: DraftRef; file: string; unapplied: boolean }[]>
+  /**
+   * L'objet d'un brouillon a changé de chemin ou disparu : les brouillons propres (fichier tel que le worker
+   * l'a écrit, ou disparu) dont la référence vérifie `match` sont oubliés, entrée et fichier, pour que leur nom
+   * serve à un autre. Un brouillon non appliqué n'est jamais touché : il reste, et `kept` le dit.
+   */
+  release(match: (ref: DraftRef) => boolean): Promise<{ released: string[]; kept: string[] }>
 }
 
 type ReturnTo = { workspaceId: string; name: string }
@@ -117,6 +123,16 @@ export function sameRef(a: DraftRef, b: DraftRef): boolean {
  */
 function recordedRef(known: DraftRef | undefined, ref: DraftRef): DraftRef {
   return known?.kind === 'memory' && ref.kind === 'memory' && ref.memoryId === null && known.memoryId !== null ? known : ref
+}
+
+/**
+ * L'entrée du registre d'un fichier et la clé sous laquelle elle est rangée. La casse ne compte pas :
+ * APFS ne distingue pas `/A.md` de `/a.md`, deux noms qui ne seraient pas comparés écraseraient un même fichier.
+ */
+function slotOf(registry: Registry, file: string): { key: string; entry: RegistryEntry } | undefined {
+  const folded = file.toLowerCase()
+  const key = Object.keys(registry.entries).find((candidate) => candidate.toLowerCase() === folded)
+  return key === undefined ? undefined : { key, entry: registry.entries[key] }
 }
 
 /** Le registre lu tel quel ; lève quand son contenu n'est pas un registre. */
@@ -268,11 +284,6 @@ export function createDrafts(deps: {
     return { file }
   }
 
-  /** L'entrée de registre d'un fichier, seulement si elle est celle de ce brouillon. */
-  const entryOf = (registry: Registry, file: string, ref: DraftRef): RegistryEntry | undefined => {
-    const entry = registry.entries[file]
-    return entry && sameRef(entry.ref, ref) ? entry : undefined
-  }
 
   return {
     async find(match) {
@@ -293,6 +304,31 @@ export function createDrafts(deps: {
       }
       return found
     },
+
+    release: (match) =>
+      serial(async () => {
+        const registry = await readRegistry()
+        const released: string[] = []
+        const kept: string[] = []
+        for (const [file, entry] of Object.entries(registry.entries)) {
+          if (!match(entry.ref)) {
+            continue
+          }
+          const content = await readOrNull(join(folder, file))
+          if (content !== null && sha256(content) !== entry.writtenSha256) {
+            kept.push(file)
+            continue
+          }
+          // Le fichier est la copie propre de l'objet : le supprimer ne perd rien.
+          await rm(join(folder, file), { force: true })
+          delete registry.entries[file]
+          released.push(file)
+        }
+        if (released.length > 0) {
+          await writeRegistry(registry)
+        }
+        return { released, kept }
+      }),
 
     async status() {
       try {
@@ -322,15 +358,16 @@ export function createDrafts(deps: {
           if (!('file' in located)) {
             return located
           }
-          const { file } = located
-          const absolute = join(folder, file)
-
           const registry = await readRegistry()
-          const known = registry.entries[file]
-          // Deux brouillons sur un même nom de fichier (noms qui se ressemblent) : le second ne reprend rien du premier.
-          if (known && !sameRef(known.ref, ref)) {
+          const slot = slotOf(registry, located.file)
+          // Deux brouillons sur un même nom de fichier (noms qui se ressemblent, casse comprise) : le second ne reprend rien du premier.
+          if (slot && !sameRef(slot.entry.ref, ref)) {
             return NAME_TAKEN
           }
+          // Le fichier garde la casse sous laquelle il a été écrit.
+          const file = slot?.key ?? located.file
+          const known = slot?.entry
+          const absolute = join(folder, file)
           const onDisk = await readOrNull(absolute)
           // Un fichier modifié depuis l'écriture du worker est le travail de Romain : on n'y touche pas.
           const keep = known !== undefined && onDisk !== null && sha256(onDisk) !== known.writtenSha256
@@ -379,15 +416,17 @@ export function createDrafts(deps: {
           return NOT_AVAILABLE
         }
         try {
-          const located = await locate(adapter, ref)
-          if (!('file' in located)) {
-            return located
+          // Le registre seul répond : un brouillon jamais ouvert n'a pas besoin que l'adaptateur lui cherche un fichier
+          // (ce qui demanderait le réseau pour une mémoire).
+          const problem = adapter.check?.(ref)
+          if (problem) {
+            return refuse('invalid', problem)
           }
-          const entry = entryOf(await readRegistry(), located.file, ref)
-          if (!entry) {
+          const slot = Object.entries((await readRegistry()).entries).find(([, entry]) => sameRef(entry.ref, ref))
+          if (!slot) {
             return { ok: true, value: null }
           }
-          return { ok: true, value: await describe(ref, located.file, entry) }
+          return { ok: true, value: await describe(ref, slot[0], slot[1]) }
         } catch (error) {
           return failure(error)
         }
@@ -404,8 +443,9 @@ export function createDrafts(deps: {
           if (!('file' in located)) {
             return located
           }
-          const entry = entryOf(await readRegistry(), located.file, ref)
-          const content = await readOrNull(join(folder, located.file))
+          const slot = slotOf(await readRegistry(), located.file)
+          const entry = slot && sameRef(slot.entry.ref, ref) ? slot.entry : undefined
+          const content = await readOrNull(join(folder, slot?.key ?? located.file))
           if (!entry || content === null) {
             return FILE_GONE
           }
@@ -429,13 +469,14 @@ export function createDrafts(deps: {
           if (!('file' in located)) {
             return located
           }
-          const { file } = located
           const registry = await readRegistry()
-          const known = registry.entries[file]
+          const slot = slotOf(registry, located.file)
           // Écraser le fichier d'un autre brouillon perdrait son travail : on refuse.
-          if (known && !sameRef(known.ref, ref)) {
+          if (slot && !sameRef(slot.entry.ref, ref)) {
             return NAME_TAKEN
           }
+          const file = slot?.key ?? located.file
+          const known = slot?.entry
           const live = await adapter.readLive(ref)
           const entry = await writeDraft(registry, ref, file, live.text, live.base, known?.returnTo ?? registry.lastReturnTo)
           const info = await describe(ref, file, entry)
@@ -465,12 +506,13 @@ export function createDrafts(deps: {
           if (!('file' in located)) {
             throw new Error(located.error)
           }
-          const { file } = located
           const registry = await readRegistry()
-          const known = registry.entries[file]
-          if (known && !sameRef(known.ref, ref)) {
+          const slot = slotOf(registry, located.file)
+          if (slot && !sameRef(slot.entry.ref, ref)) {
             throw new Error(NAME_TAKEN.error)
           }
+          const file = slot?.key ?? located.file
+          const known = slot?.entry
           const returnTo = known?.returnTo ?? registry.lastReturnTo
           const onDisk = await readOrNull(join(folder, file))
           if (onDisk === null || sha256(onDisk) === sha256(sent)) {
