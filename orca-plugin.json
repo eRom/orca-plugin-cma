@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/stablyai/orca/main/docs/schemas/plugins/orca-plugin.v2.schema.json",
+  "manifestVersion": 2,
+  "id": "agent-claude-managed",
+  "name": "Agent Claude Managed",
+  "version": "0.0.1",
+  "description": "Probe: list your Claude Managed Agents and follow one session live, from Orca.",
+  "author": { "name": "Romain Ecarnot", "url": "https://github.com/eRom" },
+  "license": "MIT",
+  "engines": { "orca": ">=1.4.259" },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "dist/worker.mjs",
+  "capabilities": [{ "kind": "secrets:own" }],
+  "contributes": {
+    "panels": [
+      { "id": "managed", "title": "Managed Agents", "icon": "bot", "entry": "src/panel.tsx", "ui": "components" }
+    ],
+    "statusBarItems": [{ "id": "stream", "icon": "bot", "text": "Managed", "tooltip": "Claude Managed Agents: no session followed" }]
+  }
+}
