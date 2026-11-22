@@ -7,7 +7,19 @@ import { Home } from './panel/home'
 import { NewSessionView, restoreNewSession } from './panel/new-session'
 import { restoreOpenSession, SessionView, sessionSubscriptions } from './panel/session-view'
 import { clipBytes } from './shared/text'
-import { ERROR_TEXT_LIMIT_BYTES, homeTab, loadSessions, loadWorkspace, nav, notice, run, sessionRows, workspace } from './panel/state'
+import {
+  ERROR_TEXT_LIMIT_BYTES,
+  homeTab,
+  loadSessions,
+  loadWorkspace,
+  nav,
+  notice,
+  run,
+  sessionRows,
+  threadLoaded,
+  viewedSession,
+  workspace
+} from './panel/state'
 
 export function setup(ctx: PanelContext): void {
   // Le worker pousse la liste des sessions ; une liste vide peut aussi signer une clé refusée.
@@ -21,6 +33,25 @@ export function setup(ctx: PanelContext): void {
     }),
     ...sessionSubscriptions()
   )
+  // Le worker sonde vite tant qu'il sait le panneau visible : un ping au montage, puis toutes les 10 s.
+  // Sa réponse dit s'il a redémarré (`bootId`) et quelle session il suit : une vue ouverte dont le suivi
+  // a disparu est rouverte, sinon son fil resterait figé après un redémarrage du worker.
+  let lastBootId: string | null = null
+  const ping = (): Promise<void> =>
+    plugin
+      .request('sessions.visibility', { visible: true })
+      .then(({ bootId, watching }) => {
+        const restarted = lastBootId !== null && bootId !== lastBootId
+        lastBootId = bootId
+        const viewed = read(viewedSession)
+        // Sans fil chargé, la vue s'ouvre encore (le suivi n'a pas pu démarrer) : seul un redémarrage compte.
+        if (viewed !== null && (restarted || (read(threadLoaded) && watching !== viewed))) {
+          run(restoreOpenSession)
+        }
+      })
+      .catch(() => {
+        // Un ping perdu coûte au pire un tour lent : rien à montrer.
+      })
   run(async () => {
     await loadWorkspace()
     const info = read(workspace)
@@ -30,17 +61,13 @@ export function setup(ctx: PanelContext): void {
         ? Promise.all([restoreOpenSession(), restoreNewSession(), restoreConfigView(), loadConfigs(read(homeTab))])
         : Promise.resolve()
     await Promise.all([loadSessions(), reopen])
+    // Un ping une fois la vue restaurée : il vérifie que le worker suit bien ce que le panneau montre.
+    await ping()
   })
 
-  // Le worker sonde vite tant qu'il sait le panneau visible : un ping au montage, puis toutes les 10 s.
-  const ping = (): void => {
-    plugin.request('sessions.visibility', { visible: true }).catch(() => {
-      // Un ping perdu coûte au pire un tour lent : rien à montrer.
-    })
-  }
-  ping()
+  void ping()
   const timer = setInterval(() => {
-    if (read(ctx.visible)) ping()
+    if (read(ctx.visible)) void ping()
   }, POLL_VISIBLE_MS)
   ctx.signal.addEventListener('abort', () => clearInterval(timer))
 }

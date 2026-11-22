@@ -25,7 +25,7 @@ export default defineCheck({
   'key saved': {
     requests: {
       'workspace.info': WITH_KEY,
-      'sessions.visibility': null,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
       'configs.list': { ok: true as const, value: [] },
       'sessions.list': { ok: true, value: [] }
     }
@@ -33,7 +33,7 @@ export default defineCheck({
   'key saved with sessions': {
     requests: {
       'workspace.info': WITH_KEY,
-      'sessions.visibility': null,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
       'configs.list': { ok: true as const, value: [] },
       'sessions.list': {
         ok: true,
@@ -60,7 +60,7 @@ export default defineCheck({
   'configurations agents': {
     requests: {
       'workspace.info': WITH_KEY,
-      'sessions.visibility': null,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
       'sessions.list': { ok: true as const, value: [] },
       'configs.list': {
         ok: true as const,
@@ -217,7 +217,7 @@ function newSessionScenario() {
     persisted: { plugin: { nav: [{ view: 'home' }, { view: 'newSession' }] } },
     requests: {
       'workspace.info': WITH_KEY,
-      'sessions.visibility': null,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
       'configs.list': { ok: true as const, value: [] },
       'sessions.list': { ok: true as const, value: [] },
       'createForm.options': { ok: true as const, value: options }
@@ -231,7 +231,7 @@ function configScenario(kind: ConfigKind, detail: ConfigDetail) {
     persisted: { plugin: { nav: [{ view: 'home' }, { view: 'config', kind, id: detail.id }] } },
     requests: {
       'workspace.info': WITH_KEY,
-      'sessions.visibility': null,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
       'sessions.list': { ok: true as const, value: [] },
       'configs.list': { ok: true as const, value: [] },
       'configs.detail': { ok: true as const, value: detail }
@@ -254,7 +254,7 @@ function sessionScenario(input: { row: SessionRow; rows: ThreadRow[] }) {
     persisted: { plugin: { nav: [{ view: 'home' }, { view: 'session', sessionId: input.row.id }] } },
     requests: {
       'workspace.info': WITH_KEY,
-      'sessions.visibility': null,
+      'sessions.visibility': { bootId: 'boot-1', watching: input.row.id },
       'configs.list': { ok: true as const, value: [] },
       'sessions.list': { ok: true as const, value: [input.row] },
       'session.watch': { ok: true as const, value: { rows: input.rows, hasEarlier: false, stream } },

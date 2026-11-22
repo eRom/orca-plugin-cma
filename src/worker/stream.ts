@@ -54,6 +54,8 @@ export type Watcher = {
   watch(sessionId: string): WatchAnswer
   leave(sessionId: string): void
   loadEarlier(sessionId: string, beforeId: string): { rows: ThreadRow[]; hasEarlier: boolean } | null
+  /** La session que le suivi porte (même terminée), ou null après `leave` ou `stop`. */
+  watching(): string | null
   stop(): void
 }
 
@@ -351,6 +353,7 @@ export function createWatcher(source: EventSource, sink: WatchSink, options: Wat
       if (!current || current.sessionId !== sessionId) return null
       return rowsBefore(current.thread, beforeId, THREAD_WINDOW_ROWS)
     },
+    watching: () => current?.sessionId ?? null,
     stop
   }
 }

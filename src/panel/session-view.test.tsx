@@ -64,7 +64,7 @@ type Overrides = Record<string, unknown>
 function requests(rows: ThreadRow[], over: Overrides = {}, hasEarlier = false) {
   return {
     'workspace.info': WITH_KEY,
-    'sessions.visibility': null, 'configs.list': { ok: true, value: [] },
+    'sessions.visibility': { bootId: 'boot-1', watching: 's1' }, 'configs.list': { ok: true, value: [] },
     'sessions.list': { ok: true, value: [sessionRow()] },
     'session.watch': { ok: true, value: { rows, hasEarlier, stream: OPEN_STREAM } },
     'session.detail': { ok: true, value: sessionDetail() },
@@ -411,5 +411,69 @@ test('renders a 5000-character panel notice without a refused render', async () 
   const view = await mount(panel, { host, persisted: OPEN_S1 })
   assert.ok(view.find({ type: 'Callout', text: /FFFF/ }))
   assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('reopens the watch when the worker restarted behind an open session', async () => {
+  const watched: unknown[] = []
+  const detailed: unknown[] = []
+  let pings = 0
+  const host = mockHost({
+    requests: requests([message('m1')], {
+      // Premier ping : worker b1 qui suit s1 ; second ping (après la restauration) : worker b2, neuf.
+      'sessions.visibility': () => {
+        pings += 1
+        return pings === 1 ? { bootId: 'b1', watching: 's1' } : { bootId: 'b2', watching: null }
+      },
+      'session.watch': (input: unknown) => {
+        watched.push(input)
+        return { ok: true, value: { rows: [message('m1')], hasEarlier: false, stream: OPEN_STREAM } }
+      },
+      'session.detail': (input: unknown) => {
+        detailed.push(input)
+        return { ok: true, value: sessionDetail() }
+      }
+    }) as never
+  })
+  const view = await mount(panel, { host, persisted: OPEN_S1 })
+  await view.settled()
+  assert.ok(pings >= 2)
+  assert.deepEqual(watched, [{ sessionId: 's1' }, { sessionId: 's1' }])
+  assert.deepEqual(detailed, [{ sessionId: 's1' }, { sessionId: 's1' }])
+  assert.ok(view.find({ text: /message m1/ }))
+  await view.unmount()
+})
+
+test('reopens the watch when the worker follows no session although the thread is open', async () => {
+  const watched: unknown[] = []
+  const host = mockHost({
+    requests: requests([message('m1')], {
+      'sessions.visibility': { bootId: 'b1', watching: null },
+      'session.watch': (input: unknown) => {
+        watched.push(input)
+        return { ok: true, value: { rows: [message('m1')], hasEarlier: false, stream: OPEN_STREAM } }
+      }
+    }) as never
+  })
+  const view = await mount(panel, { host, persisted: OPEN_S1 })
+  await view.settled()
+  assert.deepEqual(watched, [{ sessionId: 's1' }, { sessionId: 's1' }])
+  await view.unmount()
+})
+
+test('leaves the watch alone when the worker already follows the open session', async () => {
+  const watched: unknown[] = []
+  const host = mockHost({
+    requests: requests([message('m1')], {
+      'sessions.visibility': { bootId: 'b1', watching: 's1' },
+      'session.watch': (input: unknown) => {
+        watched.push(input)
+        return { ok: true, value: { rows: [message('m1')], hasEarlier: false, stream: OPEN_STREAM } }
+      }
+    }) as never
+  })
+  const view = await mount(panel, { host, persisted: OPEN_S1 })
+  await view.settled()
+  assert.deepEqual(watched, [{ sessionId: 's1' }])
   await view.unmount()
 })

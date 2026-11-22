@@ -177,6 +177,13 @@ export type StreamState = {
 
 export type WatchAnswer = { rows: ThreadRow[]; hasEarlier: boolean; stream: StreamState }
 
+/**
+ * Réponse au ping de visibilité : `bootId` change à chaque activation du worker, `watching` est la
+ * session que son suivi en direct porte (null si aucune). Le panneau s'en sert pour rouvrir le suivi
+ * d'une vue ouverte après un redémarrage du worker.
+ */
+export type VisibilityAnswer = { bootId: string; watching: string | null }
+
 export type SessionCreateInput = {
   agentId: string
   environmentId: string
@@ -206,7 +213,7 @@ declare module 'orca' {
     'configs.detail': { input: { kind: ConfigKind; id: string }; output: ApiResult<ConfigDetail> }
     'memory.read': { input: { memoryStoreId: string; memoryId: string }; output: ApiResult<MemoryContent> }
     'sessions.list': { output: ApiResult<SessionRow[]> }
-    'sessions.visibility': { input: { visible: boolean }; output: null }
+    'sessions.visibility': { input: { visible: boolean }; output: VisibilityAnswer }
     'session.detail': { input: { sessionId: string }; output: ApiResult<SessionDetail> }
     'session.watch': { input: { sessionId: string }; output: ApiResult<WatchAnswer> }
     'session.leave': { input: { sessionId: string }; output: null }

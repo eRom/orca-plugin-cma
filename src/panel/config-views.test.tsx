@@ -88,7 +88,7 @@ function environment(network: EnvironmentDetail['network']): EnvironmentDetail {
 function requests(over: Record<string, unknown> = {}) {
   return {
     'workspace.info': WITH_KEY,
-    'sessions.visibility': null,
+    'sessions.visibility': { bootId: 'boot-1', watching: null },
     'sessions.list': { ok: true, value: [] },
     'configs.list': ({ kind }: { kind: ConfigKind }) => ({ ok: true, value: ROWS[kind] }),
     ...over

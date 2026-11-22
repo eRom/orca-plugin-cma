@@ -38,7 +38,7 @@ const SESSION_ROW = {
 function requests(create: (input: unknown) => unknown, over: Record<string, unknown> = {}) {
   return {
     'workspace.info': WITH_KEY,
-    'sessions.visibility': null, 'configs.list': { ok: true, value: [] },
+    'sessions.visibility': { bootId: 'boot-1', watching: null }, 'configs.list': { ok: true, value: [] },
     'sessions.list': { ok: true, value: [] },
     'createForm.options': { ok: true, value: OPTIONS },
     'session.create': create,

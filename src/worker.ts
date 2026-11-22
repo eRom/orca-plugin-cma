@@ -119,11 +119,14 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   })
 
   // Seul un ping « visible » compte : la fraîcheur de 15 s du sondeur fait le reste quand le panneau se tait.
+  // La réponse dit au panneau si ce worker est neuf (`bootId`) et quelle session il suit : un panneau qui
+  // n'a pas été remonté après un redémarrage du worker rouvre ainsi le suivi de sa vue ouverte.
+  const bootId = crypto.randomUUID()
   orca.panels.handle('sessions.visibility', ({ visible }) => {
     if (visible) {
       poller.visible(Date.now())
     }
-    return null
+    return { bootId, watching: watcher.watching() }
   })
 
   const sessions = createSessionHandlers(store)

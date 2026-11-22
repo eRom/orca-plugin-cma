@@ -392,3 +392,17 @@ test('keeps rows applied before a partial history failure', async () => {
   // La relecture réussie reste la première : elle porte `hasEarlier` comme `tail` le calcule.
   expect(recorder.threads.filter((post) => post.hasEarlier !== undefined).map((post) => post.hasEarlier)).toEqual([false])
 })
+
+test('watching names the followed session until leave', async () => {
+  const { source } = fakeSource({ streams: [holdOpen()] })
+  const recorder = recordingSink()
+  const watcher = createWatcher(source, recorder.sink, options)
+  expect(watcher.watching()).toBe(null)
+  watcher.watch(SESSION)
+  expect(watcher.watching()).toBe(SESSION)
+  watcher.leave(SESSION)
+  expect(watcher.watching()).toBe(null)
+  watcher.watch(SESSION)
+  watcher.stop()
+  expect(watcher.watching()).toBe(null)
+})
