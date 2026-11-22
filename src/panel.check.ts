@@ -69,7 +69,7 @@ export default defineCheck({
   },
   'new session form': newSessionScenario(),
   'new environment form': newEnvironmentScenario(),
-  // Le conflit lui-même est éphémère : le check montre la saisie gardée (« Unsaved changes », « Discard »).
+  // Une saisie gardée sur une version plus ancienne que le détail : « Unsaved changes » et l'avis de conflit (Reload, Save anyway).
   'environment form conflict': environmentDraftScenario(),
   'configurations agents': {
     requests: {
@@ -296,7 +296,13 @@ function environmentDraftScenario() {
     persisted: {
       plugin: {
         ...scenario.persisted.plugin,
-        'forms.drafts': { 'environment:env_check': { ...form, description: 'Runs the nightly checks and the weekly audit.' } }
+        // Commencée sur une version plus ancienne que le détail (`updatedAt` 10:00) : l'avis de conflit s'affiche.
+        'forms.drafts': {
+          'environment:env_check': {
+            form: { ...form, description: 'Runs the nightly checks and the weekly audit.' },
+            baseUpdatedAt: '2026-11-21T09:00:00Z'
+          }
+        }
       }
     }
   }

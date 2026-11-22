@@ -248,6 +248,70 @@ test('a typed input survives a panel restart, with Unsaved changes and Discard',
   await view.unmount()
 })
 
+test('a kept draft started on an older version shows the conflict and Save sends that older version', async () => {
+  const calls = newCalls()
+  const first = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  await first.type({ label: 'Description' }, 'Mine', { replace: true })
+  // Le brouillon retient la version sur laquelle il a été commencé.
+  const drafts = first.persisted.plugin['forms.drafts'] as Record<string, { baseUpdatedAt: string | null }>
+  assert.equal(drafts['environment:env_a']?.baseUpdatedAt, DETAIL.updatedAt)
+  assert.equal(first.find({ type: 'Callout', text: /Changed elsewhere since you opened it\./ }), null)
+  const persisted = { plugin: first.persisted.plugin }
+  await first.unmount()
+
+  // Entre-temps l'environnement a changé ailleurs : le détail relu est plus récent.
+  const newer: EnvironmentDetail = { ...DETAIL, updatedAt: '2026-11-22T15:00:00Z' }
+  const sends = newCalls()
+  const host = mockHost({
+    requests: requests(sends, {
+      'configs.detail': { ok: true, value: newer },
+      // Comme le worker : refuse une version périmée sauf si l'écriture est forcée.
+      'environment.save': (input: SaveInput<EnvironmentForm>) => {
+        sends.saves.push(input)
+        return input.force || input.baseUpdatedAt === newer.updatedAt
+          ? { ok: true, value: { id: 'env_a', updatedAt: '2026-11-22T16:00:00Z' } }
+          : CONFLICT
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted })
+  assert.ok(view.find({ type: 'Callout', text: /Changed elsewhere since you opened it\./ }))
+  assert.ok(view.find({ role: 'button', text: 'Reload' }))
+  assert.equal(view.valueOf({ label: 'Description' }), 'Mine')
+  await view.press({ role: 'button', text: 'Save' })
+  assert.equal(sends.saves.length, 1)
+  assert.equal(sends.saves[0]?.baseUpdatedAt, DETAIL.updatedAt)
+  assert.equal(sends.saves[0]?.force, false)
+  assert.ok(view.find({ type: 'Callout', text: /Changed elsewhere since you opened it\./ }))
+  await view.press({ role: 'button', text: 'Save anyway' })
+  assert.equal(sends.saves.length, 2)
+  assert.equal(sends.saves[1]?.force, true)
+  assert.equal(sends.saves[1]?.baseUpdatedAt, DETAIL.updatedAt)
+  assert.equal(view.find({ type: 'Callout', text: /Changed elsewhere since you opened it\./ }), null)
+  assert.deepEqual(read(formDrafts), {})
+  await view.unmount()
+})
+
+test('Reload on a stale kept draft drops it and shows the fresh version', async () => {
+  const calls = newCalls()
+  const newer: EnvironmentDetail = { ...DETAIL, description: 'Changed in the console', updatedAt: '2026-11-22T15:00:00Z', form: { ...FORM, description: 'Changed in the console' } }
+  const persisted = {
+    plugin: {
+      ...OPEN_DETAIL.plugin,
+      'forms.drafts': { 'environment:env_a': { form: { ...FORM, description: 'Mine' }, baseUpdatedAt: DETAIL.updatedAt } }
+    }
+  }
+  const host = mockHost({ requests: requests(calls, { 'configs.detail': { ok: true, value: newer } }) })
+  const view = await mount(panel, { host, persisted })
+  assert.ok(view.find({ type: 'Callout', text: /Changed elsewhere since you opened it\./ }))
+  await view.press({ role: 'button', text: 'Reload' })
+  assert.equal(view.find({ type: 'Callout', text: /Changed elsewhere since you opened it\./ }), null)
+  assert.equal(view.valueOf({ label: 'Description' }), 'Changed in the console')
+  assert.equal(view.find({ text: 'Unsaved changes' }), null)
+  assert.deepEqual(read(formDrafts), {})
+  await view.unmount()
+})
+
 test('typing a metadata key without a value does not turn it into key= while editing', async () => {
   const calls = newCalls()
   const host = mockHost({ requests: requests(calls) })

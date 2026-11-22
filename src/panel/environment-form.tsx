@@ -125,11 +125,18 @@ type SaveTarget = { key: string; id: string | null; base: EnvironmentForm; baseU
 async function saveForm(target: SaveTarget, force: boolean): Promise<void> {
   if (read(saving)) return
   const { key, id, base, baseUpdatedAt } = target
-  const { form } = readForm(key, base)
+  // L'horodatage envoyé est celui de la saisie gardée : le worker voit ainsi un changement fait ailleurs depuis.
+  const { form, baseUpdatedAt: sentBaseUpdatedAt } = readForm(key, base, baseUpdatedAt)
   set(saving, true)
   set(saveFailure, null)
   try {
-    const result = await plugin.request('environment.save', { id, baseUpdatedAt, force, form, base: id === null ? null : base })
+    const result = await plugin.request('environment.save', {
+      id,
+      baseUpdatedAt: sentBaseUpdatedAt,
+      force,
+      form,
+      base: id === null ? null : base
+    })
     if (!result.ok) {
       if (result.code === 'conflict') {
         update(formConflict, (conflicts) => ({ ...conflicts, [key]: true }))
@@ -179,15 +186,16 @@ type BodyProps = { id: string | null; base: EnvironmentForm; baseUpdatedAt: stri
 
 function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
   const key = formKey('environment', id)
-  const { form, dirty } = readForm(key, base)
-  const latest = (): EnvironmentForm => readForm(key, base).form
-  const change = (changes: Partial<EnvironmentForm>): void => editForm(key, { ...latest(), ...changes })
+  const { form, dirty, stale } = readForm(key, base, baseUpdatedAt)
+  const latest = (): EnvironmentForm => readForm(key, base, baseUpdatedAt).form
+  const change = (changes: Partial<EnvironmentForm>): void => editForm(key, { ...latest(), ...changes }, baseUpdatedAt)
   const changeLimited = (changes: Partial<LimitedNetwork>): void => {
     const { network } = latest()
     if (network.mode === 'limited') change({ network: { ...network, ...changes } })
   }
   const target: SaveTarget = { key, id, base, baseUpdatedAt }
-  const conflict = read(formConflict)[key] === true
+  // Conflit annoncé par le worker, ou saisie gardée commencée sur une autre version que celle chargée.
+  const conflict = read(formConflict)[key] === true || stale
   const busy = read(saving)
   const failed = read(saveFailure)
   const problem = validateEnvironmentForm(form)
