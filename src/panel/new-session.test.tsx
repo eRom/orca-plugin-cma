@@ -263,3 +263,26 @@ test('accepts a 20 KB first message without a refused render or persist', async 
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
+
+test('a failed list read shows its own callout with Retry, then the form', async () => {
+  let reads = 0
+  const host = mockHost({
+    requests: requests(() => ({ ok: true, value: { sessionId: 'sesn_new' } }), {
+      'createForm.options': () => {
+        reads += 1
+        return reads === 1 ? { ok: false, code: 'other', error: 'Rate limited (429). Try again shortly.' } : { ok: true, value: OPTIONS }
+      }
+    }) as never
+  })
+  const view = await mount(panel, { host, persisted: OPEN_FORM })
+  assert.ok(view.find({ type: 'Callout', text: /Could not load the lists/ }))
+  assert.ok(view.find({ text: /Rate limited/ }))
+  // Ce n'est pas un échec de création : l'autre titre n'apparaît pas.
+  assert.equal(view.find({ type: 'Callout', text: /Could not create the session/ }), null)
+  await view.press({ role: 'button', text: 'Retry' })
+  assert.equal(reads, 2)
+  assert.equal(view.find({ text: /Could not load the lists/ }), null)
+  assert.ok(view.find({ label: 'Agent' }))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})

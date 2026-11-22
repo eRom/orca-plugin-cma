@@ -23,7 +23,9 @@ const budget = atom(DEFAULT_BUDGET_DOLLARS)
 const firstMessage = atom('')
 /** Vrai pendant la création : une session est facturée, un double appui coûte. */
 const creating = atom(false)
-/** Erreur de lecture des listes ou de création, hors `model_not_budgetable`. */
+/** Erreur de lecture des listes du formulaire : son propre avis, avec un bouton pour réessayer. */
+const optionsFailure = atom<string | null>(null)
+/** Erreur de création, hors `model_not_budgetable`. */
 const failure = atom<string | null>(null)
 /** Le refus `model_not_budgetable`, avec le texte de l'API : le formulaire propose de créer sans budget. */
 const notBudgetable = atom<string | null>(null)
@@ -38,17 +40,19 @@ function resetForm(): void {
   set(budget, DEFAULT_BUDGET_DOLLARS)
   set(firstMessage, '')
   set(creating, false)
+  set(optionsFailure, null)
   set(failure, null)
   set(notBudgetable, null)
 }
 
 /** Lit les listes du formulaire (agents, envs, coffres, banques de mémoire). */
 export async function loadFormOptions(): Promise<void> {
+  set(optionsFailure, null)
   const result = await plugin.request('createForm.options')
   if (result.ok) {
     set(options, result.value)
   } else {
-    set(failure, result.error)
+    set(optionsFailure, result.error)
   }
 }
 
@@ -176,6 +180,7 @@ export function NewSessionView() {
       : null
   const problem = read(failure)
   const refused = read(notBudgetable)
+  const listsFailure = read(optionsFailure)
   return (
     <Stack gap="md">
       <Row gap="sm" align="center" justify="between" wrap>
@@ -189,8 +194,20 @@ export function NewSessionView() {
           <ErrorText message={problem} />
         </Callout>
       ) : null}
+      {listsFailure ? (
+        <Callout tone="danger" title="Could not load the lists">
+          <Stack gap="sm">
+            <ErrorText message={listsFailure} />
+            <Row>
+              <Button variant="outline" size="sm" onPress={() => run(loadFormOptions)}>
+                Retry
+              </Button>
+            </Row>
+          </Stack>
+        </Callout>
+      ) : null}
       {form === null ? (
-        problem ? null : <Spinner label="Loading agents and environments" />
+        listsFailure ? null : <Spinner label="Loading agents and environments" />
       ) : (
         <Stack gap="md">
           <Select

@@ -191,3 +191,34 @@ test('clips oversized session labels so Orca still renders the home', async () =
   assert.ok((rows[0]?.text.length ?? 0) < 1000)
   await view.unmount()
 })
+
+test('Forget key asks for a confirmation before clearing the key', async () => {
+  let cleared = 0
+  const host = mockHost({
+    requests: {
+      'workspace.info': WITH_KEY,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'configs.list': { ok: true, value: [] },
+      'sessions.list': { ok: true, value: [] },
+      'key.clear': () => {
+        cleared += 1
+        return { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null }
+      }
+    }
+  })
+  const view = await mount(panel, { host })
+  await view.toggle({ type: 'Collapsible', text: /Anthropic workspace/ })
+  await view.press({ role: 'button', text: 'Forget key' })
+  assert.equal(cleared, 0)
+  assert.equal(view.find({ role: 'button', text: 'Forget key' }), null)
+  // Annuler rend le premier bouton, sans rien effacer.
+  await view.press({ role: 'button', text: 'Cancel' })
+  assert.equal(cleared, 0)
+  assert.ok(view.find({ role: 'button', text: 'Forget key' }))
+  await view.press({ role: 'button', text: 'Forget key' })
+  await view.press({ role: 'button', text: 'Confirm forget key' })
+  assert.equal(cleared, 1)
+  assert.ok(view.find({ label: 'API key' }))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})

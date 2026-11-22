@@ -76,7 +76,11 @@ async function saveKey(): Promise<void> {
   throw new Error(result.error)
 }
 
+/** Vrai après un premier appui sur `Forget key` : le second appui, confirmé, efface la clé. */
+const confirmingForget = atom(false)
+
 async function forgetKey(): Promise<void> {
+  set(confirmingForget, false)
   set(workspace, await plugin.request('key.clear'))
   set(sessionRows, null)
   resetConfigs()
@@ -118,9 +122,20 @@ function WorkspaceLine() {
         {info?.workspaceId ? (
           <Link href={`https://platform.claude.com/workspaces/${info.workspaceId}/agents`}>Console</Link>
         ) : null}
-        <Button variant="ghost" tone="danger" size="sm" onPress={() => run(forgetKey)}>
-          Forget key
-        </Button>
+        {read(confirmingForget) ? (
+          <>
+            <Button variant="solid" tone="danger" size="sm" onPress={() => run(forgetKey)}>
+              Confirm forget key
+            </Button>
+            <Button variant="ghost" size="sm" onPress={() => set(confirmingForget, false)}>
+              Cancel
+            </Button>
+          </>
+        ) : (
+          <Button variant="ghost" tone="danger" size="sm" onPress={() => set(confirmingForget, true)}>
+            Forget key
+          </Button>
+        )}
       </Row>
     </Stack>
   )
