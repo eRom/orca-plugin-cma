@@ -325,6 +325,25 @@ test('a refresh asked during a turn in flight runs one trailing turn that sees t
   expect(h.poller.snapshot().map((row) => row.status)).toEqual(['idle'])
 })
 
+// Un tour parti entre la fin du tour attendu et le départ du rattrapage a lu après la demande :
+// le rattrapage l'adopte au lieu de lancer un second tour en parallèle.
+test('a trailing turn adopts a turn started after the one it waited for', async () => {
+  const h = harness({ sessions: [fakeSession({ id: 'sesn_a', status: 'running' })] })
+  let release: () => void = () => {}
+  h.state.hold = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const first = h.poller.refresh()
+  await settle()
+  const trailing = h.poller.refresh()
+  // Un appelant réveillé par la fin du premier tour en demande un partagé avant que le rattrapage ne parte.
+  const woken = first.then(() => h.poller.refresh({ shared: true }))
+  release()
+  await Promise.all([first, trailing, woken])
+  await settle()
+  expect(h.calls.list).toBe(2)
+})
+
 test('a shared refresh joins the turn in flight without a trailing turn', async () => {
   const h = harness({ sessions: [fakeSession({ id: 'sesn_a', status: 'running' })] })
   let release: () => void = () => {}

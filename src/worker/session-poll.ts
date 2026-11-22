@@ -174,7 +174,9 @@ export function createPoller(deps: PollerDeps): Poller {
         .then(() => {
           if (trailing === queued) trailing = null
           // Un arrêt ou un redémarrage entre-temps a jeté le tour en cours : celui-ci n'a plus d'objet.
-          return asked === epoch ? startTurn() : rows
+          if (asked !== epoch) return rows
+          // Un tour parti depuis la fin du tour attendu a lu après la demande : on l'adopte plutôt que d'en doubler un.
+          return inflight ?? startTurn()
         })
       trailing = queued
       return queued

@@ -61,6 +61,9 @@ import {
 
 type ToolRow = Extract<ThreadRow, { kind: 'tool' }>
 
+/** Plafond du titre de l'en-tête : un titre de l'API peut être long, et un texte trop lourd fait refuser le rendu. */
+const HEADER_TITLE_LIMIT_BYTES = 300
+
 const TOOL_STATE_LABELS: Record<ToolState, string> = {
   awaiting_approval: 'Waiting for approval',
   allowed: 'Allowed',
@@ -270,7 +273,8 @@ function Header({ sessionId }: { sessionId: string }) {
   // Le badge vient de la liste des sessions (le sondeur du worker) ; `session.detail` ne sert qu'avant sa première poussée.
   const badge = row?.badge ?? detail?.badge ?? null
   const money = read(sessionUsage) ?? (row ? { cost: row.cost, budget: row.budget } : null)
-  const title = row?.title ?? detail?.title ?? sessionId
+  const clipped = clipBytes(row?.title ?? detail?.title ?? sessionId, HEADER_TITLE_LIMIT_BYTES)
+  const title = clipped.truncated ? `${clipped.text}…` : clipped.text
   const cost = money?.budget ? `${formatMoney(money.cost) || '$0.00'} / ${formatMoney(money.budget)}` : formatMoney(money?.cost ?? null)
   return (
     <Stack gap="sm">

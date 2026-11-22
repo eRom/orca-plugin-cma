@@ -1,6 +1,7 @@
 import { assert, mockHost, mount, test } from 'orca/testing'
 import type { SessionDetail, SessionRow, StreamState, ThreadRow, ToolState } from '../protocol'
 import * as panel from '../panel'
+import { restoreOpenSession } from './session-view'
 
 const WITH_KEY = {
   hasKey: true,
@@ -441,6 +442,46 @@ test('reopens the watch when the worker restarted behind an open session', async
   assert.deepEqual(watched, [{ sessionId: 's1' }, { sessionId: 's1' }])
   assert.deepEqual(detailed, [{ sessionId: 's1' }, { sessionId: 's1' }])
   assert.ok(view.find({ text: /message m1/ }))
+  await view.unmount()
+})
+
+// Un ping qui annonce un worker redémarré rouvre la session affichée. `orca/testing` attend toute
+// requête en cours avant de rendre la main : la réouverture est donc déclenchée ici directement.
+test('keeps the typed message when the open session is reopened behind it', async () => {
+  const watched: unknown[] = []
+  const host = mockHost({
+    requests: requests([message('m1')], {
+      'session.watch': (input: unknown) => {
+        watched.push(input)
+        return { ok: true, value: { rows: [message('m1')], hasEarlier: false, stream: OPEN_STREAM } }
+      }
+    }) as never
+  })
+  const view = await mount(panel, { host, persisted: OPEN_S1 })
+  await view.type({ label: 'Message' }, 'Half-written thought')
+  await restoreOpenSession()
+  await view.settled()
+  assert.deepEqual(watched, [{ sessionId: 's1' }, { sessionId: 's1' }])
+  const field = view.find({ label: 'Message' })
+  assert.ok(field)
+  assert.equal(view.valueOf(field), 'Half-written thought')
+  await view.unmount()
+})
+
+test('clips an oversized session title in the header', async () => {
+  const long = 'T'.repeat(5000)
+  const host = mockHost({
+    requests: requests([message('m1')], {
+      'sessions.list': { ok: true, value: [sessionRow({ title: long })] },
+      'session.detail': { ok: true, value: sessionDetail({ title: long }) }
+    }) as never
+  })
+  const view = await mount(panel, { host, persisted: OPEN_S1 })
+  const title = view.find({ text: /^T+/ })
+  assert.ok(title)
+  assert.ok(title.text.length < 1000)
+  assert.deepEqual(view.refusals, [])
+  assert.deepEqual(view.errors, [])
   await view.unmount()
 })
 

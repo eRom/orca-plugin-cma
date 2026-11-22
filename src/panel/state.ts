@@ -128,8 +128,13 @@ export const raiseNotice = atom<string | null>(null)
 /** Erreur d'une action de la session, affichée près du composeur. */
 export const sessionNotice = atom<string | null>(null)
 
-/** Remet la vue à zéro pour une session (ou aucune). */
+/**
+ * Remet la vue à zéro pour une session (ou aucune). Rouvrir la session déjà affichée (worker redémarré,
+ * suivi perdu) garde ce que la personne a tapé et les gardes des envois en route : un envoi oublié en
+ * cours de route rouvrirait la porte au double envoi d'un message facturé.
+ */
 export function resetSessionView(sessionId: string | null): void {
+  const reopening = sessionId !== null && read(viewedSession) === sessionId
   set(viewedSession, sessionId)
   set(threadRows, [])
   set(previews, [])
@@ -140,13 +145,14 @@ export function resetSessionView(sessionId: string | null): void {
   set(sessionUsage, null)
   set(threadLoaded, false)
   set(loadingEarlier, false)
+  set(raiseNotice, null)
+  set(sessionNotice, null)
+  if (reopening) return
   set(sending, false)
   set(draft, '')
   set(denyDraft, {})
   set(confirming, [])
   set(raiseDraft, '')
-  set(raiseNotice, null)
-  set(sessionNotice, null)
 }
 
 /** Remplace les lignes déjà connues par id, ajoute les autres à la fin. Ne coupe jamais la liste. */
