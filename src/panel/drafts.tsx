@@ -249,23 +249,24 @@ async function commitDraft(ref: DraftRef, force: boolean, onApplied?: () => void
 }
 
 /** Remet le fichier à l'état de l'objet vivant : le brouillon n'est plus « non appliqué ». */
-async function resetDraft(ref: DraftRef): Promise<void> {
+async function resetDraft(ref: DraftRef, onDiscarded?: () => void): Promise<void> {
   const key = draftKey(ref)
   const result = await plugin.request('draft.discard', ref)
   if (!result.ok) throw new Error(result.error)
   setInfo(key, result.value)
   setOpened(key, false)
   setFlow(key, null)
+  onDiscarded?.()
 }
 
 /** « Reload » d'un conflit : abandonne le brouillon pour repartir de l'objet vivant. */
-async function reloadDraft(ref: DraftRef): Promise<void> {
+async function reloadDraft(ref: DraftRef, onDiscarded?: () => void): Promise<void> {
   const key = draftKey(ref)
   const flow = read(draftFlows)[key]
   if (flow?.step !== 'conflict' || flow.busy) return
   setFlow(key, { ...flow, busy: true })
   try {
-    await resetDraft(ref)
+    await resetDraft(ref, onDiscarded)
   } catch (error) {
     setFlow(key, { ...flow, busy: false })
     throw error
@@ -326,7 +327,7 @@ function SetupCard({ folder }: { folder: string }): OrcaNode {
   )
 }
 
-function FlowView({ draftRef, flow, onApplied }: { draftRef: DraftRef; flow: Flow; onApplied: (() => void) | undefined }): OrcaNode {
+function FlowView({ draftRef, flow, onApplied, onDiscarded }: { draftRef: DraftRef; flow: Flow; onApplied: (() => void) | undefined; onDiscarded: (() => void) | undefined }): OrcaNode {
   const key = draftKey(draftRef)
   switch (flow.step) {
     case 'review':
@@ -351,7 +352,7 @@ function FlowView({ draftRef, flow, onApplied }: { draftRef: DraftRef; flow: Flo
           <Stack gap="sm">
             <Text size="sm">Reload drops your edits. Apply anyway overwrites what changed.</Text>
             <Row gap="sm" wrap>
-              <Button variant="outline" size="sm" disabled={flow.busy} onPress={() => run(() => reloadDraft(draftRef))}>
+              <Button variant="outline" size="sm" disabled={flow.busy} onPress={() => run(() => reloadDraft(draftRef, onDiscarded))}>
                 Reload
               </Button>
               <Button variant="solid" size="sm" disabled={flow.busy} onPress={() => run(() => commitDraft(draftRef, true, onApplied))}>
@@ -399,9 +400,11 @@ type DraftControlsProps = {
   label: string
   /** Appelé dès que l'écriture est appliquée : la vue hôte relit l'objet écrit. */
   onApplied?: () => void
+  /** Appelé dès que le brouillon est abandonné (Discard, ou Reload après un conflit) : la vue hôte oublie ce qu'elle gardait. */
+  onDiscarded?: () => void
 }
 
-export function DraftControls({ draftRef, label, onApplied }: DraftControlsProps): OrcaNode {
+export function DraftControls({ draftRef, label, onApplied, onDiscarded }: DraftControlsProps): OrcaNode {
   const key = draftKey(draftRef)
   const status = read(draftsStatus)
   const info = read(draftInfos)[key] ?? null
@@ -417,7 +420,7 @@ export function DraftControls({ draftRef, label, onApplied }: DraftControlsProps
   return (
     <Stack gap="sm">
       {missing ? <SetupCard folder={status.folder} /> : null}
-      {flow !== undefined ? <FlowView draftRef={draftRef} flow={flow} onApplied={onApplied} /> : null}
+      {flow !== undefined ? <FlowView draftRef={draftRef} flow={flow} onApplied={onApplied} onDiscarded={onDiscarded} /> : null}
       {inFlow ? null : (
         <Stack gap="sm">
           {kept ? (
@@ -440,7 +443,7 @@ export function DraftControls({ draftRef, label, onApplied }: DraftControlsProps
                   question="Discard this draft? Your edits in the file are lost."
                   confirmLabel="Discard"
                   disabled={busy}
-                  onConfirm={() => resetDraft(draftRef)}
+                  onConfirm={() => resetDraft(draftRef, onDiscarded)}
                 />
               </>
             ) : null}

@@ -454,6 +454,33 @@ test('Discard asks first, then discards the draft and hides Apply', async () => 
   await view.unmount()
 })
 
+test('onDiscarded fires when the draft is discarded, by Discard or by Reload after a conflict', async () => {
+  const calls = newCalls()
+  let discarded = 0
+  const WithCallback = {
+    default: () => (
+      <Stack>
+        <DraftControls draftRef={REF} label="Edit YAML" onDiscarded={() => (discarded += 1)} />
+      </Stack>
+    ),
+    setup: harness.setup
+  }
+  const view = await mount(WithCallback, { host: mockHost({ requests: requests(calls, { info: UNAPPLIED, commits: [CONFLICT] }) }) })
+  await view.press({ role: 'button', text: 'Discard' })
+  assert.equal(discarded, 0)
+  await view.press({ role: 'button', text: 'Discard' })
+  assert.equal(discarded, 1)
+  await view.unmount()
+
+  const again = await mount(WithCallback, { host: mockHost({ requests: requests(newCalls(), { info: UNAPPLIED, commits: [CONFLICT] }) }) })
+  await applyFlow(again)
+  await again.press({ role: 'button', text: 'Confirm' })
+  assert.equal(discarded, 1)
+  await again.press({ role: 'button', text: 'Reload' })
+  assert.equal(discarded, 2)
+  await again.unmount()
+})
+
 test('the preview rows say before to after, or the lines, and a reorder is not +0 / −0', () => {
   const change = (over: Partial<FieldChange>): FieldChange => ({ path: 'p', before: 'a', after: 'b', lines: null, ...over })
   assert.equal(describeChange(change({})), 'a → b')

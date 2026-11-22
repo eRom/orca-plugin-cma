@@ -21,11 +21,23 @@ import {
   update,
   type OrcaNode
 } from 'orca'
-import type { ApiResult, DraftRef, MemoryContent, MemoryStoreDetail, MemoryStoreForm } from '../protocol'
+import type { ApiResult, MemoryContent, MemoryStoreDetail, MemoryStoreForm } from '../protocol'
 import { INVALID_MEMORY_PATH, isSafeMemoryPath } from '../shared/memory-path'
 import { clipBytes } from '../shared/text'
 import { archiveQuestion, ConfirmAction, deleteQuestion } from './confirm'
-import { configDetail, loadConfigs, loadDetail, loadMemory, memoryDraft, openConfig, openMemory, RENDER_ROW_CAP } from './config-state'
+import {
+  configDetail,
+  loadConfigs,
+  loadDetail,
+  loadMemory,
+  memoryDraft,
+  newMemories,
+  newMemoryRef,
+  openConfig,
+  openMemory,
+  RENDER_ROW_CAP,
+  setNewMemory
+} from './config-state'
 import { DraftControls, draftHasFlow, loadDraftControls } from './drafts'
 import { clearForm, editForm, formConflict, formKey, isTouched, readForm, touchField } from './form-state'
 import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, nav, popIfTop, popView, run } from './state'
@@ -35,6 +47,7 @@ const CONFLICT_TITLE = 'Changed elsewhere since you opened it.'
 /** Plafond d'un nom ou d'un chemin repris dans un libellé : un libellé de plus de 1 Kio fait refuser le rendu. */
 const TITLE_LIMIT_BYTES = 200
 const PATH_HELP = 'Starts with /, for example /notes/today.md'
+const PATH_TAKEN = 'A memory already has this path.'
 
 const clipTitle = (text: string): string => clipBytes(text, TITLE_LIMIT_BYTES).text
 
@@ -49,11 +62,6 @@ const saving = atom(false)
 /** Refus de l'enregistrement d'une banque (hors conflit), avec le formulaire concerné. */
 const saveFailure = atom<{ key: string; message: string } | null>(null)
 
-/** Où en est la nouvelle mémoire d'une banque : le chemin demandé, puis le brouillon, puis son succès. */
-type NewMemoryEntry = { phase: 'asking' | 'editing' | 'applied'; path: string }
-/** Par identifiant de banque. */
-const newMemory = atom<Record<string, NewMemoryEntry>>({})
-
 /** Chemins tapés dans le champ « Path » d'une mémoire ouverte, par identifiant de mémoire ; absent : le chemin actuel. */
 const renamePaths = atom<Record<string, string>>({})
 /** Vrai pendant un renommage. */
@@ -64,13 +72,6 @@ const renameFailure = atom<{ memoryId: string; code: string; message: string } |
 function discardForm(key: string): void {
   clearForm(key)
   if (read(saveFailure)?.key === key) set(saveFailure, null)
-}
-
-function setNewMemory(storeId: string, entry: NewMemoryEntry | null): void {
-  update(newMemory, (entries) => {
-    const { [storeId]: _dropped, ...rest } = entries
-    return entry === null ? rest : { ...rest, [storeId]: entry }
-  })
 }
 
 function setRenamePath(memoryId: string, path: string | null): void {
@@ -194,9 +195,11 @@ async function deleteMemory(memory: MemoryContent): Promise<void> {
   const result = await plugin.request('resource.delete', { kind: 'memory', memoryStoreId: memory.memoryStoreId, id: memory.id })
   if (!result.ok) throw new Error(result.error)
   setRenamePath(memory.id, null)
-  const closed = popIfTop((entry) => entry.view === 'memory' && entry.memoryId === memory.id)
+  popIfTop((entry) => entry.view === 'memory' && entry.memoryId === memory.id)
   await loadConfigs('memory_store')
-  if (closed) await loadDetail('memory_store', memory.memoryStoreId)
+  // Sans condition : si Back a été pressé pendant la suppression, la banque est déjà au sommet avec un détail
+  // périmé. `loadDetail` l'efface d'abord, et laisse tomber sa réponse si la banque n'est plus la vue ouverte.
+  await loadDetail('memory_store', memory.memoryStoreId)
 }
 
 function goBack(): void {
@@ -300,7 +303,7 @@ function formatSize(bytes: number): string {
 
 /** « New memory » : demande le chemin, puis rend les contrôles du brouillon d'une mémoire pas encore créée. */
 function NewMemory({ store }: { store: MemoryStoreDetail }) {
-  const entry = read(newMemory)[store.id]
+  const entry = read(newMemories)[store.id]
   const fieldKey = `memory:new:${store.id}`
   if (entry === undefined || (entry.phase === 'applied' && !draftHasFlow(newMemoryRef(store.id, entry.path)))) {
     return (
@@ -313,8 +316,11 @@ function NewMemory({ store }: { store: MemoryStoreDetail }) {
   }
   if (entry.phase === 'asking') {
     const invalid = entry.path !== '' && !isSafeMemoryPath(entry.path)
+    // macOS plie la casse des noms de fichier : `/A.md` et `/a.md` sont le même brouillon.
+    const lowered = entry.path.toLowerCase()
+    const taken = !invalid && store.memories.some((memory) => memory.path.toLowerCase() === lowered)
     const proceed = (): void => {
-      if (entry.path === '' || invalid) return
+      if (entry.path === '' || invalid || taken) return
       setNewMemory(store.id, { phase: 'editing', path: entry.path })
       run(() => loadDraftControls(newMemoryRef(store.id, entry.path)))
     }
@@ -334,13 +340,17 @@ function NewMemory({ store }: { store: MemoryStoreDetail }) {
           <Text tone="danger" size="sm">
             {INVALID_MEMORY_PATH}
           </Text>
+        ) : taken ? (
+          <Text tone="danger" size="sm">
+            {PATH_TAKEN}
+          </Text>
         ) : (
           <Text muted size="xs">
             {PATH_HELP}
           </Text>
         )}
         <Row gap="sm" wrap>
-          <Button disabled={entry.path === '' || invalid} onPress={proceed}>
+          <Button disabled={entry.path === '' || invalid || taken} onPress={proceed}>
             Continue
           </Button>
           <Button variant="ghost" size="sm" onPress={() => setNewMemory(store.id, null)}>
@@ -366,13 +376,10 @@ function NewMemory({ store }: { store: MemoryStoreDetail }) {
           setNewMemory(store.id, { phase: 'applied', path: entry.path })
           run(() => reloadStore(store.id))
         }}
+        onDiscarded={() => setNewMemory(store.id, null)}
       />
     </Stack>
   )
-}
-
-function newMemoryRef(memoryStoreId: string, path: string): DraftRef {
-  return { kind: 'memory', memoryStoreId, memoryId: null, path }
 }
 
 function MemoriesSection({ store }: { store: MemoryStoreDetail }) {
