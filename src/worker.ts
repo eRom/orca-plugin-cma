@@ -31,7 +31,9 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   const watcher = createWatcher(sdkEventSource(store), {
     thread: (payload) => orca.panels.post('session.thread', payload),
     state: (payload) => orca.panels.post('stream.state', payload),
-    // Statut et badge viennent de l'instantané du sondeur ; `running` tant que la session n'y figure pas.
+    // `session.updated.status` et `badge` sont indicatifs : l'instantané du sondeur a 10 à 60 s de
+    // retard, et `running` tient lieu de défaut tant que la session n'y figure pas. L'en-tête du
+    // panneau doit lire la ligne de la session dans `sessions.changed` (tâche 7).
     usage: (sessionId, cost, budget) => {
       const known = poller.snapshot().find((row) => row.id === sessionId)
       orca.panels.post('session.updated', {
@@ -41,6 +43,9 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
         cost,
         budget
       })
+      // Un événement d'usage prouve que la session bouge : on rattrape l'instantané tout de suite
+      // (un seul tour à la fois), et le `sessions.changed` qui en résulte rejoint le panneau.
+      poller.refresh().catch((error: unknown) => orca.log(`sessions refresh failed: ${describeError(error).message}`))
     },
     log: (message) => orca.log(message)
   })

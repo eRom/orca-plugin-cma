@@ -37,12 +37,22 @@ function harness(options: {
   const published: SessionRow[][] = []
   const bars: { text: string; tone: string }[] = []
   const logs: string[] = []
-  const state = { sessions: options.sessions ?? [], listError: options.listError }
+  const state = {
+    sessions: options.sessions ?? [],
+    listError: options.listError,
+    /** Quand présent, le prochain appel de `list` attend cette promesse avant de rendre ses sessions. */
+    hold: null as Promise<void> | null
+  }
   const deps: PollerDeps = {
     async list() {
       calls.list++
       if (state.listError) throw state.listError
-      return state.sessions
+      // Les sessions sont lues à l'appel : un tour retenu rend l'état d'avant le redémarrage.
+      const sessions = state.sessions
+      const gate = state.hold
+      state.hold = null
+      if (gate) await gate
+      return sessions
     },
     async lastIdle(sessionId) {
       calls.lastIdle.push(sessionId)
@@ -247,4 +257,47 @@ test('stop resets the status bar and discards a turn still in flight', async () 
   expect(h.published.length).toBe(0)
   expect(h.pending().length).toBe(0)
   expect(h.poller.snapshot()).toEqual([])
+})
+
+test('two quick starts arm one timer and publish the rows once', async () => {
+  const h = harness({ sessions: [fakeSession({ id: 'sesn_a', status: 'running' })] })
+  h.poller.start()
+  h.poller.start()
+  await settle()
+  expect(h.pending().length).toBe(1)
+  expect(h.timers.length).toBe(1)
+  expect(h.published.length).toBe(1)
+  expect(h.published[0]?.map((row) => row.id)).toEqual(['sesn_a'])
+  h.poller.stop()
+})
+
+test('a turn from before a restart publishes, writes and arms nothing', async () => {
+  const h = harness({
+    sessions: [fakeSession({ id: 'sesn_old' })],
+    idle: { sesn_old: { stop: { type: 'requires_action', event_ids: ['x'] }, blocking: [ask] } }
+  })
+  let release: () => void = () => {}
+  h.state.hold = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  h.poller.start()
+  await settle()
+  // Le premier tour attend `list` ; on arrête puis on relance avec d'autres sessions.
+  h.poller.stop()
+  h.state.sessions = [fakeSession({ id: 'sesn_new', status: 'running' })]
+  h.poller.start()
+  await settle()
+  expect(h.published.map((rows) => rows.map((row) => row.id))).toEqual([['sesn_new']])
+  expect(h.timers.length).toBe(1)
+  const barsBefore = h.bars.length
+  // L'ancien tour finit : sa liste d'avant le redémarrage ne doit rien laisser.
+  release()
+  await settle()
+  expect(h.published.map((rows) => rows.map((row) => row.id))).toEqual([['sesn_new']])
+  expect(h.bars.length).toBe(barsBefore)
+  expect(h.bars.some((bar) => bar.text === '1 approval')).toBe(false)
+  expect(h.timers.length).toBe(1)
+  expect(h.pending().length).toBe(1)
+  expect(h.poller.snapshot().map((row) => row.id)).toEqual(['sesn_new'])
+  h.poller.stop()
 })
