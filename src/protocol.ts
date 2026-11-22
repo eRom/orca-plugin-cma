@@ -19,6 +19,10 @@ export type ApiErrorCode =
   | 'model_not_budgetable'
   | 'budget_not_raised'
   | 'budget_create_only'
+  /** L'objet a changé depuis son ouverture : l'écriture est refusée, sauf si elle est forcée. */
+  | 'conflict'
+  /** Le formulaire est refusé avant tout appel réseau. */
+  | 'invalid'
   | 'other'
 
 /** Un appel à l'API Anthropic : une erreur revient en texte lisible, jamais en exception. */
@@ -70,10 +74,35 @@ export type AgentDetail = {
 
 export type KeyValueItem = { key: string; value: string }
 
+/** Ordre d'affichage des gestionnaires de paquets d'un environnement. */
+export const PACKAGE_MANAGERS = ['apt', 'cargo', 'gem', 'go', 'npm', 'pip'] as const
+export type PackageManager = (typeof PACKAGE_MANAGERS)[number]
+export type PackageLists = Record<PackageManager, string[]>
+export const ALLOWED_HOSTS_MAX = 16
+
+export type EnvironmentNetworkForm =
+  | { mode: 'unrestricted' }
+  | { mode: 'limited'; allowedHosts: string[]; allowPackageManagers: boolean; allowMcpServers: boolean }
+
+/** L'environnement tel que le formulaire le modifie. */
+export type EnvironmentForm = {
+  name: string
+  description: string
+  hosting: 'cloud' | 'self_hosted'
+  /** Ignoré pour `self_hosted` : l'hôte gère le réseau et les paquets. */
+  network: EnvironmentNetworkForm
+  packages: PackageLists
+  metadata: KeyValueItem[]
+}
+
 export type EnvironmentDetail = {
   kind: 'environment'
   id: string
   name: string
+  description: string | null
+  /** Horodatage de la dernière modification : sert à détecter un changement ailleurs avant d'écrire. */
+  updatedAt: string
+  form: EnvironmentForm
   hosting: string
   network:
     | { mode: 'unrestricted' }
@@ -199,6 +228,17 @@ export type SessionCreateInput = {
   metadata?: Record<string, string>
 }
 
+/** `base` est le formulaire tel qu'il a été chargé ; null à la création. */
+export type SaveInput<F> = { id: string | null; baseUpdatedAt: string | null; force: boolean; form: F; base: F | null }
+
+export type Saved = { id: string; updatedAt: string }
+
+/** Une ressource à archiver ou supprimer ; credentials et mémoires portent l'id de leur parent. */
+export type ResourceRef =
+  | { kind: 'agent' | 'environment' | 'vault' | 'memory_store' | 'session'; id: string }
+  | { kind: 'credential'; vaultId: string; id: string }
+  | { kind: 'memory'; memoryStoreId: string; id: string }
+
 export type CreateFormOptions = {
   agents: ConfigRow[]
   environments: ConfigRow[]
@@ -231,6 +271,9 @@ declare module 'orca' {
     'session.interrupt': { input: { sessionId: string }; output: ApiResult<null> }
     'session.create': { input: SessionCreateInput; output: ApiResult<{ sessionId: string }> }
     'session.raiseBudget': { input: { sessionId: string; dollars: string }; output: ApiResult<SessionDetail> }
+    'environment.save': { input: SaveInput<EnvironmentForm>; output: ApiResult<Saved> }
+    'resource.archive': { input: ResourceRef; output: ApiResult<null> }
+    'resource.delete': { input: ResourceRef; output: ApiResult<null> }
     'createForm.options': { output: ApiResult<CreateFormOptions> }
     'diagnostics.testSpend': { output: ApiResult<{ sessions: number; total: Money | null }> }
   }

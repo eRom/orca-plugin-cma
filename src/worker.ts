@@ -1,7 +1,8 @@
 // Worker du plugin : le seul côté qui a le réseau. Il détient la clé API et répond au panneau.
 import type { OrcaWorkerApi } from 'orca/worker'
-import type { ApiResult, SessionRow, ThreadRow, WorkspaceInfo } from './protocol'
+import type { ApiResult, ResourceRef, SessionRow, ThreadRow, WorkspaceInfo } from './protocol'
 import { SECRET_NAME, attempt, createClientStore, describeError, failure, setKey, workspaceInfo } from './worker/client'
+import { createWriteHandlers } from './worker/config-writes'
 import { createConfigHandlers } from './worker/configs'
 import { createSessionHandlers } from './worker/session-actions'
 import { createPoller, sdkPollSource } from './worker/session-poll'
@@ -155,6 +156,19 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   orca.panels.handle('configs.detail', configs.detail)
   orca.panels.handle('memory.read', configs.readMemory)
   orca.panels.handle('createForm.options', configs.formOptions)
+
+  const writes = createWriteHandlers(store, (message) => orca.log(message))
+  orca.panels.handle('environment.save', writes.saveEnvironment)
+  // Archiver ou supprimer une session change la liste que le sondeur porte : on la relit sans attendre.
+  const thenRefreshSessions =
+    (handler: (ref: ResourceRef) => Promise<ApiResult<null>>) =>
+    async (ref: ResourceRef): Promise<ApiResult<null>> => {
+      const result = await handler(ref)
+      if (result.ok && ref.kind === 'session') refreshSessions()
+      return result
+    }
+  orca.panels.handle('resource.archive', thenRefreshSessions(writes.archive))
+  orca.panels.handle('resource.delete', thenRefreshSessions(writes.remove))
 
   poller.start()
   orca.log('agent-claude-managed worker ready')

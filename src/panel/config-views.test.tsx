@@ -77,6 +77,16 @@ function environment(network: EnvironmentDetail['network']): EnvironmentDetail {
     kind: 'environment',
     id: 'env_a',
     name: 'Sandbox',
+    description: null,
+    updatedAt: '2026-11-22T10:00:00Z',
+    form: {
+      name: 'Sandbox',
+      description: '',
+      hosting: network.mode === 'host_managed' ? 'self_hosted' : 'cloud',
+      network: network.mode === 'host_managed' ? { mode: 'unrestricted' } : network,
+      packages: { apt: [], cargo: [], gem: [], go: [], npm: [], pip: ['requests'] },
+      metadata: [{ key: 'team', value: 'infra' }]
+    },
     hosting: network.mode === 'host_managed' ? 'self_hosted' : 'cloud',
     network,
     packages: [{ key: 'pip', value: 'requests' }],

@@ -17,6 +17,7 @@ import type { BetaManagedAgentsCredential } from '@anthropic-ai/sdk/resources/be
 import type { BetaManagedAgentsVault } from '@anthropic-ai/sdk/resources/beta/vaults/vaults'
 import {
   DETAIL_TEXT_LIMIT_BYTES,
+  PACKAGE_MANAGERS,
   type AgentDetail,
   type ApiResult,
   type ConfigDetail,
@@ -35,6 +36,7 @@ import {
 } from '../protocol'
 import { clipBytes } from '../shared/text'
 import { attempt, type ClientStore } from './client'
+import { toEnvironmentForm } from './config-writes'
 
 type ConfigObjects = {
   agent: BetaManagedAgentsAgent
@@ -44,9 +46,6 @@ type ConfigObjects = {
 }
 
 type PolicyHolder = { permission_policy: { type: ToolPolicy } }
-
-/** Ordre d'affichage des gestionnaires de paquets d'un environnement. */
-const PACKAGE_MANAGERS = ['apt', 'cargo', 'gem', 'go', 'npm', 'pip'] as const
 
 function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? '' : 's'}`
@@ -202,7 +201,15 @@ function toKeyValueItems(record: Record<string, string>): KeyValueItem[] {
 }
 
 export function toEnvironmentDetail(env: BetaEnvironment): EnvironmentDetail {
-  const common = { kind: 'environment' as const, id: env.id, name: env.name, hosting: env.config.type }
+  const common = {
+    kind: 'environment' as const,
+    id: env.id,
+    name: env.name,
+    description: env.description,
+    updatedAt: env.updated_at,
+    form: toEnvironmentForm(env),
+    hosting: env.config.type
+  }
   const metadata = toKeyValueItems(env.metadata)
   if (env.config.type !== 'cloud') {
     // `self_hosted` ne décrit ni réseau ni paquets : l'hôte les gère, et l'API n'en dit rien.
