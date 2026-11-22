@@ -19,6 +19,7 @@ export type NavEntry =
   | { view: 'memory'; memoryStoreId: string; memoryId: string }
   | { view: 'session'; sessionId: string }
   | { view: 'newSession' }
+  | { view: 'newConfig'; kind: ConfigKind }
 
 export type HomeTab = 'agent' | 'environment' | 'memory_store' | 'vault'
 

@@ -8,17 +8,16 @@ import type {
   EnvironmentCreateParams,
   EnvironmentUpdateParams
 } from '@anthropic-ai/sdk/resources/beta/environments/environments'
-import {
-  ALLOWED_HOSTS_MAX,
-  PACKAGE_MANAGERS,
-  type ApiResult,
-  type EnvironmentForm,
-  type KeyValueItem,
-  type PackageLists,
-  type ResourceRef,
-  type SaveInput,
-  type Saved
+import type {
+  ApiResult,
+  EnvironmentForm,
+  KeyValueItem,
+  PackageLists,
+  ResourceRef,
+  SaveInput,
+  Saved
 } from '../protocol'
+import { cleaned, validateEnvironmentForm } from '../shared/environment-rules'
 import { attempt, failure, type ClientStore } from './client'
 
 export const CONFLICT_MESSAGE = 'Changed elsewhere since you opened it.'
@@ -59,11 +58,6 @@ export function toEnvironmentForm(env: BetaEnvironment): EnvironmentForm {
   }
 }
 
-/** Les entrées utiles d'une liste saisie à la main : coupées, sans ligne vide. */
-function cleaned(values: string[]): string[] {
-  return values.map((value) => value.trim()).filter((value) => value !== '')
-}
-
 /** Les paires du formulaire en objet ; une clé vide est ignorée. */
 function toRecord(items: KeyValueItem[]): Record<string, string> {
   const record: Record<string, string> = {}
@@ -85,23 +79,6 @@ export function metadataPatch(form: KeyValueItem[], base: KeyValueItem[]): Recor
     if (previous[key] !== value) patch[key] = value
   }
   return patch
-}
-
-export function validateEnvironmentForm(form: EnvironmentForm): string | null {
-  if (form.name.trim() === '') {
-    return 'A name is required.'
-  }
-  // `self_hosted` : l'hôte gère le réseau et les paquets, rien à contrôler ici.
-  if (form.hosting === 'self_hosted' || form.network.mode !== 'limited') {
-    return null
-  }
-  if (cleaned(form.network.allowedHosts).length > ALLOWED_HOSTS_MAX) {
-    return `At most ${ALLOWED_HOSTS_MAX} allowed hosts.`
-  }
-  if (!form.network.allowPackageManagers && PACKAGE_MANAGERS.some((manager) => cleaned(form.packages[manager]).length > 0)) {
-    return "Package installs need 'Allow package managers' in a limited network."
-  }
-  return null
 }
 
 function networkingParams(network: EnvironmentForm['network']): NonNullable<BetaCloudConfigParams['networking']> {

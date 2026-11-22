@@ -10,10 +10,10 @@ import {
   environmentUpdateParams,
   isStale,
   metadataPatch,
-  toEnvironmentForm,
-  validateEnvironmentForm
+  toEnvironmentForm
 } from './config-writes'
 import { toEnvironmentDetail } from './configs'
+import { validateEnvironmentForm } from '../shared/environment-rules'
 
 // Les fixtures sont des réponses réelles de l'API (capturées le 22/11), chargées sans `resolveJsonModule`.
 function fixture<T>(name: string): T {

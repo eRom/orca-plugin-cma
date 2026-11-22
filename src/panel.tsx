@@ -3,6 +3,7 @@
 import { Callout, plugin, read, set, Spinner, Stack, Text, type PanelContext } from 'orca'
 import { POLL_VISIBLE_MS } from './protocol'
 import { ConfigDetailView, loadConfigs, MemoryView, restoreConfigView } from './panel/config-views'
+import { EnvironmentFormView } from './panel/environment-form'
 import { Home } from './panel/home'
 import { NewSessionView, restoreNewSession } from './panel/new-session'
 import { restoreOpenSession, SessionView, sessionSubscriptions } from './panel/session-view'
@@ -86,6 +87,9 @@ function CurrentView() {
       return <NewSessionView />
     case 'config':
       return <ConfigDetailView kind={top.kind} id={top.id} />
+    case 'newConfig':
+      // Seul l'environnement a son formulaire de création ; une pile persistée d'un autre type retombe sur l'accueil.
+      return top.kind === 'environment' ? <EnvironmentFormView id={null} /> : <Home />
     case 'memory':
       return <MemoryView memoryStoreId={top.memoryStoreId} memoryId={top.memoryId} />
     default:

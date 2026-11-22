@@ -1,7 +1,18 @@
 // `orca plugin check` dessine le panneau une fois par scénario ; le worker y est remplacé par des
 // réponses figées, donc aucun appel réseau et aucune clé.
 import { defineCheck } from 'orca/testing'
-import type { ConfigDetail, ConfigKind, ConfigRow, CreateFormOptions, SessionDetail, SessionRow, StreamState, ThreadRow } from './protocol'
+import type {
+  ConfigDetail,
+  ConfigKind,
+  ConfigRow,
+  CreateFormOptions,
+  EnvironmentDetail,
+  EnvironmentForm,
+  SessionDetail,
+  SessionRow,
+  StreamState,
+  ThreadRow
+} from './protocol'
 
 const WITH_KEY = {
   hasKey: true,
@@ -57,6 +68,9 @@ export default defineCheck({
     requests: { 'workspace.info': { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null } }
   },
   'new session form': newSessionScenario(),
+  'new environment form': newEnvironmentScenario(),
+  // Le conflit lui-même est éphémère : le check montre la saisie gardée (« Unsaved changes », « Discard »).
+  'environment form conflict': environmentDraftScenario(),
   'configurations agents': {
     requests: {
       'workspace.info': WITH_KEY,
@@ -237,6 +251,53 @@ function newSessionScenario() {
       'configs.list': { ok: true as const, value: [] },
       'sessions.list': { ok: true as const, value: [] },
       'createForm.options': { ok: true as const, value: options }
+    }
+  }
+}
+
+/** Le formulaire de création d'un environnement, ouvert et vierge. */
+function newEnvironmentScenario() {
+  return {
+    persisted: { plugin: { nav: [{ view: 'home' }, { view: 'newConfig', kind: 'environment' }] } },
+    requests: {
+      'workspace.info': WITH_KEY,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'configs.list': { ok: true as const, value: [] },
+      'sessions.list': { ok: true as const, value: [] }
+    }
+  }
+}
+
+/** Un environnement en réseau limité dont la description a été modifiée puis gardée (atome persisté). */
+function environmentDraftScenario() {
+  const form: EnvironmentForm = {
+    name: 'Sandbox',
+    description: 'Runs the nightly checks.',
+    hosting: 'cloud',
+    network: { mode: 'limited', allowedHosts: ['pypi.org', 'github.com'], allowPackageManagers: true, allowMcpServers: false },
+    packages: { apt: [], cargo: [], gem: [], go: [], npm: [], pip: ['requests'] },
+    metadata: [{ key: 'team', value: 'infra' }]
+  }
+  const detail: EnvironmentDetail = {
+    kind: 'environment',
+    id: 'env_check',
+    name: 'Sandbox',
+    description: form.description,
+    updatedAt: '2026-11-22T10:00:00Z',
+    form,
+    hosting: 'cloud',
+    network: form.network,
+    packages: [{ key: 'pip', value: 'requests' }],
+    metadata: form.metadata
+  }
+  const scenario = configScenario('environment', detail)
+  return {
+    ...scenario,
+    persisted: {
+      plugin: {
+        ...scenario.persisted.plugin,
+        'forms.drafts': { 'environment:env_check': { ...form, description: 'Runs the nightly checks and the weekly audit.' } }
+      }
     }
   }
 }

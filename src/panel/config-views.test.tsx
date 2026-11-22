@@ -236,18 +236,25 @@ test('opens the console page of the item with a press', async () => {
 })
 
 test('describes the three environment networks', async () => {
-  const cases: [EnvironmentDetail['network'], RegExp][] = [
-    [{ mode: 'unrestricted' }, /Unrestricted/],
-    [{ mode: 'limited', allowedHosts: ['pypi.org', 'github.com'], allowPackageManagers: true, allowMcpServers: false }, /Limited/],
-    [{ mode: 'host_managed' }, /Managed by the host/]
+  const cases: [EnvironmentDetail['network'], string][] = [
+    [{ mode: 'unrestricted' }, 'unrestricted'],
+    [{ mode: 'limited', allowedHosts: ['pypi.org', 'github.com'], allowPackageManagers: true, allowMcpServers: false }, 'limited'],
+    [{ mode: 'host_managed' }, 'host_managed']
   ]
   for (const [network, expected] of cases) {
     const host = mockHost({ requests: requests({ 'configs.detail': { ok: true, value: environment(network) } }) })
     const view = await mount(panel, { host, persisted: openConfig('environment', 'env_a') })
-    assert.ok(view.find({ text: expected }), String(expected))
+    if (expected === 'host_managed') {
+      // Hébergé par l'utilisateur : ni réseau ni paquets, l'hôte les gère.
+      assert.equal(view.find({ type: 'RadioGroup', label: 'Network' }), null)
+      assert.ok(view.find({ text: /managed by the host/ }))
+    } else {
+      assert.equal(view.valueOf({ type: 'RadioGroup', label: 'Network' }), expected)
+    }
     if (network.mode === 'limited') {
-      assert.ok(view.find({ type: 'ListItem', label: 'pypi.org' }))
-      assert.ok(view.find({ type: 'ListItem', label: 'github.com' }))
+      assert.equal(view.valueOf({ label: 'Allowed hosts' }), 'pypi.org\ngithub.com')
+      assert.equal(view.valueOf({ label: 'Allow package managers' }), true)
+      assert.equal(view.valueOf({ label: 'Allow MCP servers' }), false)
     }
     assert.deepEqual(view.errors, [])
     await view.unmount()

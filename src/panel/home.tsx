@@ -35,6 +35,7 @@ import {
   resetConfigs,
   restoreConfigView
 } from './config-views'
+import { openNewConfig } from './environment-form'
 import { openNewSession, restoreNewSession } from './new-session'
 import { openSession, restoreOpenSession } from './session-view'
 import { ERROR_TEXT_LIMIT_BYTES, homeFilter, homeTab, loadSessions, run, sectionsOpen, sessionRows, workspace, type HomeTab } from './state'
@@ -147,6 +148,11 @@ function ConfigList({ tab }: { tab: (typeof CONFIG_TABS)[number] }) {
   const shown = rows ? filterRows(rows, query) : []
   return (
     <Stack gap="sm">
+      {tab.value === 'environment' ? (
+        <Button icon="add" onPress={() => openNewConfig('environment')}>
+          New environment
+        </Button>
+      ) : null}
       <Input
         label="Filter"
         labelHidden

@@ -1,5 +1,5 @@
-// Configurations en lecture seule : lecture des listes de l'accueil, vues de détail (agent, env,
-// banque de mémoire, mémoire, coffre) et ouverture dans la console. Rien n'est écrit chez l'API.
+// Configurations : lecture des listes de l'accueil, vues de détail (agent, env, banque de mémoire,
+// mémoire, coffre) et ouverture dans la console. Seul l'environnement s'écrit (`environment-form`).
 // État éphémère : seule la pile `nav` (et l'onglet, le filtre) survit à un redémarrage du panneau ;
 // les vues rouvertes se rechargent par `restoreConfigView`.
 import {
@@ -33,8 +33,6 @@ import type {
   ConfigRow,
   CredentialRow,
   CredentialType,
-  EnvironmentDetail,
-  KeyValueItem,
   MemoryContent,
   MemoryStoreDetail,
   ToolPolicy,
@@ -42,6 +40,7 @@ import type {
   VaultDetail
 } from '../protocol'
 import { clipBytes } from '../shared/text'
+import { EnvironmentFormView } from './environment-form'
 import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, nav, popView, pushView, run, workspace } from './state'
 
 /** Mention affichée sous un texte coupé côté worker. */
@@ -85,7 +84,7 @@ export const configRows = atom<Partial<Record<ConfigKind, ConfigRow[]>>>('config
 /** Erreur de lecture de la liste, par type. */
 export const configErrors = atom<Partial<Record<ConfigKind, string | null>>>('configs.errors', {})
 /** Détail de la configuration ouverte ; il reste chargé quand une mémoire s'ouvre par-dessus. */
-const configDetail = atom<ConfigDetail | null>('configs.detail', null)
+export const configDetail = atom<ConfigDetail | null>('configs.detail', null)
 const configDetailError = atom<string | null>('configs.detail.error', null)
 const memoryContent = atom<MemoryContent | null>('configs.memory', null)
 const memoryError = atom<string | null>('configs.memory.error', null)
@@ -130,7 +129,8 @@ function isConfigOnTop(kind: ConfigKind, id: string): boolean {
   return top?.view === 'config' && top.kind === kind && top.id === id
 }
 
-async function loadDetail(kind: ConfigKind, id: string): Promise<void> {
+/** Relit le détail d'une configuration ; le formulaire d'environnement s'en sert après une écriture. */
+export async function loadDetail(kind: ConfigKind, id: string): Promise<void> {
   set(configDetail, null)
   set(configDetailError, null)
   const result = await plugin.request('configs.detail', { kind, id })
@@ -275,10 +275,6 @@ function Section({ title, children }: { title: string; children: OrcaNode }) {
   )
 }
 
-function items(pairs: readonly KeyValueItem[]): { label: string; value: string }[] {
-  return pairs.map((pair) => ({ label: clipTitle(pair.key), value: clipBytes(pair.value, LONG_TEXT_LIMIT_BYTES).text }))
-}
-
 // --- Agent ---
 
 function toolsetDefault(view: ToolsetView): string {
@@ -344,56 +340,6 @@ function AgentBody({ agent }: { agent: AgentDetail }) {
       </Section>
       {agent.skills.length > 0 ? <Text size="sm">{`Skills: ${clipBytes(agent.skills.join(', '), LONG_TEXT_LIMIT_BYTES).text}`}</Text> : null}
       {agent.multiagent ? <Text size="sm">{clipBytes(agent.multiagent, LONG_TEXT_LIMIT_BYTES).text}</Text> : null}
-    </Stack>
-  )
-}
-
-// --- Environnement ---
-
-function EnvironmentBody({ environment }: { environment: EnvironmentDetail }) {
-  const { network } = environment
-  const networkLabel = network.mode === 'unrestricted' ? 'Unrestricted' : network.mode === 'limited' ? 'Limited' : 'Managed by the host'
-  return (
-    <Stack gap="md">
-      <KeyValue
-        label="Environment"
-        items={[
-          { label: 'Type', value: environment.hosting },
-          { label: 'Network', value: networkLabel },
-          ...(network.mode === 'limited'
-            ? [
-                { label: 'Package managers', value: network.allowPackageManagers ? 'allowed' : 'blocked' },
-                { label: 'MCP servers', value: network.allowMcpServers ? 'allowed' : 'blocked' }
-              ]
-            : [])
-        ]}
-      />
-      {network.mode === 'limited' ? (
-        <Section title="Allowed hosts">
-          {network.allowedHosts.length === 0 ? (
-            <Text muted size="sm">
-              No allowed hosts.
-            </Text>
-          ) : (
-            <List label="Allowed hosts">
-              {network.allowedHosts.slice(0, RENDER_ROW_CAP).map((host) => (
-                <ListItem key={host} title={clipTitle(host)} />
-              ))}
-            </List>
-          )}
-          <CapNotice total={network.allowedHosts.length} />
-        </Section>
-      ) : null}
-      {environment.packages.length > 0 ? (
-        <Section title="Packages">
-          <KeyValue label="Packages" items={items(environment.packages)} />
-        </Section>
-      ) : null}
-      {environment.metadata.length > 0 ? (
-        <Section title="Metadata">
-          <KeyValue label="Metadata" items={items(environment.metadata)} />
-        </Section>
-      ) : null}
     </Stack>
   )
 }
@@ -497,7 +443,7 @@ function DetailBody({ detail }: { detail: ConfigDetail }) {
     case 'agent':
       return <AgentBody agent={detail} />
     case 'environment':
-      return <EnvironmentBody environment={detail} />
+      return <EnvironmentFormView id={detail.id} />
     case 'memory_store':
       return <MemoryStoreBody store={detail} />
     case 'vault':
