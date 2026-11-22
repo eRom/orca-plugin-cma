@@ -352,3 +352,24 @@ test('billed calls never retry on their own', async () => {
   await handlers.interrupt({ sessionId: 's' })
   expect(optionsSeen).toEqual([{ maxRetries: 0 }, { maxRetries: 0 }, { maxRetries: 0 }, { maxRetries: 0 }])
 })
+
+// CONSTRUITS d'après la doc (https://platform.claude.com/docs/en/managed-agents/budgets), jamais capturés :
+// seuls les messages y sont documentés, le corps réel de ces refus reste inconnu.
+test('maps the documented model_not_budgetable message', () => {
+  const body = {
+    type: 'error',
+    error: { type: 'invalid_request_error', message: 'no list price is available for the model claude-example-1' }
+  }
+  expect(describeError(badRequest(body)).code).toBe('model_not_budgetable')
+})
+
+test("maps the documented budget_not_raised message", () => {
+  const body = {
+    type: 'error',
+    error: {
+      type: 'invalid_request_error',
+      message: "budget.max_list_cost must be greater than the session's consumed list cost"
+    }
+  }
+  expect(describeError(badRequest(body)).code).toBe('budget_not_raised')
+})

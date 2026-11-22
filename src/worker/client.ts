@@ -48,8 +48,9 @@ export function createClientStore(secrets: OrcaWorkerApi['secrets']): ClientStor
 
 /**
  * Les refus de budget d'une `BadRequestError`. Le corps réel de `budget_create_only` (capturé le
- * 22/11) ne porte aucun code : seulement un message, d'où `pattern`. Les deux autres codes n'ont
- * jamais été observés (corps inconnu) : on cherche leur nom dans tout le corps (`code`).
+ * 22/11) ne porte aucun code : seulement un message, d'où `pattern`. Les deux autres refus n'ont
+ * jamais été capturés : on cherche leur nom dans tout le corps (`code`), ou les messages documentés
+ * (https://platform.claude.com/docs/en/managed-agents/budgets) par `pattern`.
  */
 const BUDGET_ERRORS: {
   code: 'model_not_budgetable' | 'budget_not_raised' | 'budget_create_only'
@@ -58,9 +59,14 @@ const BUDGET_ERRORS: {
 }[] = [
   {
     code: 'model_not_budgetable',
-    message: 'A model of this agent has no public price, so the session cannot have a budget.'
+    message: 'A model of this agent has no public price, so the session cannot have a budget.',
+    pattern: /no list price is available for the model/i
   },
-  { code: 'budget_not_raised', message: 'The new budget must be above what the session already cost.' },
+  {
+    code: 'budget_not_raised',
+    message: 'The new budget must be above what the session already cost.',
+    pattern: /must be greater than the session.s consumed list cost/i
+  },
   {
     code: 'budget_create_only',
     message: 'A budget can only be set when the session is created.',
