@@ -1,11 +1,12 @@
-// Accueil du panneau : les sections « Anthropic workspace » (clé et identité) et « Sessions ».
-// La section Configurations arrive avec une tâche suivante.
+// Accueil du panneau : les sections « Anthropic workspace » (clé et identité), « Configurations »
+// (4 onglets en lecture seule) et « Sessions ».
 import {
   atom,
   Badge,
   Button,
   Callout,
   Collapsible,
+  EmptyState,
   Input,
   Link,
   List,
@@ -16,14 +17,39 @@ import {
   set,
   Spinner,
   Stack,
+  Tab,
+  Tabs,
   Text,
-  update
+  update,
+  type IconName
 } from 'orca'
 import { formatMoney } from '../shared/money'
 import { badgeLabel, badgeTone, sortSessions } from '../shared/sessions'
+import { clipBytes } from '../shared/text'
+import {
+  configErrors,
+  configRows,
+  filterRows,
+  loadConfigs,
+  openConfig,
+  RENDER_ROW_CAP,
+  resetConfigs,
+  restoreConfigView
+} from './config-views'
 import { openNewSession, restoreNewSession } from './new-session'
 import { openSession, restoreOpenSession } from './session-view'
-import { loadSessions, run, sectionsOpen, sessionRows, workspace } from './state'
+import { ERROR_TEXT_LIMIT_BYTES, homeFilter, homeTab, loadSessions, run, sectionsOpen, sessionRows, workspace, type HomeTab } from './state'
+
+/** Plafonds d'un titre et d'une description de ligne : un libellé de plus de 1 Kio fait refuser le rendu. */
+const ROW_TITLE_LIMIT_BYTES = 200
+const ROW_DESCRIPTION_LIMIT_BYTES = 300
+
+const CONFIG_TABS: { value: HomeTab; label: string; noun: string; icon: IconName }[] = [
+  { value: 'agent', label: 'Agents', noun: 'agents', icon: 'bot' },
+  { value: 'environment', label: 'Envs', noun: 'environments', icon: 'layers' },
+  { value: 'memory_store', label: 'Memory', noun: 'memory stores', icon: 'database' },
+  { value: 'vault', label: 'Vaults', noun: 'vaults', icon: 'plug' }
+]
 
 const keyDraft = atom('')
 const KEY_REJECTED = 'The API key was rejected (401).'
@@ -33,11 +59,12 @@ async function saveKey(): Promise<void> {
   if (result.ok) {
     set(keyDraft, '')
     set(workspace, result.value)
-    // Les sessions de l'ancienne clé ne valent plus rien : on relit celles de la nouvelle.
+    // Les sessions et les listes de l'ancienne clé ne valent plus rien : on relit celles de la nouvelle.
     set(sessionRows, null)
+    resetConfigs()
     await loadSessions()
     // Une vue de session restée au sommet de la pile (clé absente ou refusée au démarrage) n'a jamais chargé son fil.
-    await Promise.all([restoreOpenSession(), restoreNewSession()])
+    await Promise.all([restoreOpenSession(), restoreNewSession(), restoreConfigView(), loadConfigs(read(homeTab))])
     return
   }
   // Le worker a supprimé la clé refusée ; le brouillon reste, pour être corrigé sans tout retaper.
@@ -52,6 +79,7 @@ async function saveKey(): Promise<void> {
 async function forgetKey(): Promise<void> {
   set(workspace, await plugin.request('key.clear'))
   set(sessionRows, null)
+  resetConfigs()
 }
 
 function KeyForm({ rejected }: { rejected: boolean }) {
@@ -95,6 +123,92 @@ function WorkspaceLine() {
         </Button>
       </Row>
     </Stack>
+  )
+}
+
+function ConfigList({ tab }: { tab: (typeof CONFIG_TABS)[number] }) {
+  const rows = read(configRows)[tab.value]
+  const failure = read(configErrors)[tab.value] ?? null
+  const query = read(homeFilter)
+  const shown = rows ? filterRows(rows, query) : []
+  return (
+    <Stack gap="sm">
+      <Input
+        label="Filter"
+        labelHidden
+        type="search"
+        placeholder={`Filter ${tab.noun}`}
+        value={query}
+        onChange={(value) => set(homeFilter, value)}
+      />
+      {failure ? (
+        <Callout tone="danger" title="Could not load the list">
+          <Stack gap="sm">
+            <Text size="sm">{clipBytes(failure, ERROR_TEXT_LIMIT_BYTES).text}</Text>
+            <Row>
+              <Button variant="outline" size="sm" onPress={() => run(() => loadConfigs(tab.value))}>
+                Retry
+              </Button>
+            </Row>
+          </Stack>
+        </Callout>
+      ) : null}
+      {rows === undefined ? (
+        failure ? null : <Spinner label={`Loading ${tab.noun}`} />
+      ) : shown.length === 0 ? (
+        <EmptyState
+          title={rows.length === 0 ? 'Nothing here yet' : 'No match'}
+          {...(rows.length === 0 ? {} : { description: 'No item matches this filter.' })}
+        />
+      ) : (
+        <Stack gap="xs">
+          <List label={tab.label}>
+            {shown.slice(0, RENDER_ROW_CAP).map((row) => (
+              <ListItem
+                key={row.id}
+                title={clipBytes(row.name, ROW_TITLE_LIMIT_BYTES).text}
+                description={clipBytes(row.summary, ROW_DESCRIPTION_LIMIT_BYTES).text}
+                onPress={() => openConfig(row.kind, row.id)}
+              />
+            ))}
+          </List>
+          {shown.length > RENDER_ROW_CAP ? (
+            <Text muted size="xs">
+              {`Showing the first ${RENDER_ROW_CAP} of ${shown.length}. Refine the filter to see the rest.`}
+            </Text>
+          ) : null}
+        </Stack>
+      )}
+    </Stack>
+  )
+}
+
+function ConfigurationsSection() {
+  const current = read(homeTab)
+  return (
+    <Collapsible
+      title="Configurations"
+      open={read(sectionsOpen).configurations}
+      onChange={(next) => update(sectionsOpen, (state) => ({ ...state, configurations: next }))}
+    >
+      <Tabs
+        label="Configurations"
+        value={current}
+        onChange={(value) => {
+          const tab = CONFIG_TABS.find((candidate) => candidate.value === value)
+          if (!tab) return
+          set(homeTab, tab.value)
+          // Les lignes déjà lues restent affichées pendant la relecture.
+          run(() => loadConfigs(tab.value))
+        }}
+      >
+        {CONFIG_TABS.map((tab) => (
+          <Tab key={tab.value} value={tab.value} label={tab.label} icon={tab.icon}>
+            {tab.value === current ? <ConfigList tab={tab} /> : null}
+          </Tab>
+        ))}
+      </Tabs>
+    </Collapsible>
   )
 }
 
@@ -154,6 +268,7 @@ export function Home() {
       >
         {needsKey ? <KeyForm rejected={info.keyRejected} /> : <WorkspaceLine />}
       </Collapsible>
+      {needsKey ? null : <ConfigurationsSection />}
       {needsKey ? null : <SessionsSection />}
     </Stack>
   )

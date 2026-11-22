@@ -22,7 +22,7 @@ test('shows the key form without a key', async () => {
 
 test('shows the workspace line with a key', async () => {
   const host = mockHost({
-    requests: { 'workspace.info': WITH_KEY, 'sessions.visibility': null, 'sessions.list': { ok: true, value: [] } }
+    requests: { 'workspace.info': WITH_KEY, 'sessions.visibility': null, 'configs.list': { ok: true, value: [] }, 'sessions.list': { ok: true, value: [] } }
   })
   const view = await mount(panel, { host })
   // La section workspace est repliée par défaut quand la clé est bonne.
@@ -82,7 +82,7 @@ test('lists sessions with badges first', async () => {
   const host = mockHost({
     requests: {
       'workspace.info': WITH_KEY,
-      'sessions.visibility': null,
+      'sessions.visibility': null, 'configs.list': { ok: true, value: [] },
       'sessions.list': {
         ok: true,
         value: [
@@ -137,7 +137,7 @@ test('the New session button stays first in the Sessions section', async () => {
   const host = mockHost({
     requests: {
       'workspace.info': WITH_KEY,
-      'sessions.visibility': null,
+      'sessions.visibility': null, 'configs.list': { ok: true, value: [] },
       'sessions.list': { ok: true, value: [sessionRow({ title: 'Only' })] }
     }
   })
@@ -156,7 +156,7 @@ test('re-reads the workspace when the worker reports an empty list after a rejec
           ? WITH_KEY
           : { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null }
       },
-      'sessions.visibility': null,
+      'sessions.visibility': null, 'configs.list': { ok: true, value: [] },
       'sessions.list': { ok: true, value: [sessionRow({ title: 'Soon gone' })] }
     }
   })

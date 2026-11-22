@@ -64,7 +64,7 @@ type Overrides = Record<string, unknown>
 function requests(rows: ThreadRow[], over: Overrides = {}, hasEarlier = false) {
   return {
     'workspace.info': WITH_KEY,
-    'sessions.visibility': null,
+    'sessions.visibility': null, 'configs.list': { ok: true, value: [] },
     'sessions.list': { ok: true, value: [sessionRow()] },
     'session.watch': { ok: true, value: { rows, hasEarlier, stream: OPEN_STREAM } },
     'session.detail': { ok: true, value: sessionDetail() },

@@ -2,11 +2,12 @@
 // Il route sur le sommet de la pile de navigation ; une vue inconnue retombe sur l'accueil.
 import { Callout, plugin, read, set, Spinner, Stack, Text, type PanelContext } from 'orca'
 import { POLL_VISIBLE_MS } from './protocol'
+import { ConfigDetailView, loadConfigs, MemoryView, restoreConfigView } from './panel/config-views'
 import { Home } from './panel/home'
 import { NewSessionView, restoreNewSession } from './panel/new-session'
 import { restoreOpenSession, SessionView, sessionSubscriptions } from './panel/session-view'
 import { clipBytes } from './shared/text'
-import { ERROR_TEXT_LIMIT_BYTES, loadSessions, loadWorkspace, nav, notice, run, sessionRows, workspace } from './panel/state'
+import { ERROR_TEXT_LIMIT_BYTES, homeTab, loadSessions, loadWorkspace, nav, notice, run, sessionRows, workspace } from './panel/state'
 
 export function setup(ctx: PanelContext): void {
   // Le worker pousse la liste des sessions ; une liste vide peut aussi signer une clé refusée.
@@ -23,8 +24,11 @@ export function setup(ctx: PanelContext): void {
   run(async () => {
     await loadWorkspace()
     const info = read(workspace)
-    // La pile persistée peut garder une session ouverte : on la rouvre, si une clé utilisable l'autorise.
-    const reopen = info?.hasKey && !info.keyRejected ? Promise.all([restoreOpenSession(), restoreNewSession()]) : Promise.resolve()
+    // La pile persistée peut garder une session ou une configuration ouverte : on la rouvre, si une clé utilisable l'autorise.
+    const reopen =
+      info?.hasKey && !info.keyRejected
+        ? Promise.all([restoreOpenSession(), restoreNewSession(), restoreConfigView(), loadConfigs(read(homeTab))])
+        : Promise.resolve()
     await Promise.all([loadSessions(), reopen])
   })
 
@@ -53,7 +57,10 @@ function CurrentView() {
       return <SessionView sessionId={top.sessionId} />
     case 'newSession':
       return <NewSessionView />
-    // Les autres vues (détail de configuration) arrivent avec les tâches suivantes.
+    case 'config':
+      return <ConfigDetailView kind={top.kind} id={top.id} />
+    case 'memory':
+      return <MemoryView memoryStoreId={top.memoryStoreId} memoryId={top.memoryId} />
     default:
       return <Home />
   }

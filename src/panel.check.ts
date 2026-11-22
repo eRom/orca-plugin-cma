@@ -1,7 +1,7 @@
 // `orca plugin check` dessine le panneau une fois par scénario ; le worker y est remplacé par des
 // réponses figées, donc aucun appel réseau et aucune clé.
 import { defineCheck } from 'orca/testing'
-import type { CreateFormOptions, SessionDetail, SessionRow, StreamState, ThreadRow } from './protocol'
+import type { ConfigDetail, ConfigKind, ConfigRow, CreateFormOptions, SessionDetail, SessionRow, StreamState, ThreadRow } from './protocol'
 
 const WITH_KEY = {
   hasKey: true,
@@ -26,6 +26,7 @@ export default defineCheck({
     requests: {
       'workspace.info': WITH_KEY,
       'sessions.visibility': null,
+      'configs.list': { ok: true as const, value: [] },
       'sessions.list': { ok: true, value: [] }
     }
   },
@@ -33,6 +34,7 @@ export default defineCheck({
     requests: {
       'workspace.info': WITH_KEY,
       'sessions.visibility': null,
+      'configs.list': { ok: true as const, value: [] },
       'sessions.list': {
         ok: true,
         value: [
@@ -55,6 +57,61 @@ export default defineCheck({
     requests: { 'workspace.info': { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null } }
   },
   'new session form': newSessionScenario(),
+  'configurations agents': {
+    requests: {
+      'workspace.info': WITH_KEY,
+      'sessions.visibility': null,
+      'sessions.list': { ok: true as const, value: [] },
+      'configs.list': {
+        ok: true as const,
+        value: [
+          { kind: 'agent', id: 'agent_check', name: 'Incident commander', summary: 'v3 · claude-haiku-5-5' },
+          { kind: 'agent', id: 'agent_other', name: 'Writer', summary: 'v1 · claude-sonnet-5' }
+        ] satisfies ConfigRow[]
+      }
+    }
+  },
+  'agent detail': configScenario('agent', {
+    kind: 'agent',
+    id: 'agent_check',
+    name: 'Incident commander',
+    version: 3,
+    model: 'claude-haiku-5-5',
+    effort: 'high',
+    description: 'Triages incidents and coordinates the response.',
+    system: { text: 'You are an incident commander.\n\nBe brief and cite your sources.', truncated: true },
+    builtinTools: { enabled: true, policy: 'always_allow', overrides: [{ name: 'web_search', enabled: false, policy: null }] },
+    mcpServers: [
+      {
+        name: 'github',
+        url: 'https://api.githubcopilot.com/mcp/',
+        enabled: true,
+        policy: 'always_ask',
+        overrides: [{ name: 'list_commits', enabled: true, policy: 'always_allow' }]
+      }
+    ],
+    skills: ['skill_triage'],
+    multiagent: 'Multiagent: advisor claude-opus-5'
+  }),
+  'memory store': configScenario('memory_store', {
+    kind: 'memory_store',
+    id: 'memstore_check',
+    name: 'Notes',
+    description: 'Runbooks of the team.',
+    memories: [
+      { id: 'mem_a', path: 'runbooks/deploy.md', sizeBytes: 2048, updatedAt: '2026-11-20T10:00:00Z' },
+      { id: 'mem_b', path: 'runbooks/rollback.md', sizeBytes: 300, updatedAt: '2026-11-21T10:00:00Z' }
+    ]
+  }),
+  vault: configScenario('vault', {
+    kind: 'vault',
+    id: 'vlt_check',
+    name: 'GitHub',
+    credentials: [
+      { id: 'vcrd_a', name: 'GitHub OAuth', type: 'mcp_oauth', mcpServerUrl: 'https://api.githubcopilot.com/mcp/', expiresAt: '2027-01-01T00:00:00Z' },
+      { id: 'vcrd_b', name: 'DEPLOY_TOKEN', type: 'environment_variable', mcpServerUrl: null, expiresAt: null }
+    ]
+  }),
   'session with approval': sessionScenario({
     row: sessionRow({ badge: 'needs_approval', pendingApprovals: 1, status: 'idle' }),
     rows: [
@@ -161,8 +218,23 @@ function newSessionScenario() {
     requests: {
       'workspace.info': WITH_KEY,
       'sessions.visibility': null,
+      'configs.list': { ok: true as const, value: [] },
       'sessions.list': { ok: true as const, value: [] },
       'createForm.options': { ok: true as const, value: options }
+    }
+  }
+}
+
+/** Le détail d'une configuration, ouvert depuis l'accueil (pile persistée) ; l'API est remplacée par des réponses figées. */
+function configScenario(kind: ConfigKind, detail: ConfigDetail) {
+  return {
+    persisted: { plugin: { nav: [{ view: 'home' }, { view: 'config', kind, id: detail.id }] } },
+    requests: {
+      'workspace.info': WITH_KEY,
+      'sessions.visibility': null,
+      'sessions.list': { ok: true as const, value: [] },
+      'configs.list': { ok: true as const, value: [] },
+      'configs.detail': { ok: true as const, value: detail }
     }
   }
 }
@@ -183,6 +255,7 @@ function sessionScenario(input: { row: SessionRow; rows: ThreadRow[] }) {
     requests: {
       'workspace.info': WITH_KEY,
       'sessions.visibility': null,
+      'configs.list': { ok: true as const, value: [] },
       'sessions.list': { ok: true as const, value: [input.row] },
       'session.watch': { ok: true as const, value: { rows: input.rows, hasEarlier: false, stream } },
       'session.detail': { ok: true as const, value: detail },
