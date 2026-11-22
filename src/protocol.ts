@@ -227,7 +227,13 @@ declare module 'orca' {
     'sessions.changed': { rows: SessionRow[] }
     'stream.state': StreamState
     /** Lignes nouvelles ou modifiées (à fusionner par `id`) et état complet des aperçus. */
-    'session.thread': { sessionId: string; rows: ThreadRow[]; previews: Preview[] }
+    'session.thread': {
+      sessionId: string
+      rows: ThreadRow[]
+      previews: Preview[]
+      /** Présent sur le premier envoi de la relecture de l'historique : vrai quand le worker garde des lignes plus anciennes. */
+      hasEarlier?: boolean
+    }
     'session.updated': { sessionId: string; status: SessionStatus; badge: SessionBadge; cost: Money | null; budget: Money | null }
   }
 }

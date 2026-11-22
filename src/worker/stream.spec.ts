@@ -24,18 +24,27 @@ function fakeSource(options: {
   history?: BetaManagedAgentsSessionEvent[][]
   statuses?: Array<'idle' | 'terminated'>
   streamError?: unknown
+  /** Levée par le premier appel de `history` seulement. */
+  firstHistoryError?: unknown
 }) {
   const calls = { stream: 0, history: 0, status: 0 }
+  const signals: AbortSignal[] = []
+  /** Pour chaque ouverture de flux, l'état d'annulation des signaux des ouvertures précédentes. */
+  const earlierAbortedAtOpen: boolean[][] = []
   const source: EventSource = {
     async stream(_sessionId, signal) {
       const index = calls.stream++
+      earlierAbortedAtOpen.push(signals.map((earlier) => earlier.aborted))
+      signals.push(signal)
       if (options.streamError) throw options.streamError
       return options.streams[Math.min(index, options.streams.length - 1)](signal)
     },
     history(_sessionId, _signal) {
       const histories = options.history ?? [[]]
-      const events = histories[Math.min(calls.history++, histories.length - 1)]
+      const call = calls.history++
+      const events = histories[Math.min(call, histories.length - 1)]
       return (async function* () {
+        if (call === 0 && options.firstHistoryError) throw options.firstHistoryError
         yield* events
       })()
     },
@@ -45,7 +54,7 @@ function fakeSource(options: {
       return { status, archived: false }
     }
   }
-  return { source, calls }
+  return { source, calls, earlierAbortedAtOpen }
 }
 
 async function* emit(...events: StreamEvent[]): AsyncGenerator<StreamEvent> {
@@ -61,7 +70,7 @@ function holdOpen(...events: StreamEvent[]): StreamFactory {
 }
 
 function recordingSink() {
-  const threads: Array<{ sessionId: string; rows: ThreadRow[]; previews: Array<{ id: string; text: string }> }> = []
+  const threads: Array<{ sessionId: string; rows: ThreadRow[]; previews: Array<{ id: string; text: string }>; hasEarlier?: boolean }> = []
   const states: StreamState[] = []
   const usages: Array<{ cost: Money | null; budget: Money | null }> = []
   const logs: string[] = []
@@ -273,4 +282,58 @@ test('loadEarlier pages the rows before an id', async () => {
   expect(page?.rows.length).toBe(100)
   expect(page?.hasEarlier).toBe(true)
   watcher.stop()
+})
+
+test('closes the stream when history fails', async () => {
+  const { source, calls, earlierAbortedAtOpen } = fakeSource({
+    streams: [holdOpen(), () => emit()],
+    firstHistoryError: new Error('history unavailable'),
+    statuses: ['terminated']
+  })
+  const recorder = recordingSink()
+  createWatcher(source, recorder.sink, options).watch(SESSION)
+  await recorder.closed()
+  expect(calls.stream).toBe(2)
+  // Le flux de la première tentative est fermé avant que la seconde n'ouvre le sien.
+  expect(earlierAbortedAtOpen[1]).toEqual([true])
+  expect(recorder.phases()).toEqual(['connecting', 'reconnecting', 'open', 'closed'])
+})
+
+test('signals earlier history on the first replay', async () => {
+  const history = Array.from({ length: 150 }, (_, index) => message(`h${index}`))
+  const { source } = fakeSource({ streams: [() => emit()], history: [history] })
+  const recorder = recordingSink()
+  createWatcher(source, recorder.sink, options).watch(SESSION)
+  await recorder.closed()
+  expect(recorder.threads.some((post) => post.hasEarlier === true)).toBe(true)
+  expect(recorder.postedIds().length).toBe(100)
+})
+
+test('replays history when the stream is refused', async () => {
+  const refused = new Anthropic.BadRequestError(400, undefined, 'session is archived', new Headers())
+  const { source, calls } = fakeSource({ streams: [], streamError: refused, history: [[message('e1'), message('e2')]] })
+  const recorder = recordingSink()
+  createWatcher(source, recorder.sink, options).watch(SESSION)
+  await recorder.closed()
+  expect(recorder.postedIds()).toEqual(['e1', 'e2'])
+  expect(recorder.states.at(-1)?.phase).toBe('closed')
+  expect(recorder.states.at(-1)?.error === null).toBe(false)
+  expect(calls.stream).toBe(1)
+  expect(calls.history).toBe(1)
+})
+
+test('posts every missed row after a reconnect', async () => {
+  const first = Array.from({ length: 10 }, (_, index) => message(`old${index}`))
+  const missed = Array.from({ length: 150 }, (_, index) => message(`new${index}`))
+  const { source } = fakeSource({
+    streams: [() => emit(), () => emit()],
+    history: [first, [...first, ...missed]],
+    statuses: ['idle', 'terminated']
+  })
+  const recorder = recordingSink()
+  createWatcher(source, recorder.sink, options).watch(SESSION)
+  await recorder.closed()
+  const ids = new Set(recorder.postedIds())
+  for (const row of missed) expect(ids.has(row.id)).toBe(true)
+  expect(recorder.postedIds().filter((id) => id === 'old0').length).toBe(1)
 })

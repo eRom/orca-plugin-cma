@@ -36,7 +36,7 @@ export type EventSource = {
 }
 
 export type WatchSink = {
-  thread(payload: { sessionId: string; rows: ThreadRow[]; previews: Preview[] }): void
+  thread(payload: { sessionId: string; rows: ThreadRow[]; previews: Preview[]; hasEarlier?: boolean }): void
   state(payload: StreamState): void
   usage(sessionId: string, cost: Money | null, budget: Money | null): void
   log(message: string): void
@@ -80,6 +80,8 @@ type Watch = {
   /** Un accumulé par id d'aperçu (message en cours d'écriture). */
   previews: Map<string, AccumulatedEvent>
   previewsDirty: boolean
+  /** Valeur de `hasEarlier` à joindre au prochain envoi (relecture initiale), ou null. */
+  earlierToSend: boolean | null
   abort: AbortController
   timer: ReturnType<typeof setTimeout> | null
   state: StreamState
@@ -136,7 +138,9 @@ export function createWatcher(source: EventSource, sink: WatchSink, options: Wat
     }
     if (rows.length > 0 || watch.previewsDirty) {
       watch.previewsDirty = false
-      sink.thread({ sessionId: watch.sessionId, rows, previews: previewsOf(watch) })
+      const payload = { sessionId: watch.sessionId, rows, previews: previewsOf(watch) }
+      sink.thread(watch.earlierToSend === null ? payload : { ...payload, hasEarlier: watch.earlierToSend })
+      watch.earlierToSend = null
     }
     if (watch.outbox.size > 0) scheduleFlush(watch)
   }
@@ -187,28 +191,58 @@ export function createWatcher(source: EventSource, sink: WatchSink, options: Wat
     scheduleFlush(watch)
   }
 
-  /** Relit tout l'historique : les lignes nouvelles ou modifiées partent, bornées à la fenêtre du fil. */
+  /**
+   * Relit tout l'historique. À la première relecture (fil vide) seule la fenêtre de fin part, avec
+   * `hasEarlier` ; le reste se charge par `loadEarlier`. Après une coupure, chaque ligne nouvelle
+   * ou modifiée part : un plafond y créerait un trou que `loadEarlier` ne comble pas.
+   */
   async function replayHistory(watch: Watch, signal: AbortSignal): Promise<void> {
+    const firstReplay = watch.thread.rows.length === 0
     const fresh = new Map<string, ThreadRow>()
     for await (const event of source.history(watch.sessionId, signal)) {
       for (const row of applyEvent(watch.thread, event)) fresh.set(row.id, row)
     }
-    enqueue(watch, [...fresh.values()].slice(-THREAD_WINDOW_ROWS))
+    if (firstReplay) {
+      const page = tail(watch.thread, THREAD_WINDOW_ROWS)
+      enqueue(watch, page.rows)
+      watch.earlierToSend = page.hasEarlier
+    } else {
+      enqueue(watch, [...fresh.values()])
+    }
+    watch.previewsDirty = true
     scheduleFlush(watch)
+  }
+
+  /** Relecture unique de l'historique après un refus du flux : son échec se note, sans nouvel essai. */
+  async function replayAfterRefusal(watch: Watch, signal: AbortSignal): Promise<void> {
+    try {
+      await replayHistory(watch, signal)
+    } catch (error) {
+      if (!signal.aborted) sink.log(`history after refusal failed: ${describeError(error).message}`)
+    }
   }
 
   async function follow(watch: Watch): Promise<void> {
     const { signal } = watch.abort
     let delay = 0
     while (!signal.aborted) {
+      // Un contrôleur par tentative : le SDK ne ferme un SSE ouvert que depuis son itérateur, donc
+      // une tentative qui échoue avant de l'itérer le laisserait ouvert jusqu'au `leave`.
+      const attemptAbort = new AbortController()
+      const cancelAttempt = (): void => attemptAbort.abort()
+      signal.addEventListener('abort', cancelAttempt, { once: true })
+      const attemptSignal = attemptAbort.signal
+      let openingStream = false
       try {
         // Flux d'abord, historique ensuite : le SSE ne rejoue rien, l'historique comble le trou
         // et le dédoublonnage par id absorbe le recouvrement.
-        const stream = await source.stream(watch.sessionId, signal)
+        openingStream = true
+        const stream = await source.stream(watch.sessionId, attemptSignal)
+        openingStream = false
         // Les aperçus d'une connexion précédente n'ont plus de suite : leurs messages arrivent par l'historique.
         watch.previews.clear()
         watch.previewsDirty = true
-        await replayHistory(watch, signal)
+        await replayHistory(watch, attemptSignal)
         setPhase(watch, 'open')
         delay = 0
         for await (const event of stream) {
@@ -225,7 +259,7 @@ export function createWatcher(source: EventSource, sink: WatchSink, options: Wat
         }
         if (signal.aborted) return
         // Le serveur a fermé le flux : on ne le rouvre que si la session vit encore.
-        const session = await source.status(watch.sessionId, signal)
+        const session = await source.status(watch.sessionId, attemptSignal)
         if (session.status === 'terminated' || session.archived) {
           setPhase(watch, 'closed', 'The session ended.')
           return
@@ -233,10 +267,15 @@ export function createWatcher(source: EventSource, sink: WatchSink, options: Wat
       } catch (error) {
         if (signal.aborted) return
         if (isFatal(error)) {
+          // Une session terminée ou archivée refuse le flux : son fil reste lisible par l'historique.
+          if (openingStream) await replayAfterRefusal(watch, attemptSignal)
           setPhase(watch, 'closed', describeError(error).message)
           return
         }
         watch.state = { ...watch.state, error: describeError(error).message }
+      } finally {
+        signal.removeEventListener('abort', cancelAttempt)
+        attemptAbort.abort()
       }
       if (signal.aborted) return
       watch.state = { ...watch.state, reconnects: watch.state.reconnects + 1 }
@@ -270,6 +309,7 @@ export function createWatcher(source: EventSource, sink: WatchSink, options: Wat
         outbox: new Map(),
         previews: new Map(),
         previewsDirty: false,
+        earlierToSend: null,
         abort: new AbortController(),
         timer: null,
         state: { sessionId, phase: 'connecting', since: Date.now(), reconnects: 0, error: null }
