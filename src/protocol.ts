@@ -25,6 +25,10 @@ export type ApiErrorCode =
   | 'expired'
   /** Le formulaire est refusé avant tout appel réseau. */
   | 'invalid'
+  /** Le dossier de brouillons n'est pas un projet d'Orca : il faut l'y ajouter. */
+  | 'drafts_missing'
+  /** Le fichier de brouillon n'a pas changé depuis l'écriture du worker : rien à envoyer. */
+  | 'nothing_to_apply'
   | 'other'
 
 /** Un appel à l'API Anthropic : une erreur revient en texte lisible, jamais en exception. */
@@ -290,6 +294,28 @@ export type ResourceRef =
   | { kind: 'credential'; vaultId: string; id: string }
   | { kind: 'memory'; memoryStoreId: string; id: string }
 
+/** Un brouillon : un fichier du dossier de brouillons que Romain édite dans l'éditeur d'Orca. */
+export type DraftRef =
+  /** `agentId` null : nouvel agent, depuis le modèle. */
+  | { kind: 'agent'; agentId: string | null }
+  /** `memoryId` null : nouvelle mémoire à `path`. */
+  | { kind: 'memory'; memoryStoreId: string; memoryId: string | null; path: string }
+
+export type DraftsStatus = { folder: string; ready: boolean }
+
+export type DraftInfo = {
+  ref: DraftRef
+  /** Chemin relatif au dossier de brouillons. */
+  file: string
+  /** Vrai quand le fichier diffère de ce que le worker y a écrit. */
+  unapplied: boolean
+  /** Heure de la dernière écriture du worker (ISO). */
+  writtenAt: string
+  /** Heure de modification du fichier sur disque (ISO) : celle de la dernière sauvegarde de Romain. */
+  savedAt: string
+  returnTo: { workspaceId: string; name: string } | null
+}
+
 export type CreateFormOptions = {
   agents: ConfigRow[]
   environments: ConfigRow[]
@@ -329,6 +355,12 @@ declare module 'orca' {
     'resource.delete': { input: ResourceRef; output: ApiResult<null> }
     'write.commit': { input: { token: string; force: boolean }; output: ApiResult<Committed> }
     'createForm.options': { output: ApiResult<CreateFormOptions> }
+    'drafts.status': { output: DraftsStatus }
+    'draft.open': { input: DraftRef; output: ApiResult<DraftInfo> }
+    'draft.discard': { input: DraftRef; output: ApiResult<DraftInfo> }
+    'draft.state': { input: DraftRef; output: ApiResult<DraftInfo | null> }
+    'draft.prepare': { input: DraftRef; output: ApiResult<PreparedWrite> }
+    'workspace.back': { input: { workspaceId: string }; output: ApiResult<null> }
     'diagnostics.testSpend': { output: ApiResult<{ sessions: number; total: Money | null }> }
   }
   interface PluginPanelEvents {

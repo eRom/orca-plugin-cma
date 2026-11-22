@@ -4,6 +4,8 @@ import type { ApiResult, ResourceRef, SessionRow, ThreadRow, WorkspaceInfo } fro
 import { SECRET_NAME, attempt, createClientStore, describeError, failure, setKey, workspaceInfo } from './worker/client'
 import { createWriteHandlers } from './worker/config-writes'
 import { createConfigHandlers } from './worker/configs'
+import { DRAFTS_FOLDER, createDrafts } from './worker/drafts'
+import { createEditorHost } from './worker/editor-host'
 import { createPendingWrites } from './worker/pending-writes'
 import { createSessionHandlers } from './worker/session-actions'
 import { createPoller, sdkPollSource } from './worker/session-poll'
@@ -177,6 +179,22 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   // le panneau reçoit alors `expired` (il relance l'écriture).
   const pendingWrites = createPendingWrites(() => Date.now())
   orca.panels.handle('write.commit', ({ token, force }) => pendingWrites.commit(token, force))
+
+  // Les brouillons : un fichier par agent ou mémoire, édité dans l'éditeur d'Orca. Les adaptateurs
+  // arrivent avec les tâches des agents et des mémoires ; sans eux, ces requêtes répondent « Not available yet ».
+  const drafts = createDrafts({
+    folder: DRAFTS_FOLDER,
+    host: createEditorHost(orca.host),
+    adapters: {},
+    pending: pendingWrites,
+    now: () => new Date()
+  })
+  orca.panels.handle('drafts.status', drafts.status)
+  orca.panels.handle('draft.open', drafts.open)
+  orca.panels.handle('draft.discard', drafts.discard)
+  orca.panels.handle('draft.state', drafts.state)
+  orca.panels.handle('draft.prepare', drafts.prepare)
+  orca.panels.handle('workspace.back', ({ workspaceId }) => drafts.back(workspaceId))
 
   poller.start()
   orca.log('agent-claude-managed worker ready')

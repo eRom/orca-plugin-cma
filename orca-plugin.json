@@ -11,7 +11,7 @@
   "execution": "trusted-worker",
   "pluginApi": 1,
   "main": "dist/worker.mjs",
-  "capabilities": [{ "kind": "secrets:own" }],
+  "capabilities": [{ "kind": "secrets:own" }, { "kind": "workspace:read" }, { "kind": "workspace:write" }],
   "contributes": {
     "panels": [
       { "id": "managed", "title": "Managed Agents", "icon": "bot", "entry": "src/panel.tsx", "ui": "components" }
