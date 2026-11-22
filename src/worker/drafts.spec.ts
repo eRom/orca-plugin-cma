@@ -632,13 +632,46 @@ test('release drops the clean drafts a predicate keeps, with their files, and ne
   cleanup()
 })
 
-test('a released file name goes to another draft instead of being refused as taken', async () => {
+test('a clean draft gives its file name to another draft, an unapplied one keeps it', async () => {
   const other: AgentRef = { kind: 'agent', agentId: 'agent_other' }
-  const { drafts } = setup({ file: () => 'agents/shared.yaml' })
+  const { drafts, folder } = setup({ file: () => 'agents/shared.yaml' })
   await drafts.open(AGENT)
+  writeFileSync(join(folder, 'agents/shared.yaml'), 'name: Unsent\n')
   expect((await drafts.open(other)).ok).toBe(false)
-  await drafts.release((ref) => ref.kind === 'agent' && ref.agentId === 'agent_1')
+  // Le travail de Romain n'est jamais écrasé, même par un brouillon qui se présente avec la même référence de fichier.
+  expect(readFileSync(join(folder, 'agents/shared.yaml'), 'utf8')).toBe('name: Unsent\n')
+  await drafts.discard(AGENT)
+  const taken = await drafts.open(other)
+  expect(taken.ok).toBe(true)
+  const entries = JSON.parse(readFileSync(join(folder, REGISTRY_FILE), 'utf8')).entries
+  expect(entries['agents/shared.yaml'].ref).toEqual(other)
+  expect(await drafts.state(AGENT)).toEqual({ ok: true, value: null })
+  cleanup()
+})
+
+test('a draft whose file vanished is clean: another draft takes its file name', async () => {
+  const other: AgentRef = { kind: 'agent', agentId: 'agent_other' }
+  const { drafts, folder } = setup({ file: () => 'agents/shared.yaml' })
+  await drafts.open(AGENT)
+  rmSync(join(folder, 'agents/shared.yaml'))
   expect((await drafts.open(other)).ok).toBe(true)
+  expect(await drafts.state(AGENT)).toEqual({ ok: true, value: null })
+  cleanup()
+})
+
+test('release with a replacement keeps an unapplied draft under the reference the replacement gives, with no base', async () => {
+  const second: AgentRef = { kind: 'agent', agentId: 'agent_2' }
+  const { drafts, folder } = setup()
+  await drafts.open(AGENT)
+  await drafts.open(second)
+  writeFileSync(join(folder, 'agents/agent_2.yaml'), 'name: Unsent\n')
+  const renamed: AgentRef = { kind: 'agent', agentId: 'agent_new' }
+  const result = await drafts.release(() => true, () => renamed)
+  expect(result).toEqual({ released: [FILE], kept: ['agents/agent_2.yaml'] })
+  const entry = JSON.parse(readFileSync(join(folder, REGISTRY_FILE), 'utf8')).entries['agents/agent_2.yaml']
+  expect(entry.ref).toEqual(renamed)
+  expect(entry.base).toBe(null)
+  expect(readFileSync(join(folder, 'agents/agent_2.yaml'), 'utf8')).toBe('name: Unsent\n')
   cleanup()
 })
 

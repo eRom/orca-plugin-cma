@@ -110,6 +110,10 @@ function fakeHost(folder: string): { host: EditorHost; calls: string[] } {
 }
 
 type Call = { method: string; args: unknown[] }
+
+/** Le 404 que rend l'API pour une mémoire qui n'existe plus. */
+const notFound = (id: string): Error =>
+  new Anthropic.NotFoundError(404, { type: 'error', error: { type: 'not_found_error', message: `no memory ${id}` } }, undefined, new Headers())
 type Stored = { path: string; content: string; sha?: string }
 
 /** Faux client de l'API des mémoires : note chaque appel, tient les mémoires en mémoire vive. */
@@ -150,7 +154,7 @@ function fakeApi() {
           retrieve: async (id: string, params: unknown) => {
             calls.push({ method: 'memories.retrieve', args: [id, params] })
             const stored = state.memories.get(id)
-            if (!stored) throw new Error(`no memory ${id}`)
+            if (!stored) throw notFound(id)
             return toMemory(id, stored, !state.nullOnRetrieve)
           },
           create: async (storeId: string, params: { path: string; content: string }) => {
@@ -163,7 +167,7 @@ function fakeApi() {
             calls.push({ method: 'memories.update', args: [id, params] })
             if (state.updateError) throw state.updateError
             const stored = state.memories.get(id)
-            if (!stored) throw new Error(`no memory ${id}`)
+            if (!stored) throw notFound(id)
             const next: Stored = {
               path: params.path ?? stored.path,
               content: params.content === undefined ? stored.content : state.transform(params.content)
@@ -619,7 +623,8 @@ test('deleting a memory releases its clean draft, and keeps and logs an unapplie
   writeFileSync(join(folder, EXISTING_FILE), 'my edit\n')
   await released({ kind: 'memory', memoryStoreId: 'memstore_1', id: 'mem_1' })
   expect(readFileSync(join(folder, EXISTING_FILE), 'utf8')).toBe('my edit\n')
-  expect(registry().entries[EXISTING_FILE]?.ref).toEqual(EXISTING)
+  // Le brouillon non appliqué devient celui d'une nouvelle mémoire au même chemin : l'ancien id n'existe plus.
+  expect(registry().entries[EXISTING_FILE]?.ref).toEqual({ ...EXISTING, memoryId: null })
   expect(logs.some((line) => line.includes('kept') && line.includes(EXISTING_FILE))).toBe(true)
   cleanup()
 })
@@ -683,5 +688,159 @@ test('a memory whose segment has the longest accepted name still opens and appli
   expect((await drafts.open(longest)).ok).toBe(true)
   writeFileSync(join(folder, `memories/notes--memstore_1${path}`), 'text\n')
   expect((await apply(longest)).ok).toBe(true)
+  cleanup()
+})
+
+// --- Gate 3 : entrées périmées du registre ---
+
+const STALE_PATH = '/notes/a.md'
+const RECREATED: MemoryRef = { kind: 'memory', memoryStoreId: 'memstore_1', memoryId: 'mem_2', path: STALE_PATH }
+const NEW_AT_STALE: MemoryRef = { kind: 'memory', memoryStoreId: 'memstore_1', memoryId: null, path: STALE_PATH }
+const STALE_DIR = join('memories', 'notes--memstore_1', 'notes')
+
+test('a memory deleted and recreated at the same path outside the panel opens: the clean stale entry is replaced', async () => {
+  const { drafts, folder, api, apply, registry } = setup()
+  await drafts.open(EXISTING)
+  api.state.memories.delete('mem_1')
+  api.state.memories.set('mem_2', { path: STALE_PATH, content: 'agent wrote this\n' })
+  const opened = await drafts.open(RECREATED)
+  expect(opened.ok).toBe(true)
+  expect(readFileSync(join(folder, EXISTING_FILE), 'utf8')).toBe('agent wrote this\n')
+  expect(registry().entries[EXISTING_FILE]?.ref).toEqual(RECREATED)
+  // Aucune copie de secours : le brouillon périmé était propre.
+  expect(readdirSync(join(folder, STALE_DIR))).toEqual(['a.md'])
+  // Le brouillon est celui de la nouvelle mémoire : modifié puis appliqué, il met à jour mem_2 sous sa garde.
+  writeFileSync(join(folder, EXISTING_FILE), 'edited\n')
+  expect((await apply(RECREATED)).ok).toBe(true)
+  const update = only(api.calls, 'memories.update')[0]
+  expect(update?.args[0]).toBe('mem_2')
+  expect((update?.args[1] as { precondition: { content_sha256: string } }).precondition.content_sha256).toBe(sha('agent wrote this\n'))
+  cleanup()
+})
+
+test('a memory deleted outside the panel, then a new memory at the same path: the draft opens as a creation', async () => {
+  const { drafts, folder, api, apply, registry } = setup()
+  await drafts.open(EXISTING)
+  api.state.memories.delete('mem_1')
+  const opened = await drafts.open(NEW_AT_STALE)
+  expect(opened.ok).toBe(true)
+  expect(readFileSync(join(folder, EXISTING_FILE), 'utf8')).toBe('')
+  expect(registry().entries[EXISTING_FILE]?.ref).toEqual(NEW_AT_STALE)
+  expect(registry().entries[EXISTING_FILE]?.base).toBe(null)
+  writeFileSync(join(folder, EXISTING_FILE), 'fresh\n')
+  expect((await apply(NEW_AT_STALE)).ok).toBe(true)
+  expect(only(api.calls, 'memories.create').length).toBe(1)
+  expect(only(api.calls, 'memories.update').length).toBe(0)
+  expect(registry().entries[EXISTING_FILE]?.ref).toEqual({ ...NEW_AT_STALE, memoryId: 'mem_new' })
+  cleanup()
+})
+
+test('a memory deleted from the panel with an unapplied draft: the draft becomes a new memory at that path, and Apply and Discard work', async () => {
+  const { drafts, folder, api, apply, released, registry } = setup()
+  await drafts.open(EXISTING)
+  writeFileSync(join(folder, EXISTING_FILE), 'my unapplied work\n')
+  api.state.memories.delete('mem_1')
+  await released({ kind: 'memory', memoryStoreId: 'memstore_1', id: 'mem_1' })
+  expect(registry().entries[EXISTING_FILE]?.ref).toEqual(NEW_AT_STALE)
+  expect(registry().entries[EXISTING_FILE]?.base).toBe(null)
+  expect(readFileSync(join(folder, EXISTING_FILE), 'utf8')).toBe('my unapplied work\n')
+
+  const state = await drafts.state(NEW_AT_STALE)
+  expect(state.ok && state.value?.unapplied).toBe(true)
+  expect((await drafts.open(NEW_AT_STALE)).ok).toBe(true)
+  expect(readFileSync(join(folder, EXISTING_FILE), 'utf8')).toBe('my unapplied work\n')
+
+  const prepared = await drafts.prepare(NEW_AT_STALE)
+  expect(prepared.ok && prepared.value.creates).toBe(true)
+  expect((await apply(NEW_AT_STALE)).ok).toBe(true)
+  expect((only(api.calls, 'memories.create')[0]?.args[1] as { content: string }).content).toBe('my unapplied work\n')
+
+  // Après la création, Discard remet le fichier à l'état de la mémoire créée.
+  const discarded = await drafts.discard(NEW_AT_STALE)
+  expect(discarded.ok && discarded.value.unapplied).toBe(false)
+  cleanup()
+})
+
+test('discarding the converted draft of a deleted memory empties the file and keeps it a new memory', async () => {
+  const { drafts, folder, api, released, registry } = setup()
+  await drafts.open(EXISTING)
+  writeFileSync(join(folder, EXISTING_FILE), 'my unapplied work\n')
+  api.state.memories.delete('mem_1')
+  await released({ kind: 'memory', memoryStoreId: 'memstore_1', id: 'mem_1' })
+  const discarded = await drafts.discard(NEW_AT_STALE)
+  expect(discarded.ok && discarded.value.unapplied).toBe(false)
+  expect(readFileSync(join(folder, EXISTING_FILE), 'utf8')).toBe('')
+  expect(registry().entries[EXISTING_FILE]?.ref).toEqual(NEW_AT_STALE)
+  cleanup()
+})
+
+test('another draft that is unapplied still holds its file name: open and discard of the newcomer answer taken', async () => {
+  const { drafts, folder, api } = setup()
+  await drafts.open(EXISTING)
+  writeFileSync(join(folder, EXISTING_FILE), 'MY UNSENT EDIT')
+  api.state.memories.delete('mem_1')
+  api.state.memories.set('mem_2', { path: STALE_PATH, content: 'agent wrote this\n' })
+  const refused = { ok: false, code: 'other', error: 'Another draft already uses this file name.' }
+  expect(await drafts.open(RECREATED)).toEqual(refused)
+  expect(await drafts.discard(RECREATED)).toEqual(refused)
+  expect(readFileSync(join(folder, EXISTING_FILE), 'utf8')).toBe('MY UNSENT EDIT')
+  cleanup()
+})
+
+test('an unapplied draft whose memory vanished applies as a creation and the entry takes the new id', async () => {
+  const { drafts, folder, api, apply, registry } = setup()
+  await drafts.open(EXISTING)
+  writeFileSync(join(folder, EXISTING_FILE), 'my unapplied work\n')
+  api.state.memories.delete('mem_1')
+  // Le panneau rouvre « New memory » au même chemin : le brouillon non appliqué est gardé tel quel.
+  expect((await drafts.open(NEW_AT_STALE)).ok).toBe(true)
+  expect(readFileSync(join(folder, EXISTING_FILE), 'utf8')).toBe('my unapplied work\n')
+  expect((await apply(NEW_AT_STALE)).ok).toBe(true)
+  expect(only(api.calls, 'memories.create').length).toBe(1)
+  expect(registry().entries[EXISTING_FILE]?.ref).toEqual({ ...NEW_AT_STALE, memoryId: 'mem_new' })
+  const state = await drafts.state(NEW_AT_STALE)
+  expect(state.ok && state.value?.unapplied).toBe(false)
+  cleanup()
+})
+
+test('a draft identical to the live content has nothing to apply and prepares no write', async () => {
+  const { drafts, folder, api } = setup()
+  await drafts.open(EXISTING)
+  // Le contenu change ailleurs, puis le fichier est sauvegardé tel que l'API l'a déjà.
+  api.state.memories.set('mem_1', { path: STALE_PATH, content: 'hello world\n' })
+  writeFileSync(join(folder, EXISTING_FILE), 'hello world\n')
+  expect(await drafts.prepare(EXISTING)).toEqual({ ok: false, code: 'nothing_to_apply', error: 'Nothing to apply: save the file first (⌘S).' })
+  expect(only(api.calls, 'memories.update').length).toBe(0)
+  cleanup()
+})
+
+test('a memory with an id but no recorded base is never sent without a precondition: Apply refuses and asks to open again', async () => {
+  const { drafts, folder, api, apply, registry } = setup()
+  await drafts.open(EXISTING)
+  const entries = registry().entries
+  const lost = { entries: { [EXISTING_FILE]: { ...entries[EXISTING_FILE], base: null } }, lastReturnTo: null }
+  writeFileSync(join(folder, '.orca-drafts.json'), JSON.stringify(lost))
+  writeFileSync(join(folder, EXISTING_FILE), 'edited\n')
+  expect(await apply(EXISTING)).toEqual({ ok: false, code: 'other', error: 'The draft file is gone: open it again.' })
+  expect(only(api.calls, 'memories.update').length).toBe(0)
+  cleanup()
+})
+
+test('a longest accepted segment keeps its recovery copy: written directly from the bytes read, never through a temporary name', async () => {
+  const { drafts, folder } = setup()
+  const path = `/${'x'.repeat(197)}.md`
+  expect(isSafeMemoryPath(path)).toBe(true)
+  const file = join(folder, 'memories', 'notes--memstore_1', `${'x'.repeat(197)}.md`)
+  mkdirSync(join(folder, 'memories', 'notes--memstore_1'), { recursive: true })
+  // Des octets qui ne sont pas de l'UTF-8 : une relecture en texte les altérerait.
+  const bytes = Buffer.from([0xff, 0xfe, 0x41, 0x0a])
+  writeFileSync(file, bytes)
+  const opened = await drafts.open({ ...NEW, path })
+  expect(opened.ok).toBe(true)
+  const names = readdirSync(join(folder, 'memories', 'notes--memstore_1'))
+  const recovered = names.filter((name) => name.includes('.recovered-'))
+  expect(recovered.length).toBe(1)
+  expect(names.some((name) => name.endsWith('.tmp'))).toBe(false)
+  expect(readFileSync(join(folder, 'memories', 'notes--memstore_1', recovered[0] ?? '')).equals(bytes)).toBe(true)
   cleanup()
 })

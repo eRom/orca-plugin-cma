@@ -8,7 +8,9 @@ const PATH_MAX_BYTES = 1024
 const SEGMENT_MAX_COUNT = 20
 /**
  * Un segment devient un nom de fichier (APFS : 255 octets), qui reçoit parfois un suffixe : `.<uuid>.tmp`
- * (+41 octets) à l'écriture, `.recovered-<horodatage>` (~+35) pour une copie de secours. 200 laisse la place aux deux.
+ * (+41 octets) quand le brouillon est écrit par un fichier temporaire, ou `.recovered-<horodatage>` (~+35)
+ * pour une copie de secours, que le worker écrit directement, sans fichier temporaire. Les deux suffixes ne
+ * s'additionnent donc jamais ; 200 octets laissent la place au plus long.
  */
 const SEGMENT_MAX_BYTES = 200
 

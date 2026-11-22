@@ -38,7 +38,11 @@ export type DraftAdapter<R extends DraftRef> = {
   check?(ref: R): string | null
   /** Chemin du fichier, relatif au dossier de brouillons. */
   file(ref: R): Promise<string>
-  readLive(ref: R): Promise<{ text: string; base: DraftBase }>
+  /**
+   * `recordedGone` : l'objet que le registre mémorisait pour ce brouillon n'existe plus (une mémoire supprimée
+   * ailleurs, dont l'id est un 404). L'entrée est alors remplacée par `ref`, jamais fusionnée avec l'ancienne.
+   */
+  readLive(ref: R): Promise<{ text: string; base: DraftBase; recordedGone?: true }>
   prepare(ref: R, text: string, base: DraftBase, stage: PendingWrites['stage']): Promise<ApiResult<PreparedWrite>>
 }
 
@@ -68,9 +72,11 @@ export type Drafts = {
   /**
    * L'objet d'un brouillon a changé de chemin ou disparu : les brouillons propres (fichier tel que le worker
    * l'a écrit, ou disparu) dont la référence vérifie `match` sont oubliés, entrée et fichier, pour que leur nom
-   * serve à un autre. Un brouillon non appliqué n'est jamais touché : il reste, et `kept` le dit.
+   * serve à un autre. Un brouillon non appliqué n'est jamais perdu : son fichier reste, et `kept` le dit. Avec
+   * `becomes`, son entrée prend la référence que cette fonction rend et n'a plus de base (l'objet n'existe plus :
+   * le brouillon est celui d'un objet à créer).
    */
-  release(match: (ref: DraftRef) => boolean): Promise<{ released: string[]; kept: string[] }>
+  release(match: (ref: DraftRef) => boolean, becomes?: (ref: DraftRef) => DraftRef): Promise<{ released: string[]; kept: string[] }>
 }
 
 type ReturnTo = { workspaceId: string; name: string }
@@ -284,6 +290,37 @@ export function createDrafts(deps: {
     return { file }
   }
 
+  /** Le fichier d'un brouillon est propre : absent, ou tel que le worker l'a écrit (aucun travail à perdre). */
+  async function isClean(file: string, entry: RegistryEntry): Promise<boolean> {
+    const content = await readOrNull(join(folder, file))
+    return content === null || sha256(content) === entry.writtenSha256
+  }
+
+  /**
+   * Le fichier que `ref` va occuper et l'entrée qu'il reprend. Une entrée d'une AUTRE référence dont le brouillon
+   * est propre est périmée (objet supprimé, recréé ou déplacé ailleurs) : elle est retirée du registre, en mémoire,
+   * et le nouveau brouillon la remplace. Non appliquée, elle garde son nom : le refus protège le travail qu'elle tient.
+   * `replaces` désigne en plus les références qu'une écriture réussie a rendues périmées, propres ou non.
+   */
+  async function claim(
+    registry: Registry,
+    file: string,
+    ref: DraftRef,
+    replaces: (other: DraftRef) => boolean = () => false
+  ): Promise<{ file: string; known: RegistryEntry | undefined; replaced: boolean } | typeof NAME_TAKEN> {
+    const slot = slotOf(registry, file)
+    if (!slot) {
+      return { file, known: undefined, replaced: false }
+    }
+    if (sameRef(slot.entry.ref, ref)) {
+      return { file: slot.key, known: slot.entry, replaced: false }
+    }
+    if (!replaces(slot.entry.ref) && !(await isClean(slot.key, slot.entry))) {
+      return NAME_TAKEN
+    }
+    delete registry.entries[slot.key]
+    return { file: slot.key, known: undefined, replaced: true }
+  }
 
   return {
     async find(match) {
@@ -305,11 +342,12 @@ export function createDrafts(deps: {
       return found
     },
 
-    release: (match) =>
+    release: (match, becomes) =>
       serial(async () => {
         const registry = await readRegistry()
         const released: string[] = []
         const kept: string[] = []
+        let converted = false
         for (const [file, entry] of Object.entries(registry.entries)) {
           if (!match(entry.ref)) {
             continue
@@ -317,6 +355,10 @@ export function createDrafts(deps: {
           const content = await readOrNull(join(folder, file))
           if (content !== null && sha256(content) !== entry.writtenSha256) {
             kept.push(file)
+            if (becomes) {
+              registry.entries[file] = { ...entry, ref: becomes(entry.ref), base: null }
+              converted = true
+            }
             continue
           }
           // Le fichier est la copie propre de l'objet : le supprimer ne perd rien.
@@ -324,7 +366,7 @@ export function createDrafts(deps: {
           delete registry.entries[file]
           released.push(file)
         }
-        if (released.length > 0) {
+        if (released.length > 0 || converted) {
           await writeRegistry(registry)
         }
         return { released, kept }
@@ -359,14 +401,13 @@ export function createDrafts(deps: {
             return located
           }
           const registry = await readRegistry()
-          const slot = slotOf(registry, located.file)
-          // Deux brouillons sur un même nom de fichier (noms qui se ressemblent, casse comprise) : le second ne reprend rien du premier.
-          if (slot && !sameRef(slot.entry.ref, ref)) {
-            return NAME_TAKEN
+          // Deux brouillons sur un même nom de fichier (noms qui se ressemblent, casse comprise) : le second ne reprend
+          // rien du premier, sauf si celui-ci est propre (périmé). Le fichier garde la casse sous laquelle il a été écrit.
+          const claimed = await claim(registry, located.file, ref)
+          if (!('file' in claimed)) {
+            return claimed
           }
-          // Le fichier garde la casse sous laquelle il a été écrit.
-          const file = slot?.key ?? located.file
-          const known = slot?.entry
+          const { file, known, replaced } = claimed
           const absolute = join(folder, file)
           const onDisk = await readOrNull(absolute)
           // Un fichier modifié depuis l'écriture du worker est le travail de Romain : on n'y touche pas.
@@ -388,10 +429,16 @@ export function createDrafts(deps: {
           } else {
             const live = await adapter.readLive(ref)
             // Sans entrée de registre, un fichier présent peut être un travail non appliqué : on le met de côté.
-            if (known === undefined && onDisk !== null && onDisk.toString('utf8') !== live.text) {
+            // Une entrée périmée remplacée était propre : son fichier n'est pas un travail.
+            if (known === undefined && !replaced && onDisk !== null && onDisk.toString('utf8') !== live.text) {
+              // Écrite directement, d'après les octets lus : pas de fichier temporaire (son suffixe ferait dépasser
+              // les 255 octets d'un nom de segment au plafond) et pas de relecture en texte, qui altérerait des octets non UTF-8.
               const recovered = `${absolute}.recovered-${stamp()}`
-              await writeAtomic(recovered, onDisk.toString('utf8'))
+              await writeFile(recovered, onDisk)
               log(`draft ${file} had no registry entry and differed from the live object; kept a copy at ${recovered}`)
+            }
+            if (live.recordedGone) {
+              delete registry.entries[file]
             }
             entry = await writeDraft(registry, ref, file, live.text, live.base, returnTo)
           }
@@ -470,14 +517,16 @@ export function createDrafts(deps: {
             return located
           }
           const registry = await readRegistry()
-          const slot = slotOf(registry, located.file)
-          // Écraser le fichier d'un autre brouillon perdrait son travail : on refuse.
-          if (slot && !sameRef(slot.entry.ref, ref)) {
-            return NAME_TAKEN
+          // Écraser le fichier d'un autre brouillon non appliqué perdrait son travail : on refuse.
+          const claimed = await claim(registry, located.file, ref)
+          if (!('file' in claimed)) {
+            return claimed
           }
-          const file = slot?.key ?? located.file
-          const known = slot?.entry
+          const { file, known } = claimed
           const live = await adapter.readLive(ref)
+          if (live.recordedGone) {
+            delete registry.entries[file]
+          }
           const entry = await writeDraft(registry, ref, file, live.text, live.base, known?.returnTo ?? registry.lastReturnTo)
           const info = await describe(ref, file, entry)
           return info ? { ok: true, value: info } : FILE_GONE
@@ -507,12 +556,15 @@ export function createDrafts(deps: {
             throw new Error(located.error)
           }
           const registry = await readRegistry()
-          const slot = slotOf(registry, located.file)
-          if (slot && !sameRef(slot.entry.ref, ref)) {
-            throw new Error(NAME_TAKEN.error)
+          // L'envoi a réussi : une mémoire créée à ce chemin rend périmée toute autre référence de ce chemin (l'API
+          // n'y garde qu'une mémoire), propre ou non : ce qu'elle tenait est ce qui vient d'être envoyé.
+          const supersedes = (other: DraftRef): boolean =>
+            ref.kind === 'memory' && other.kind === 'memory' && other.memoryStoreId === ref.memoryStoreId && other.path === ref.path
+          const claimed = await claim(registry, located.file, ref, supersedes)
+          if (!('file' in claimed)) {
+            throw new Error(claimed.error)
           }
-          const file = slot?.key ?? located.file
-          const known = slot?.entry
+          const { file, known } = claimed
           const returnTo = known?.returnTo ?? registry.lastReturnTo
           const onDisk = await readOrNull(join(folder, file))
           if (onDisk === null || sha256(onDisk) === sha256(sent)) {

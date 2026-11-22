@@ -2,6 +2,7 @@
 // l'état actuel, envoyé avec l'empreinte lue comme garde (un contenu changé ailleurs devient `conflict`),
 // puis réécrit avec ce que l'API a gardé. Le renommage d'une mémoire passe ici aussi : il partage la même
 // garde et refuse quand un brouillon non appliqué existe.
+import Anthropic from '@anthropic-ai/sdk'
 import type { BetaManagedAgentsMemory } from '@anthropic-ai/sdk/resources/beta/memory-stores/memories'
 import { createHash } from 'node:crypto'
 import type { ApiResult, Committed, DraftRef, MemoryRenameInput, ResourceRef, Saved } from '../protocol'
@@ -40,6 +41,29 @@ export function createMemoryAdapter(
       throw new Error('The API returned no content for this memory.')
     }
     return { content: memory.content, sha256: memory.content_sha256 }
+  }
+
+  /**
+   * L'id de la mémoire d'un brouillon et son contenu vivant. Un id que le registre seul a fourni (la référence n'en
+   * porte pas : « New memory » rouverte, ou la création d'un envoi précédent) et que l'API ne connaît plus (404)
+   * est celui d'une mémoire supprimée ailleurs : le brouillon est alors celui d'une mémoire à créer. Un id que la
+   * référence porte elle-même et que l'API refuse reste une erreur : on ne ressuscite pas une mémoire sous un autre id.
+   */
+  async function resolveLive(ref: MemoryRef): Promise<{ memoryId: string | null; content: string; sha256: string | null; recordedGone: boolean }> {
+    const recorded = ref.memoryId === null ? ((await registered(ref))?.ref.memoryId ?? null) : null
+    const memoryId = ref.memoryId ?? recorded
+    if (memoryId === null) {
+      return { memoryId: null, content: '', sha256: null, recordedGone: false }
+    }
+    try {
+      const live = await readFull(ref.memoryStoreId, memoryId)
+      return { memoryId, content: live.content, sha256: live.sha256, recordedGone: false }
+    } catch (error) {
+      if (recorded !== null && error instanceof Anthropic.NotFoundError) {
+        return { memoryId: null, content: '', sha256: null, recordedGone: true }
+      }
+      throw error
+    }
   }
 
   /**
@@ -120,20 +144,27 @@ export function createMemoryAdapter(
     },
 
     async readLive(ref) {
-      const memoryId = ref.memoryId ?? (await registered(ref))?.ref.memoryId ?? null
+      const live = await resolveLive(ref)
       // Une nouvelle mémoire part d'un fichier vide.
-      if (memoryId === null) {
-        return { text: '', base: null }
+      if (live.sha256 === null) {
+        return live.recordedGone ? { text: '', base: null, recordedGone: true } : { text: '', base: null }
       }
-      const live = await readFull(ref.memoryStoreId, memoryId)
       return { text: live.content, base: { sha256: live.sha256 } }
     },
 
     async prepare(ref, text, base, stage) {
-      const memoryId = ref.memoryId ?? (await registered(ref))?.ref.memoryId ?? null
-      const live = memoryId === null ? '' : (await readFull(ref.memoryStoreId, memoryId)).content
-      const changes = diffDocuments({ content: live }, { content: text })
-      return { ok: true, value: stage((force) => send(ref, memoryId, text, base, force), changes, memoryId === null) }
+      const live = await resolveLive(ref)
+      // Une mémoire existante n'est jamais écrite sans la garde de ce que le brouillon a lu : sans empreinte
+      // enregistrée (registre refait, entrée sans base), l'envoi écraserait un contenu que personne n'a vu.
+      if (live.memoryId !== null && expectedSha(base) === null) {
+        return { ok: false, code: 'other', error: 'The draft file is gone: open it again.' }
+      }
+      // Un brouillon identique au contenu en ligne n'a rien à envoyer (le contenu a changé ailleurs, puis le fichier a suivi).
+      if (live.memoryId !== null && text === live.content) {
+        return { ok: false, code: 'nothing_to_apply', error: 'Nothing to apply: save the file first (⌘S).' }
+      }
+      const changes = diffDocuments({ content: live.content }, { content: text })
+      return { ok: true, value: stage((force) => send(ref, live.memoryId, text, base, force), changes, live.memoryId === null) }
     }
   }
 }
@@ -173,10 +204,21 @@ export function createMemoryRename(
   }
 }
 
-/** Oublie les brouillons propres que `match` désigne. Le renommage ou la suppression étant faits, un échec ici se journalise seulement. */
-async function releaseDrafts(drafts: () => Drafts, match: (ref: DraftRef) => boolean, log: (message: string) => void): Promise<void> {
+/** Le brouillon d'une mémoire supprimée est celui d'une nouvelle mémoire au même chemin. */
+const asNewMemory = (ref: DraftRef): DraftRef => (ref.kind === 'memory' ? { ...ref, memoryId: null } : ref)
+
+/**
+ * Oublie les brouillons propres que `match` désigne. Le renommage ou la suppression étant faits, un échec ici se
+ * journalise seulement. `becomes` : ce que devient un brouillon non appliqué (il reste, sous cette référence).
+ */
+async function releaseDrafts(
+  drafts: () => Drafts,
+  match: (ref: DraftRef) => boolean,
+  log: (message: string) => void,
+  becomes?: (ref: DraftRef) => DraftRef
+): Promise<void> {
   try {
-    const { kept } = await drafts().release(match)
+    const { kept } = await drafts().release(match, becomes)
     for (const file of kept) {
       log(`memory draft kept (unapplied edits): ${file}`)
     }
@@ -191,7 +233,8 @@ async function releaseDrafts(drafts: () => Drafts, match: (ref: DraftRef) => boo
  */
 export async function releaseDeletedDrafts(ref: ResourceRef, drafts: () => Drafts, log: (message: string) => void = () => {}): Promise<void> {
   if (ref.kind === 'memory') {
-    await releaseDrafts(drafts, (known) => known.kind === 'memory' && known.memoryStoreId === ref.memoryStoreId && known.memoryId === ref.id, log)
+    // Un brouillon non appliqué reste : sa mémoire n'existe plus, il devient une nouvelle mémoire au même chemin.
+    await releaseDrafts(drafts, (known) => known.kind === 'memory' && known.memoryStoreId === ref.memoryStoreId && known.memoryId === ref.id, log, asNewMemory)
   } else if (ref.kind === 'memory_store') {
     await releaseDrafts(drafts, (known) => known.kind === 'memory' && known.memoryStoreId === ref.id, log)
   }
