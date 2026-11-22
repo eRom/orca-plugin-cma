@@ -21,6 +21,8 @@ export type ApiErrorCode =
   | 'budget_create_only'
   /** L'objet a changé depuis son ouverture : l'écriture est refusée, sauf si elle est forcée. */
   | 'conflict'
+  /** Le récapitulatif en attente n'existe plus (délai dépassé ou worker relancé) : il faut recommencer. */
+  | 'expired'
   /** Le formulaire est refusé avant tout appel réseau. */
   | 'invalid'
   | 'other'
@@ -263,6 +265,25 @@ export type SaveInput<F> = { id: string | null; baseUpdatedAt: string | null; fo
 
 export type Saved = { id: string; updatedAt: string }
 
+/** Un champ qui change entre l'état lu et l'état à écrire. */
+export type FieldChange = {
+  path: string
+  /** Valeur abrégée à 200 octets ; null quand le champ n'existait pas. */
+  before: string | null
+  after: string | null
+  /** Pour un texte long (plus de 200 octets ou plusieurs lignes) : lignes ajoutées et retirées. */
+  lines: { added: number; removed: number } | null
+}
+
+/** Nombre maximal de changements rendus dans un récapitulatif ; `totalChanges` garde le compte réel. */
+export const CHANGES_RENDER_CAP = 200
+
+/** Une écriture mise en attente côté worker : le panneau la confirme avec `token`. */
+export type PreparedWrite = { token: string; changes: FieldChange[]; totalChanges: number; creates: boolean }
+
+/** Le résultat d'une écriture confirmée, en une étiquette lisible. */
+export type Committed = { label: string }
+
 /** Une ressource à archiver ou supprimer ; credentials et mémoires portent l'id de leur parent. */
 export type ResourceRef =
   | { kind: 'agent' | 'environment' | 'vault' | 'memory_store' | 'session'; id: string }
@@ -306,6 +327,7 @@ declare module 'orca' {
     'credential.save': { input: SaveInput<CredentialForm> & { vaultId: string }; output: ApiResult<Saved> }
     'resource.archive': { input: ResourceRef; output: ApiResult<null> }
     'resource.delete': { input: ResourceRef; output: ApiResult<null> }
+    'write.commit': { input: { token: string; force: boolean }; output: ApiResult<Committed> }
     'createForm.options': { output: ApiResult<CreateFormOptions> }
     'diagnostics.testSpend': { output: ApiResult<{ sessions: number; total: Money | null }> }
   }

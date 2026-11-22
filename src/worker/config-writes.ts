@@ -28,12 +28,12 @@ import type {
 } from '../protocol'
 import { validateCredentialForm } from '../shared/credential-rules'
 import { cleaned, validateEnvironmentForm } from '../shared/environment-rules'
-import { attempt, failure, type ClientStore } from './client'
+import { CONFLICT_MESSAGE, attempt, failure, type ClientStore } from './client'
 
 // La règle vit dans `shared/` pour que le panneau la lise aussi ; elle reste importable d'ici.
 export { validateCredentialForm }
-
-export const CONFLICT_MESSAGE = 'Changed elsewhere since you opened it.'
+// Le message vit dans `client.ts` (`describeError` en a besoin) ; il reste importable d'ici.
+export { CONFLICT_MESSAGE }
 
 const emptyPackages = (): PackageLists => ({ apt: [], cargo: [], gem: [], go: [], npm: [], pip: [] })
 

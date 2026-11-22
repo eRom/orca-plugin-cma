@@ -7,5 +7,6 @@ declare module 'bun:test' {
     toEqual(expected: unknown): void
     toBe(expected: unknown): void
     toThrow(): void
+    toBeLessThanOrEqual(expected: number): void
   }
 }

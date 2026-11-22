@@ -4,6 +4,7 @@ import type { ApiResult, ResourceRef, SessionRow, ThreadRow, WorkspaceInfo } fro
 import { SECRET_NAME, attempt, createClientStore, describeError, failure, setKey, workspaceInfo } from './worker/client'
 import { createWriteHandlers } from './worker/config-writes'
 import { createConfigHandlers } from './worker/configs'
+import { createPendingWrites } from './worker/pending-writes'
 import { createSessionHandlers } from './worker/session-actions'
 import { createPoller, sdkPollSource } from './worker/session-poll'
 import { createWatcher, sdkEventSource } from './worker/stream'
@@ -171,6 +172,11 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     }
   orca.panels.handle('resource.archive', thenRefreshSessions(writes.archive))
   orca.panels.handle('resource.delete', thenRefreshSessions(writes.remove))
+
+  // Les écritures qui attendent une confirmation : un worker relancé repart d'un registre vide, et
+  // le panneau reçoit alors `expired` (il relance l'écriture).
+  const pendingWrites = createPendingWrites(() => Date.now())
+  orca.panels.handle('write.commit', ({ token, force }) => pendingWrites.commit(token, force))
 
   poller.start()
   orca.log('agent-claude-managed worker ready')

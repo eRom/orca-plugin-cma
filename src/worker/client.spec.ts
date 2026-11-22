@@ -1,10 +1,34 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { expect, test } from 'bun:test'
-import { createClientStore, describeError, setKey, workspaceInfo, type ClientStore } from './client'
+import { CONFLICT_MESSAGE, createClientStore, describeError, setKey, workspaceInfo, type ClientStore } from './client'
 
 test('describeError maps API errors', () => {
   const error = new Anthropic.AuthenticationError(401, undefined, 'invalid x-api-key', new Headers())
   expect(describeError(error)).toEqual({ message: 'The API key was rejected (401).', code: 'unauthorized' })
+})
+
+// Corps réel capturé le 22/11 (docs/superpowers/runs/lot2/t7-precondition-probe.log).
+const preconditionBody = {
+  type: 'error',
+  error: { type: 'memory_precondition_failed_error', message: 'precondition content_sha256 failed: content has changed' },
+  request_id: 'req_test'
+}
+
+test('describeError maps a memory precondition refusal to conflict', () => {
+  const error = new Anthropic.ConflictError(409, preconditionBody, undefined, new Headers())
+  expect(describeError(error)).toEqual({ message: CONFLICT_MESSAGE, code: 'conflict' })
+})
+
+test('describeError keeps the API message for any other 409', () => {
+  const body = { type: 'error', error: { type: 'memory_path_conflict_error', message: 'a memory already exists at /probe.md' } }
+  const error = new Anthropic.ConflictError(409, body, undefined, new Headers())
+  expect(describeError(error)).toEqual({ message: 'API error 409: a memory already exists at /probe.md', code: 'other' })
+})
+
+test('describeError keeps the API message for a 412', () => {
+  const body = { type: 'error', error: { type: 'precondition_failed', message: 'etag mismatch' } }
+  const error = Anthropic.APIError.generate(412, body, undefined, new Headers())
+  expect(describeError(error)).toEqual({ message: 'API error 412: etag mismatch', code: 'other' })
 })
 
 test('describeError maps unknown errors to other', () => {

@@ -8,6 +8,8 @@ export const SECRET_NAME = 'anthropic-api-key'
 
 const NO_KEY_MESSAGE = 'Add your Anthropic API key first.'
 
+export const CONFLICT_MESSAGE = 'Changed elsewhere since you opened it.'
+
 /** Levée quand aucune clé n'est enregistrée : `describeError` la rend en `no_key`. */
 class NoKeyError extends Error {
   constructor() {
@@ -80,6 +82,13 @@ function budgetError(error: InstanceType<typeof Anthropic.BadRequestError>): { m
   return found ? { message: found.message, code: found.code } : null
 }
 
+/** Le `error.type` du corps d'une erreur de l'API : `{ type: 'error', error: { type, message } }`. */
+function errorType(error: InstanceType<typeof Anthropic.APIError>): unknown {
+  const body: unknown = error.error
+  const inner = typeof body === 'object' && body !== null ? (body as { error?: unknown }).error : undefined
+  return typeof inner === 'object' && inner !== null ? (inner as { type?: unknown }).type : undefined
+}
+
 export function describeError(error: unknown): { message: string; code: ApiErrorCode } {
   if (error instanceof NoKeyError) {
     return { message: NO_KEY_MESSAGE, code: 'no_key' }
@@ -104,6 +113,11 @@ export function describeError(error: unknown): { message: string; code: ApiError
     if (budget) {
       return budget
     }
+  }
+  // Un 409 de l'API avec ce type : la mémoire a changé depuis sa lecture (capturé le 22/11, `t7-precondition-probe.log`).
+  // Les autres 409 (`memory_path_conflict_error`, chemin déjà pris) gardent le message de l'API.
+  if (error instanceof Anthropic.ConflictError && errorType(error) === 'memory_precondition_failed_error') {
+    return { message: CONFLICT_MESSAGE, code: 'conflict' }
   }
   if (error instanceof Anthropic.APIError) {
     // Pour un corps standard, `error.message` du SDK porte le statut puis tout le JSON : on garde le seul texte de l'API.
