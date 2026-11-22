@@ -95,6 +95,13 @@ function requests(over: Record<string, unknown> = {}) {
   } as never
 }
 
+/** Le type actif du sélecteur : le seul bouton plein de la rangée. */
+function activeKind(view: Awaited<ReturnType<typeof mount>>): string[] {
+  return ['Agents', 'Envs', 'Memory', 'Vaults'].filter(
+    (label) => view.find({ role: 'button', text: label })?.props.variant === 'solid'
+  )
+}
+
 function openConfig(kind: ConfigKind, id: string) {
   return { plugin: { nav: [{ view: 'home' }, { view: 'config', kind, id }] } }
 }
@@ -145,8 +152,9 @@ test('opens a vault and comes back to the same tab', async () => {
     })
   })
   const view = await mount(panel, { host })
-  await view.select({ type: 'Tabs' }, 'vault')
-  assert.equal(view.valueOf({ type: 'Tabs' }), 'vault')
+  assert.deepEqual(activeKind(view), ['Agents'])
+  await view.press({ role: 'button', text: 'Vaults' })
+  assert.deepEqual(activeKind(view), ['Vaults'])
   await view.press({ type: 'ListItem', label: 'GitHub' })
   assert.deepEqual(detailCalls, [{ kind: 'vault', id: 'vlt_a' }])
   // Le coffre liste ses identifiants, sans secret.
@@ -154,7 +162,7 @@ test('opens a vault and comes back to the same tab', async () => {
   assert.ok(view.find({ type: 'ListItem', label: 'DEPLOY_TOKEN' }))
   assert.ok(view.find({ text: /Environment variable/ }))
   await view.press({ role: 'button', text: /Back/ })
-  assert.equal(view.valueOf({ type: 'Tabs' }), 'vault')
+  assert.deepEqual(activeKind(view), ['Vaults'])
   assert.ok(view.find({ type: 'ListItem', label: 'Slack' }))
   assert.deepEqual(view.errors, [])
   await view.unmount()

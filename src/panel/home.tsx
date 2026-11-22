@@ -3,6 +3,7 @@
 import {
   atom,
   Badge,
+  Box,
   Button,
   Callout,
   Collapsible,
@@ -17,8 +18,6 @@ import {
   set,
   Spinner,
   Stack,
-  Tab,
-  Tabs,
   Text,
   update,
   type IconName
@@ -206,23 +205,31 @@ function ConfigurationsSection() {
       open={read(sectionsOpen).configurations}
       onChange={(next) => update(sectionsOpen, (state) => ({ ...state, configurations: next }))}
     >
-      <Tabs
-        label="Configurations"
-        value={current}
-        onChange={(value) => {
-          const tab = CONFIG_TABS.find((candidate) => candidate.value === value)
-          if (!tab) return
-          set(homeTab, tab.value)
-          // Les lignes déjà lues restent affichées pendant la relecture.
-          run(() => loadConfigs(tab.value))
-        }}
-      >
-        {CONFIG_TABS.map((tab) => (
-          <Tab key={tab.value} value={tab.value} label={tab.label} icon={tab.icon}>
-            {tab.value === current ? <ConfigList tab={tab} /> : null}
-          </Tab>
+      <Stack gap="sm">
+        {/* Les `Tabs` d'Orca ne passent jamais à la ligne (coupés dès 312 px) : une rangée de boutons le fait. */}
+        <Box direction="row" wrap gap="xs" padding="xs" radius="lg" background="muted">
+          {CONFIG_TABS.map((tab) => (
+            <Button
+              key={tab.value}
+              size="sm"
+              icon={tab.icon}
+              variant={tab.value === current ? 'solid' : 'ghost'}
+              // Un bouton plein neutre se fond dans la pastille : l'accent marque le type actif.
+              {...(tab.value === current ? { tone: 'accent' as const } : {})}
+              onPress={() => {
+                set(homeTab, tab.value)
+                // Les lignes déjà lues restent affichées pendant la relecture.
+                run(() => loadConfigs(tab.value))
+              }}
+            >
+              {tab.label}
+            </Button>
+          ))}
+        </Box>
+        {CONFIG_TABS.filter((tab) => tab.value === current).map((tab) => (
+          <ConfigList key={tab.value} tab={tab} />
         ))}
-      </Tabs>
+      </Stack>
     </Collapsible>
   )
 }
