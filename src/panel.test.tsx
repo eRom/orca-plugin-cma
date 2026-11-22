@@ -169,3 +169,25 @@ test('re-reads the workspace when the worker reports an empty list after a rejec
   assert.equal(view.findAll({ type: 'ListItem' }).length, 0)
   await view.unmount()
 })
+
+test('clips oversized session labels so Orca still renders the home', async () => {
+  const host = mockHost({
+    requests: {
+      'workspace.info': WITH_KEY,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'configs.list': { ok: true, value: [] },
+      'sessions.list': {
+        ok: true,
+        value: [sessionRow({ id: 'sesn_long', title: 'T'.repeat(5000), agentName: 'A'.repeat(5000) })]
+      }
+    }
+  })
+  const view = await mount(panel, { host })
+  const rows = view.findAll({ type: 'ListItem' })
+  assert.equal(rows.length, 1)
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
+  assert.deepEqual(view.warnings, [])
+  assert.ok((rows[0]?.text.length ?? 0) < 1000)
+  await view.unmount()
+})

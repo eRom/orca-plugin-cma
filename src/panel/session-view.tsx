@@ -307,7 +307,7 @@ function RaiseBudget({ sessionId }: { sessionId: string }) {
       />
       {failure ? (
         <Text tone="danger" size="sm">
-          {failure}
+          {clipBytes(failure, ERROR_TEXT_LIMIT_BYTES).text}
         </Text>
       ) : null}
       <Row>
@@ -493,9 +493,13 @@ function Thread({ sessionId }: { sessionId: string }) {
         </Row>
       ) : null}
       {rows.length === 0 && live.length === 0 ? (
-        <Text muted size="sm">
-          No messages yet.
-        </Text>
+        read(streamState)?.phase === 'connecting' ? (
+          <Spinner label="Connecting" />
+        ) : (
+          <Text muted size="sm">
+            No messages yet.
+          </Text>
+        )
       ) : null}
       {visible.map((row) => (
         <Line key={row.id} sessionId={sessionId} row={row} />
@@ -524,7 +528,17 @@ function ErrorCallout({ message }: { message: string }) {
   )
 }
 
-function Composer({ sessionId, running, terminated }: { sessionId: string; running: boolean; terminated: boolean }) {
+function Composer({
+  sessionId,
+  running,
+  terminated,
+  budgetReached
+}: {
+  sessionId: string
+  running: boolean
+  terminated: boolean
+  budgetReached: boolean
+}) {
   const notice = read(sessionNotice)
   const text = read(draft)
   return (
@@ -541,18 +555,25 @@ function Composer({ sessionId, running, terminated }: { sessionId: string; runni
             labelHidden
             placeholder="Message the agent (Cmd+Enter sends)"
             rows={3}
+            disabled={budgetReached}
             value={text}
             onChange={(value) => set(draft, value)}
             onSubmit={() => act(() => sendMessage(sessionId))}
           />
           <Row gap="sm" wrap>
-            <Button disabled={!text.trim() || read(sending)} onPress={() => act(() => sendMessage(sessionId))}>
+            <Button disabled={budgetReached || !text.trim() || read(sending)} onPress={() => act(() => sendMessage(sessionId))}>
               Send
             </Button>
             <Button variant="outline" tone="danger" icon="stop" disabled={!running} onPress={() => act(() => interrupt(sessionId))}>
               Interrupt
             </Button>
           </Row>
+          {/* L'API refuse `user.message` au plafond : le formulaire de relèvement est au-dessus du fil. */}
+          {budgetReached ? (
+            <Text muted size="sm">
+              Raise the budget to continue.
+            </Text>
+          ) : null}
         </Stack>
       )}
     </Stack>
@@ -581,7 +602,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       <Separator />
       <Thread sessionId={sessionId} />
       <Separator />
-      <Composer sessionId={sessionId} running={status === 'running'} terminated={status === 'terminated'} />
+      <Composer sessionId={sessionId} running={status === 'running'} terminated={status === 'terminated'} budgetReached={budgetReached} />
     </Stack>
   )
 }

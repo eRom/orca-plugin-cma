@@ -237,8 +237,8 @@ function SessionsSection() {
             {rows.map((row) => (
               <ListItem
                 key={row.id}
-                title={row.title ?? row.id}
-                description={[row.agentName, formatMoney(row.cost)].filter(Boolean).join(' · ')}
+                title={clipBytes(row.title ?? row.id, ROW_TITLE_LIMIT_BYTES).text}
+                description={clipBytes([row.agentName, formatMoney(row.cost)].filter(Boolean).join(' · '), ROW_DESCRIPTION_LIMIT_BYTES).text}
                 onPress={() => openSession(row.id)}
               >
                 <Badge tone={badgeTone(row.badge)}>{badgeLabel(row.badge)}</Badge>

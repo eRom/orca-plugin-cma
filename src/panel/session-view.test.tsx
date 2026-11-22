@@ -477,3 +477,54 @@ test('leaves the watch alone when the worker already follows the open session', 
   assert.deepEqual(watched, [{ sessionId: 's1' }])
   await view.unmount()
 })
+
+test('shows a spinner instead of "No messages yet." while the stream connects', async () => {
+  const connecting: StreamState = { sessionId: 's1', phase: 'connecting', since: 0, reconnects: 0, error: null }
+  const host = mockHost({
+    requests: {
+      ...requests([], {}),
+      'session.watch': { ok: true, value: { rows: [], hasEarlier: false, stream: connecting } }
+    } as never
+  })
+  const view = await mount(panel, { host, persisted: OPEN_S1 })
+  assert.equal(view.find({ text: 'No messages yet.' }), null)
+  assert.ok(view.find({ type: 'Spinner', label: 'Connecting' }))
+  await view.post('stream.state', OPEN_STREAM)
+  assert.ok(view.find({ text: 'No messages yet.' }))
+  assert.equal(view.find({ type: 'Spinner' }), null)
+  await view.unmount()
+})
+
+test('disables the composer on a budget-reached session with a hint', async () => {
+  const stopped = sessionRow({ status: 'idle', badge: 'budget_reached' })
+  const host = mockHost({
+    requests: requests([message('m1')], { 'sessions.list': { ok: true, value: [stopped] } }) as never
+  })
+  const view = await mount(panel, { host, persisted: OPEN_S1 })
+  assert.ok(view.find({ text: 'Raise the budget to continue.' }))
+  assert.equal(view.find({ role: 'button', text: 'Send' })?.disabled, true)
+  assert.equal(view.find({ label: 'Message' })?.disabled, true)
+  // Le budget relevé rend le composeur : le badge repasse à `idle`.
+  await view.post('sessions.changed', { rows: [sessionRow({ status: 'idle', badge: 'idle' })] })
+  assert.equal(view.find({ text: 'Raise the budget to continue.' }), null)
+  assert.equal(view.find({ label: 'Message' })?.disabled, false)
+  await view.unmount()
+})
+
+test('clips an oversized budget raise error', async () => {
+  const stopped = sessionRow({ status: 'idle', badge: 'budget_reached' })
+  const host = mockHost({
+    requests: requests([message('m1')], {
+      'sessions.list': { ok: true, value: [stopped] },
+      'session.raiseBudget': { ok: false, code: 'other', error: 'R'.repeat(30_000) }
+    }) as never
+  })
+  const view = await mount(panel, { host, persisted: OPEN_S1 })
+  await view.type({ label: 'New budget limit ($)' }, '10')
+  await view.press({ role: 'button', text: 'Raise budget' })
+  const shown = view.findAll({ text: /RRRR/ })
+  assert.ok(shown.length > 0)
+  assert.ok(shown.every((element) => element.text.length < 9_000))
+  assert.deepEqual(view.refusals, [])
+  await view.unmount()
+})
