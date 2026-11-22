@@ -46,8 +46,8 @@ const ROW_DESCRIPTION_LIMIT_BYTES = 300
 
 const CONFIG_TABS: { value: HomeTab; label: string; noun: string; icon: IconName }[] = [
   { value: 'agent', label: 'Agents', noun: 'agents', icon: 'bot' },
-  { value: 'environment', label: 'Envs', noun: 'environments', icon: 'layers' },
-  { value: 'memory_store', label: 'Memory', noun: 'memory stores', icon: 'database' },
+  { value: 'environment', label: 'Envs', noun: 'environments', icon: 'database' },
+  { value: 'memory_store', label: 'Memory', noun: 'memory stores', icon: 'layers' },
   { value: 'vault', label: 'Vaults', noun: 'vaults', icon: 'plug' }
 ]
 
