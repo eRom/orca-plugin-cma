@@ -76,6 +76,8 @@ export default defineCheck({
   'credential form bearer': credentialScenario('vcrd_bearer'),
   // Celui d'une variable d'environnement : nom de la variable en lecture seule, réseau limité, injection.
   'credential form variable': credentialScenario('vcrd_variable'),
+  // Le formulaire de création : le choix du type (Select) et le champ du jeton, vides.
+  'credential form new': credentialScenario(null),
   'configurations agents': {
     requests: {
       'workspace.info': WITH_KEY,
@@ -317,7 +319,7 @@ function environmentDraftScenario() {
 }
 
 /** Un coffre avec un identifiant à jeton, une variable d'environnement et un OAuth ; le formulaire de `credentialId` est ouvert. */
-function credentialScenario(credentialId: string) {
+function credentialScenario(credentialId: string | null) {
   const bearer: CredentialForm = { type: 'static_bearer', name: 'GitHub bearer', mcpServerUrl: 'https://api.githubcopilot.com/mcp/', token: '' }
   const variable: CredentialForm = {
     type: 'environment_variable',
