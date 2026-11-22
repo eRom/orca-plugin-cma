@@ -743,3 +743,87 @@ test('Apply on an existing memory rereads it, and the view shows the new content
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
+
+// --- Gate 3 ---
+
+test('the actions of a memory are drawn above its content, so a long content never pushes them away', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, newWorld()) }), persisted: OPEN_MEMORY })
+  const drawn = JSON.stringify(view.tree())
+  const actions = drawn.indexOf('Edit content')
+  const content = drawn.indexOf('Run the script.')
+  assert.ok(actions >= 0 && content >= 0)
+  assert.ok(actions < content)
+  await view.unmount()
+})
+
+test('Close of a new memory is hidden while its draft is unapplied, and shown once it is not', async () => {
+  const calls = newCalls()
+  const world = newWorld()
+  const view = await mount(panel, { host: mockHost({ requests: withNewDraft(calls, world) }), persisted: OPEN_STORE })
+  await view.press({ role: 'button', text: 'New memory' })
+  await view.type({ label: 'Path' }, '/notes/today.md')
+  await view.press({ role: 'button', text: 'Continue' })
+  assert.ok(view.find({ text: /Unapplied draft from/ }))
+  assert.equal(view.find({ role: 'button', text: 'Close' }), null)
+  // Discard reste la sortie.
+  assert.ok(view.find({ role: 'button', text: 'Discard' }))
+  await view.unmount()
+
+  const clean = await mount(panel, {
+    host: mockHost({ requests: withNewDraft(newCalls(), world, { 'draft.state': { ok: true, value: { ...NEW_INFO, unapplied: false } } }) }),
+    persisted: OPEN_STORE
+  })
+  await clean.press({ role: 'button', text: 'New memory' })
+  await clean.type({ label: 'Path' }, '/notes/today.md')
+  await clean.press({ role: 'button', text: 'Continue' })
+  assert.ok(clean.find({ role: 'button', text: 'Close' }))
+  await clean.unmount()
+})
+
+test('Delete of a memory with an unapplied draft says the draft stays as a new memory at that path', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, newWorld()) }), persisted: OPEN_MEMORY })
+  await view.press({ role: 'button', text: 'Delete' })
+  assert.ok(view.find({ type: 'Callout', text: /Delete \/runbooks\/deploy\.md for good\? This can't be undone\. Your unapplied draft stays as a new memory at this path\./ }))
+  await view.unmount()
+})
+
+test('Delete of a memory without an unapplied draft keeps the plain question', async () => {
+  const calls = newCalls()
+  const clean = { 'draft.state': { ok: true, value: { ref: { kind: 'memory', memoryStoreId: 'memstore_a', memoryId: 'mem_a', path: '/runbooks/deploy.md' }, file: 'f', unapplied: false, writtenAt: '2026-11-22T10:00:00Z', savedAt: '2026-11-22T10:00:00Z', returnTo: null } } }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, newWorld(), clean) }), persisted: OPEN_MEMORY })
+  await view.press({ role: 'button', text: 'Delete' })
+  assert.ok(view.find({ type: 'Callout', text: /Delete \/runbooks\/deploy\.md for good\? This can't be undone\./ }))
+  assert.equal(view.find({ text: /Your unapplied draft/ }), null)
+  await view.unmount()
+})
+
+test('Discard on the draft of an existing memory rereads the memory', async () => {
+  const calls = newCalls()
+  const world = newWorld()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, world) }), persisted: OPEN_MEMORY })
+  assert.equal(calls.reads.length, 1)
+  world.memory = { ...world.memory, sha256: 'sha-three', content: { text: '# Deploy\n\nChanged elsewhere.', truncated: false } }
+  await view.press({ role: 'button', text: 'Discard' })
+  await view.press({ role: 'button', text: 'Discard' })
+  assert.equal(calls.reads.length, 2)
+  assert.equal(view.find({ type: 'Markdown' })?.props.content, '# Deploy\n\nChanged elsewhere.')
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('Reload after a conflict on an existing memory rereads the memory', async () => {
+  const calls = newCalls()
+  const world = newWorld()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, world, { 'write.commit': CONFLICT }) }), persisted: OPEN_MEMORY })
+  await view.press({ role: 'button', text: 'Apply' })
+  await view.press({ role: 'button', text: 'Confirm' })
+  assert.ok(view.find({ type: 'Callout', text: /Changed elsewhere since you opened it\./ }))
+  world.memory = { ...world.memory, sha256: 'sha-three', content: { text: '# Deploy\n\nChanged elsewhere.', truncated: false } }
+  await view.press({ role: 'button', text: 'Reload' })
+  assert.equal(calls.reads.length, 2)
+  assert.equal(view.find({ type: 'Markdown' })?.props.content, '# Deploy\n\nChanged elsewhere.')
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})

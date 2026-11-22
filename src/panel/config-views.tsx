@@ -248,6 +248,8 @@ export function MemoryView({ memoryStoreId, memoryId }: { memoryStoreId: string;
               Updated <RelativeTime at={at} format="long" />
             </Text>
           )}
+          {/* Les actions passent avant le contenu : un contenu de 60 Ko les repousserait hors de portée. */}
+          <MemoryActions memory={loaded} />
           {loaded.content.text ? (
             <Markdown content={loaded.content.text} />
           ) : (
@@ -256,7 +258,6 @@ export function MemoryView({ memoryStoreId, memoryId }: { memoryStoreId: string;
             </Text>
           )}
           {loaded.content.truncated ? <Truncated /> : null}
-          <MemoryActions memory={loaded} />
         </Stack>
       )}
     </Stack>

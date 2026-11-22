@@ -38,7 +38,7 @@ import {
   RENDER_ROW_CAP,
   setNewMemory
 } from './config-state'
-import { DraftControls, draftHasFlow, loadDraftControls } from './drafts'
+import { DraftControls, draftHasFlow, draftIsUnapplied, loadDraftControls } from './drafts'
 import { clearForm, editForm, formConflict, formKey, isTouched, readForm, touchField } from './form-state'
 import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, nav, popIfTop, popView, run } from './state'
 
@@ -48,6 +48,8 @@ const CONFLICT_TITLE = 'Changed elsewhere since you opened it.'
 const TITLE_LIMIT_BYTES = 200
 const PATH_HELP = 'Starts with /, for example /notes/today.md'
 const PATH_TAKEN = 'A memory already has this path.'
+/** Ajouté à la question d'une suppression quand un brouillon non appliqué existe : le worker le garde, comme une nouvelle mémoire. */
+const KEPT_DRAFT_NOTE = ' Your unapplied draft stays as a new memory at this path.'
 
 const clipTitle = (text: string): string => clipBytes(text, TITLE_LIMIT_BYTES).text
 
@@ -365,9 +367,12 @@ function NewMemory({ store }: { store: MemoryStoreDetail }) {
     <Stack gap="sm">
       <Row gap="sm" align="center" wrap>
         <Code>{clipTitle(entry.path)}</Code>
-        <Button variant="ghost" size="sm" onPress={() => setNewMemory(store.id, null)}>
-          Close
-        </Button>
+        {/* Tant que le brouillon est non appliqué, Close le ferait oublier du panneau : Discard reste la sortie. */}
+        {draftIsUnapplied(ref) ? null : (
+          <Button variant="ghost" size="sm" onPress={() => setNewMemory(store.id, null)}>
+            Close
+          </Button>
+        )}
       </Row>
       <DraftControls
         draftRef={ref}
@@ -450,13 +455,11 @@ export function MemoryActions({ memory }: { memory: MemoryContent }): OrcaNode {
   const busy = read(renaming)
   const failure = read(renameFailure)
   const refused = failure?.memoryId === memory.id ? failure : null
+  const draftRef = memoryDraft(memory.memoryStoreId, memory.id, memory.path)
+  const reread = (): void => run(() => afterMemoryWrite(memory.memoryStoreId, memory.id))
   return (
     <Stack gap="md">
-      <DraftControls
-        draftRef={memoryDraft(memory.memoryStoreId, memory.id, memory.path)}
-        label="Edit content"
-        onApplied={() => run(() => afterMemoryWrite(memory.memoryStoreId, memory.id))}
-      />
+      <DraftControls draftRef={draftRef} label="Edit content" onApplied={reread} onDiscarded={reread} />
       <Stack gap="sm">
         <Input label="Path" disabled={busy} value={path} invalid={invalid} onChange={(value) => setRenamePath(memory.id, value)} />
         {invalid ? (
@@ -488,7 +491,7 @@ export function MemoryActions({ memory }: { memory: MemoryContent }): OrcaNode {
           <ConfirmAction
             actionKey={`memory:${memory.id}:delete`}
             label="Delete"
-            question={deleteQuestion(memory.path)}
+            question={`${deleteQuestion(memory.path)}${draftIsUnapplied(draftRef) ? KEPT_DRAFT_NOTE : ''}`}
             confirmLabel="Delete"
             disabled={busy}
             onConfirm={() => deleteMemory(memory)}

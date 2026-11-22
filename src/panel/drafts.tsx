@@ -395,6 +395,11 @@ export function draftHasFlow(ref: DraftRef): boolean {
   return read(draftFlows)[draftKey(ref)] !== undefined
 }
 
+/** Vrai quand le worker sait ce brouillon modifié depuis son écriture (non appliqué) ; faux tant que son état est inconnu. */
+export function draftIsUnapplied(ref: DraftRef): boolean {
+  return read(draftInfos)[draftKey(ref)]?.unapplied === true
+}
+
 type DraftControlsProps = {
   draftRef: DraftRef
   label: string
