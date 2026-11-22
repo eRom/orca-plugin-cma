@@ -47,31 +47,50 @@ export type Drafts = {
   discard(ref: DraftRef): Promise<ApiResult<DraftInfo>>
   back(workspaceId: string): Promise<ApiResult<null>>
   /**
-   * Réécrit le fichier avec `text` : les adaptateurs l'appellent après un envoi réussi, pour que le
-   * brouillon ne soit plus « non appliqué » et que la prochaine base soit celle qui vient d'être écrite.
-   * Rejette si le disque refuse : l'appelant décide quoi faire d'un envoi déjà réussi.
+   * Après un envoi réussi : le fichier reprend `text` (l'état écrit) et le registre garde `base`.
+   * `sent` est le texte du brouillon qui vient d'être envoyé : si le fichier a changé depuis (Romain a
+   * sauvegardé entre-temps), ses modifications plus récentes sont gardées et le brouillon reste « non appliqué ».
+   * Ne rejette jamais, l'envoi étant déjà fait : rend false (et journalise) quand le disque refuse.
    */
-  rewrite(ref: DraftRef, text: string, base: DraftBase): Promise<void>
+  rewrite(ref: DraftRef, text: string, base: DraftBase, sent: string): Promise<boolean>
 }
+
+type ReturnTo = { workspaceId: string; name: string }
 
 type RegistryEntry = {
   ref: DraftRef
   base: DraftBase
   writtenSha256: string
   writtenAt: string
-  returnTo: { workspaceId: string; name: string } | null
+  returnTo: ReturnTo | null
 }
 
-type Registry = { entries: Record<string, RegistryEntry> }
+type Registry = {
+  entries: Record<string, RegistryEntry>
+  /** Le dernier workspace de travail vu au focus : le retour d'un brouillon ouvert depuis les brouillons eux-mêmes. */
+  lastReturnTo: ReturnTo | null
+}
 
 const NOT_AVAILABLE: ApiResult<never> = { ok: false, code: 'other', error: 'Not available yet.' }
 const FILE_GONE: ApiResult<never> = { ok: false, code: 'other', error: 'The draft file is gone: open it again.' }
+const NAME_TAKEN = { ok: false, code: 'other', error: 'Another draft already uses this file name.' } as const
 
 const sha256 = (data: string | Buffer): string => createHash('sha256').update(data).digest('hex')
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
 const refuse = (code: ApiErrorCode, error: string): { ok: false; code: ApiErrorCode; error: string } => ({ ok: false, code, error })
+
+/** Deux références désignent le même brouillon quand tous leurs champs sont égaux. */
+function sameRef(a: DraftRef, b: DraftRef): boolean {
+  if (a.kind === 'agent' && b.kind === 'agent') {
+    return a.agentId === b.agentId
+  }
+  if (a.kind === 'memory' && b.kind === 'memory') {
+    return a.memoryStoreId === b.memoryStoreId && a.memoryId === b.memoryId && a.path === b.path
+  }
+  return false
+}
 
 async function readOrNull(path: string): Promise<Buffer | null> {
   try {
@@ -106,8 +125,9 @@ export function createDrafts(deps: {
   adapters: { agent?: DraftAdapter<AgentRef>; memory?: DraftAdapter<MemoryRef> }
   pending: PendingWrites
   now: () => Date
+  log: (message: string) => void
 }): Drafts {
-  const { folder, host, pending, now } = deps
+  const { folder, host, pending, now, log } = deps
   const registryPath = join(folder, REGISTRY_FILE)
 
   // Les opérations touchent le même registre : une à la fois, sinon deux ouvertures simultanées s'écraseraient.
@@ -121,17 +141,27 @@ export function createDrafts(deps: {
   const adapterFor = (ref: DraftRef): DraftAdapter<DraftRef> | undefined =>
     ref.kind === 'agent' ? deps.adapters.agent : deps.adapters.memory
 
+  /** Horodatage sûr dans un nom de fichier. */
+  const stamp = (): string => now().toISOString().replace(/[:.]/g, '-')
+
   async function readRegistry(): Promise<Registry> {
     const raw = await readOrNull(registryPath)
     if (raw === null) {
-      return { entries: {} }
+      return { entries: {}, lastReturnTo: null }
     }
     try {
-      const parsed = JSON.parse(raw.toString('utf8')) as Partial<Registry>
-      return { entries: parsed.entries && typeof parsed.entries === 'object' ? parsed.entries : {} }
-    } catch {
-      // Un registre illisible repart vide : les fichiers restent, seuls leurs suivis sont perdus.
-      return { entries: {} }
+      const parsed = JSON.parse(raw.toString('utf8')) as Partial<Registry> | null
+      const entries = parsed?.entries
+      if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
+        throw new Error('no entries object')
+      }
+      return { entries, lastReturnTo: parsed.lastReturnTo ?? null }
+    } catch (error) {
+      // Un registre illisible est mis de côté, jamais jeté : Romain peut y retrouver ce qu'il suivait.
+      const aside = `${registryPath}.corrupt-${stamp()}`
+      await rename(registryPath, aside)
+      log(`drafts registry unreadable (${messageOf(error)}); moved to ${aside}`)
+      return { entries: {}, lastReturnTo: null }
     }
   }
 
@@ -147,13 +177,6 @@ export function createDrafts(deps: {
       }
     }
     return null
-  }
-
-  /** Chemin absolu d'un fichier de brouillon, ou null quand il sortirait du dossier. */
-  function inside(file: string): string | null {
-    const absolute = resolve(folder, file)
-    const path = relative(folder, absolute)
-    return path === '' || path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path) ? null : absolute
   }
 
   async function describe(ref: DraftRef, file: string, entry: RegistryEntry): Promise<DraftInfo | null> {
@@ -173,31 +196,39 @@ export function createDrafts(deps: {
     }
   }
 
-  /** Écrit le fichier et son entrée de registre ; `returnTo` garde sa valeur sauf si l'appelant la change. */
+  /** Écrit le fichier, puis son entrée dans `registry` (déjà lu par l'appelant) et le registre sur disque. */
   async function writeDraft(
+    registry: Registry,
     ref: DraftRef,
     file: string,
-    absolute: string,
     text: string,
     base: DraftBase,
-    returnTo: RegistryEntry['returnTo']
+    returnTo: ReturnTo | null
   ): Promise<RegistryEntry> {
-    await writeAtomic(absolute, text)
+    await writeAtomic(join(folder, file), text)
     const entry: RegistryEntry = { ref, base, writtenSha256: sha256(text), writtenAt: now().toISOString(), returnTo }
-    const registry = await readRegistry()
     registry.entries[file] = entry
     await writeRegistry(registry)
     return entry
   }
 
-  /** Le fichier d'un brouillon et son chemin absolu, ou le refus quand le chemin sort du dossier. */
-  async function locate(
-    adapter: DraftAdapter<DraftRef>,
-    ref: DraftRef
-  ): Promise<{ file: string; absolute: string } | ReturnType<typeof refuse>> {
-    const file = await adapter.file(ref)
-    const absolute = inside(file)
-    return absolute === null ? refuse('other', 'The draft path is outside the drafts folder.') : { file, absolute }
+  /** Le fichier d'un brouillon (relatif, normalisé), ou le refus quand son nom sort du dossier ou est réservé. */
+  async function locate(adapter: DraftAdapter<DraftRef>, ref: DraftRef): Promise<{ file: string } | ReturnType<typeof refuse>> {
+    const file = relative(folder, resolve(folder, await adapter.file(ref)))
+    if (file === '' || file === '..' || file.startsWith(`..${sep}`) || isAbsolute(file)) {
+      return refuse('other', 'The draft path is outside the drafts folder.')
+    }
+    // Le registre, son exemplaire mis de côté et les fichiers temporaires sont à nous.
+    if (file.startsWith(REGISTRY_FILE) || file.endsWith('.tmp')) {
+      return refuse('other', 'This draft file name is reserved.')
+    }
+    return { file }
+  }
+
+  /** L'entrée de registre d'un fichier, seulement si elle est celle de ce brouillon. */
+  const entryOf = (registry: Registry, file: string, ref: DraftRef): RegistryEntry | undefined => {
+    const entry = registry.entries[file]
+    return entry && sameRef(entry.ref, ref) ? entry : undefined
   }
 
   return {
@@ -229,17 +260,26 @@ export function createDrafts(deps: {
           if (!('file' in located)) {
             return located
           }
-          const { file, absolute } = located
+          const { file } = located
+          const absolute = join(folder, file)
 
           const registry = await readRegistry()
           const known = registry.entries[file]
+          // Deux brouillons sur un même nom de fichier (noms qui se ressemblent) : le second ne reprend rien du premier.
+          if (known && !sameRef(known.ref, ref)) {
+            return NAME_TAKEN
+          }
           const onDisk = await readOrNull(absolute)
           // Un fichier modifié depuis l'écriture du worker est le travail de Romain : on n'y touche pas.
           const keep = known !== undefined && onDisk !== null && sha256(onDisk) !== known.writtenSha256
 
-          // Le workspace de retour : celui qui a le focus, sauf les brouillons eux-mêmes (rien où revenir).
+          // Le workspace de retour : celui qui a le focus ; depuis les brouillons eux-mêmes, le précédent.
           const focus = await host.focused().catch(() => null)
-          const returnTo = focus && focus.workspaceId !== workspace.id ? focus : null
+          const away = focus && focus.workspaceId !== workspace.id ? focus : null
+          if (away) {
+            registry.lastReturnTo = away
+          }
+          const returnTo = away ?? known?.returnTo ?? registry.lastReturnTo
 
           let entry: RegistryEntry
           if (keep) {
@@ -248,7 +288,13 @@ export function createDrafts(deps: {
             await writeRegistry(registry)
           } else {
             const live = await adapter.readLive(ref)
-            entry = await writeDraft(ref, file, absolute, live.text, live.base, returnTo)
+            // Sans entrée de registre, un fichier présent peut être un travail non appliqué : on le met de côté.
+            if (known === undefined && onDisk !== null && onDisk.toString('utf8') !== live.text) {
+              const recovered = `${absolute}.recovered-${stamp()}`
+              await writeAtomic(recovered, onDisk.toString('utf8'))
+              log(`draft ${file} had no registry entry and differed from the live object; kept a copy at ${recovered}`)
+            }
+            entry = await writeDraft(registry, ref, file, live.text, live.base, returnTo)
           }
 
           try {
@@ -275,7 +321,7 @@ export function createDrafts(deps: {
           if (!('file' in located)) {
             return located
           }
-          const entry = (await readRegistry()).entries[located.file]
+          const entry = entryOf(await readRegistry(), located.file, ref)
           if (!entry) {
             return { ok: true, value: null }
           }
@@ -296,8 +342,8 @@ export function createDrafts(deps: {
           if (!('file' in located)) {
             return located
           }
-          const entry = (await readRegistry()).entries[located.file]
-          const content = await readOrNull(located.absolute)
+          const entry = entryOf(await readRegistry(), located.file, ref)
+          const content = await readOrNull(join(folder, located.file))
           if (!entry || content === null) {
             return FILE_GONE
           }
@@ -321,10 +367,15 @@ export function createDrafts(deps: {
           if (!('file' in located)) {
             return located
           }
-          const { file, absolute } = located
-          const known = (await readRegistry()).entries[file]
+          const { file } = located
+          const registry = await readRegistry()
+          const known = registry.entries[file]
+          // Écraser le fichier d'un autre brouillon perdrait son travail : on refuse.
+          if (known && !sameRef(known.ref, ref)) {
+            return NAME_TAKEN
+          }
           const live = await adapter.readLive(ref)
-          const entry = await writeDraft(ref, file, absolute, live.text, live.base, known?.returnTo ?? null)
+          const entry = await writeDraft(registry, ref, file, live.text, live.base, known?.returnTo ?? registry.lastReturnTo)
           const info = await describe(ref, file, entry)
           return info ? { ok: true, value: info } : FILE_GONE
         } catch (error) {
@@ -341,18 +392,44 @@ export function createDrafts(deps: {
       }
     },
 
-    rewrite: (ref, text, base) =>
+    rewrite: (ref, text, base, sent) =>
       serial(async () => {
-        const adapter = adapterFor(ref)
-        if (!adapter) {
-          throw new Error('No adapter for this draft kind.')
+        try {
+          const adapter = adapterFor(ref)
+          if (!adapter) {
+            throw new Error('no adapter for this draft kind')
+          }
+          const located = await locate(adapter, ref)
+          if (!('file' in located)) {
+            throw new Error(located.error)
+          }
+          const { file } = located
+          const registry = await readRegistry()
+          const known = registry.entries[file]
+          if (known && !sameRef(known.ref, ref)) {
+            throw new Error(NAME_TAKEN.error)
+          }
+          const returnTo = known?.returnTo ?? registry.lastReturnTo
+          const onDisk = await readOrNull(join(folder, file))
+          if (onDisk === null || sha256(onDisk) === sha256(sent)) {
+            await writeDraft(registry, ref, file, text, base, returnTo)
+            return true
+          }
+          // Romain a sauvegardé autre chose pendant l'envoi : son fichier reste, et ce qu'il contient
+          // se compare désormais à la nouvelle base, donc reste « non appliqué ».
+          registry.entries[file] = {
+            ref,
+            base,
+            writtenSha256: sha256(text),
+            writtenAt: now().toISOString(),
+            returnTo
+          }
+          await writeRegistry(registry)
+          return true
+        } catch (error) {
+          log(`draft rewrite failed after a successful send: ${messageOf(error)}`)
+          return false
         }
-        const located = await locate(adapter, ref)
-        if (!('file' in located)) {
-          throw new Error(located.error)
-        }
-        const known = (await readRegistry()).entries[located.file]
-        await writeDraft(ref, located.file, located.absolute, text, base, known?.returnTo ?? null)
       })
   }
 }

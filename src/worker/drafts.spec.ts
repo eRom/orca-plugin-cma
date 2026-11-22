@@ -55,14 +55,15 @@ function fakeHost(folder: string | null) {
   return { host, calls, state }
 }
 
-function setup(options: { workspace?: boolean; adapters?: boolean } = {}) {
+function setup(options: { workspace?: boolean; adapters?: boolean; file?: (ref: AgentRef) => string } = {}) {
   const folder = tempFolder()
   const fake = fakeHost(options.workspace === false ? null : folder)
   const live = { text: LIVE, version: 3, reads: 0 }
   const prepared: { text: string; base: DraftBase }[] = []
+  const logs: string[] = []
   const adapter: DraftAdapter<AgentRef> = {
     async file(ref) {
-      return `agents/${ref.agentId ?? 'new'}.yaml`
+      return options.file ? options.file(ref) : `agents/${ref.agentId ?? 'new'}.yaml`
     },
     async readLive() {
       live.reads += 1
@@ -81,9 +82,10 @@ function setup(options: { workspace?: boolean; adapters?: boolean } = {}) {
       host: fake.host,
       adapters: options.adapters === false ? {} : { agent: adapter },
       pending,
-      now: () => clock.at
+      now: () => clock.at,
+      log: (message) => logs.push(message)
     })
-  return { folder, fake, live, prepared, drafts: build(), build, clock }
+  return { folder, fake, live, prepared, logs, drafts: build(), build, clock }
 }
 
 test('slugify lowercases, collapses separators, trims dashes and caps at 40 characters', () => {
@@ -173,7 +175,7 @@ test('returnTo is the focused workspace', async () => {
   cleanup()
 })
 
-test('returnTo is null when the focused workspace is the drafts workspace', async () => {
+test('returnTo is null when the focused workspace is the drafts workspace and there is no earlier one', async () => {
   const { drafts, fake } = setup()
   fake.state.focus = { workspaceId: 'ws-drafts', name: 'managed-agents' }
   const result = await drafts.open(AGENT)
@@ -211,7 +213,7 @@ test('open rejects a file path that escapes the drafts folder', async () => {
     }
   }
   const fake = fakeHost(folder)
-  const drafts = createDrafts({ folder, host: fake.host, adapters: { agent: escaping }, pending: createPendingWrites(() => 0), now: () => new Date() })
+  const drafts = createDrafts({ folder, host: fake.host, adapters: { agent: escaping }, pending: createPendingWrites(() => 0), now: () => new Date(), log: () => {} })
   const result = await drafts.open(AGENT)
   expect(result).toEqual({ ok: false, code: 'other', error: 'The draft path is outside the drafts folder.' })
   expect(fake.calls).toEqual([])
@@ -299,7 +301,7 @@ test('rewrite replaces the file and the registry base after a successful send', 
   const { drafts, folder, prepared } = setup()
   await drafts.open(AGENT)
   writeFileSync(join(folder, FILE), 'name: My edit\n')
-  await drafts.rewrite(AGENT, 'name: Saved version\n', { version: 4 })
+  expect(await drafts.rewrite(AGENT, 'name: Saved version\n', { version: 4 }, 'name: My edit\n')).toBe(true)
   expect(readFileSync(join(folder, FILE), 'utf8')).toBe('name: Saved version\n')
   const state = await drafts.state(AGENT)
   expect(state.ok && state.value?.unapplied).toBe(false)
@@ -342,5 +344,119 @@ test('two simultaneous opens of the same draft keep a consistent registry', asyn
   expect(first.ok && second.ok).toBe(true)
   const registry = JSON.parse(readFileSync(join(folder, REGISTRY_FILE), 'utf8'))
   expect(Object.keys(registry.entries)).toEqual([FILE])
+  cleanup()
+})
+
+const listDir = (path: string): string[] => readdirSync(path).sort()
+
+test('open sets aside a file that has no registry entry and differs from the live object', async () => {
+  const { drafts, folder, logs } = setup()
+  mkdirSync(join(folder, 'agents'))
+  writeFileSync(join(folder, FILE), 'name: Orphan edit\n')
+  const result = await drafts.open(AGENT)
+  expect(result.ok).toBe(true)
+  expect(readFileSync(join(folder, FILE), 'utf8')).toBe(LIVE)
+  const recovered = listDir(join(folder, 'agents')).filter((name) => name.startsWith('agent_1.yaml.recovered-'))
+  expect(recovered.length).toBe(1)
+  expect(readFileSync(join(folder, 'agents', recovered[0]), 'utf8')).toBe('name: Orphan edit\n')
+  expect(logs.some((line) => line.includes('recovered-'))).toBe(true)
+  cleanup()
+})
+
+test('open keeps no copy of an unregistered file that already equals the live object', async () => {
+  const { drafts, folder } = setup()
+  mkdirSync(join(folder, 'agents'))
+  writeFileSync(join(folder, FILE), LIVE)
+  await drafts.open(AGENT)
+  expect(listDir(join(folder, 'agents'))).toEqual(['agent_1.yaml'])
+  cleanup()
+})
+
+test('an unreadable registry is moved aside, not discarded, and the draft opens', async () => {
+  const { drafts, folder, logs } = setup()
+  writeFileSync(join(folder, REGISTRY_FILE), '{ not json')
+  const result = await drafts.open(AGENT)
+  expect(result.ok).toBe(true)
+  const aside = listDir(folder).filter((name) => name.startsWith(`${REGISTRY_FILE}.corrupt-`))
+  expect(aside.length).toBe(1)
+  expect(readFileSync(join(folder, aside[0]), 'utf8')).toBe('{ not json')
+  expect(logs.some((line) => line.includes('corrupt-'))).toBe(true)
+  const registry = JSON.parse(readFileSync(join(folder, REGISTRY_FILE), 'utf8'))
+  expect(Object.keys(registry.entries)).toEqual([FILE])
+  cleanup()
+})
+
+test('two refs that map to one file never share an edit or a base', async () => {
+  const other: AgentRef = { kind: 'agent', agentId: 'agent_2' }
+  const shared = 'agents/shared.yaml'
+  const { drafts, folder, prepared } = setup({ file: () => shared })
+  await drafts.open(AGENT)
+  writeFileSync(join(folder, shared), 'name: Edit of the first\n')
+  const refused = { ok: false, code: 'other', error: 'Another draft already uses this file name.' }
+  expect(await drafts.open(other)).toEqual(refused)
+  expect(await drafts.state(other)).toEqual({ ok: true, value: null })
+  expect(await drafts.prepare(other)).toEqual({ ok: false, code: 'other', error: 'The draft file is gone: open it again.' })
+  expect(await drafts.discard(other)).toEqual(refused)
+  expect(prepared.length).toBe(0)
+  expect(readFileSync(join(folder, shared), 'utf8')).toBe('name: Edit of the first\n')
+  const first = await drafts.state(AGENT)
+  expect(first.ok && first.value?.unapplied).toBe(true)
+  cleanup()
+})
+
+test('rewrite keeps the newer edits of the user and leaves the draft unapplied', async () => {
+  const { drafts, folder, prepared } = setup()
+  await drafts.open(AGENT)
+  writeFileSync(join(folder, FILE), 'name: Newer edit\n')
+  expect(await drafts.rewrite(AGENT, 'name: Saved version\n', { version: 4 }, 'name: Sent edit\n')).toBe(true)
+  expect(readFileSync(join(folder, FILE), 'utf8')).toBe('name: Newer edit\n')
+  const state = await drafts.state(AGENT)
+  expect(state.ok && state.value?.unapplied).toBe(true)
+  await drafts.prepare(AGENT)
+  expect(prepared).toEqual([{ text: 'name: Newer edit\n', base: { version: 4 } }])
+  cleanup()
+})
+
+test('rewrite does not reject when the disk refuses: it answers false and logs', async () => {
+  const { drafts, folder, logs } = setup()
+  await drafts.open(AGENT)
+  // Un fichier à la place du dossier `agents` : toute lecture ou écriture dessous échoue.
+  rmSync(join(folder, 'agents'), { recursive: true })
+  writeFileSync(join(folder, 'agents'), 'not a directory')
+  expect(await drafts.rewrite(AGENT, 'name: Saved version\n', { version: 4 }, LIVE)).toBe(false)
+  expect(logs.some((line) => line.includes('rewrite failed'))).toBe(true)
+  cleanup()
+})
+
+test('returnTo falls back to the previous one when a draft is reopened from the drafts workspace', async () => {
+  const { drafts, fake } = setup()
+  await drafts.open(AGENT)
+  fake.state.focus = { workspaceId: 'ws-drafts', name: 'managed-agents' }
+  const again = await drafts.open(AGENT)
+  expect(again.ok && again.value.returnTo).toEqual({ workspaceId: 'ws-other', name: 'my-project' })
+  cleanup()
+})
+
+test('returnTo of a first draft opened from the drafts workspace is the last working workspace seen', async () => {
+  const second: AgentRef = { kind: 'agent', agentId: 'agent_2' }
+  const { drafts, fake } = setup()
+  await drafts.open(AGENT)
+  fake.state.focus = { workspaceId: 'ws-drafts', name: 'managed-agents' }
+  const result = await drafts.open(second)
+  expect(result.ok && result.value.returnTo).toEqual({ workspaceId: 'ws-other', name: 'my-project' })
+  cleanup()
+})
+
+test('a draft path is normalised and the registry, its copies and temporary files are reserved', async () => {
+  const names = { value: 'agents/../notes/x.yaml' }
+  const { drafts, fake } = setup({ file: () => names.value })
+  const opened = await drafts.open(AGENT)
+  expect(opened.ok && opened.value.file).toBe('notes/x.yaml')
+  expect(fake.calls).toEqual(['show ws-drafts', 'open ws-drafts notes/x.yaml'])
+  for (const reserved of [REGISTRY_FILE, `${REGISTRY_FILE}.corrupt-2026`, 'agents/x.tmp']) {
+    names.value = reserved
+    expect(await drafts.open(AGENT)).toEqual({ ok: false, code: 'other', error: 'This draft file name is reserved.' })
+  }
+  expect(fake.calls.length).toBe(2)
   cleanup()
 })

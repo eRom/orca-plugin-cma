@@ -187,7 +187,8 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     host: createEditorHost(orca.host),
     adapters: {},
     pending: pendingWrites,
-    now: () => new Date()
+    now: () => new Date(),
+    log: (message) => orca.log(message)
   })
   orca.panels.handle('drafts.status', drafts.status)
   orca.panels.handle('draft.open', drafts.open)
