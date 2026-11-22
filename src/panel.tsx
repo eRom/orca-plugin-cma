@@ -7,6 +7,7 @@ import { ConfigDetailView, MemoryView, restoreConfigView } from './panel/config-
 import { setupDrafts } from './panel/drafts'
 import { EnvironmentFormView } from './panel/environment-form'
 import { Home } from './panel/home'
+import { MemoryStoreFormView } from './panel/memory-forms'
 import { NewSessionView, restoreNewSession } from './panel/new-session'
 import { restoreOpenSession, SessionView, sessionSubscriptions } from './panel/session-view'
 import { CredentialFormView, VaultFormView } from './panel/vault-forms'
@@ -95,6 +96,7 @@ function CurrentView() {
     case 'newConfig':
       // L'environnement et le coffre ont leur formulaire de création ; une pile persistée d'un autre type retombe sur l'accueil.
       if (top.kind === 'environment') return <EnvironmentFormView id={null} />
+      if (top.kind === 'memory_store') return <MemoryStoreFormView id={null} />
       return top.kind === 'vault' ? <VaultFormView id={null} /> : <Home />
     case 'credential':
       return <CredentialFormView vaultId={top.vaultId} credentialId={top.credentialId} />

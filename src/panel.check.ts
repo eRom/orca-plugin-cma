@@ -10,6 +10,7 @@ import type {
   DraftInfo,
   EnvironmentDetail,
   EnvironmentForm,
+  MemoryStoreDetail,
   SessionDetail,
   SessionRow,
   StreamState,
@@ -127,6 +128,17 @@ export default defineCheck({
       { id: 'mem_b', path: 'runbooks/rollback.md', sizeBytes: 300, updatedAt: '2026-11-21T10:00:00Z' }
     ]
   }),
+  // Le formulaire d'une banque dont la saisie gardée date d'une version plus ancienne : « Unsaved changes », l'avis de conflit, la liste des mémoires.
+  'memory store form': memoryStoreFormScenario(),
+  'new memory store form': {
+    persisted: { plugin: { nav: [{ view: 'home' }, { view: 'newConfig', kind: 'memory_store' }] } },
+    requests: {
+      'workspace.info': WITH_KEY,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'configs.list': { ok: true as const, value: [] },
+      'sessions.list': { ok: true as const, value: [] }
+    }
+  },
   // Une mémoire ouverte : le dossier de brouillons n'est pas un projet d'Orca, la carte d'installation s'affiche.
   'drafts setup card': memoryDraftScenario({ ready: false, info: null }),
   // Un brouillon gardé (fichier sauvegardé, pas appliqué) : « Unapplied draft from HH:MM », Apply et Discard.
@@ -328,6 +340,38 @@ function environmentDraftScenario() {
             form: { ...form, description: 'Runs the nightly checks and the weekly audit.' },
             base: form,
             baseStamp: '2026-11-21T09:00:00Z'
+          }
+        }
+      }
+    }
+  }
+}
+
+/** Une banque, avec une saisie gardée sur une version plus ancienne que le détail. */
+function memoryStoreFormScenario() {
+  const detail: MemoryStoreDetail = {
+    kind: 'memory_store',
+    id: 'memstore_check',
+    name: 'Notes',
+    description: 'Runbooks of the team.',
+    updatedAt: '2026-11-21T10:00:00Z',
+    form: { name: 'Notes', description: 'Runbooks of the team.' },
+    memories: [
+      { id: 'mem_a', path: '/runbooks/deploy.md', sizeBytes: 2048, updatedAt: '2026-11-20T10:00:00Z' },
+      { id: 'mem_b', path: '/runbooks/rollback.md', sizeBytes: 300, updatedAt: '2026-11-21T10:00:00Z' }
+    ]
+  }
+  const scenario = configScenario('memory_store', detail)
+  return {
+    ...scenario,
+    persisted: {
+      plugin: {
+        ...scenario.persisted.plugin,
+        'forms.drafts': {
+          'memory_store:memstore_check': {
+            form: { name: 'Notes', description: 'Runbooks of the team and the on-call rota.' },
+            base: detail.form,
+            baseStamp: '2026-11-20T09:00:00Z'
           }
         }
       }

@@ -211,7 +211,7 @@ async function applyDraft(ref: DraftRef): Promise<void> {
 }
 
 /** Envoie l'écriture en attente. Un conflit rouvre le choix, un refus du récapitulatif le ferme, tout autre échec garde le jeton. */
-async function commitDraft(ref: DraftRef, force: boolean): Promise<void> {
+async function commitDraft(ref: DraftRef, force: boolean, onApplied?: () => void): Promise<void> {
   const key = draftKey(ref)
   const flow = read(draftFlows)[key]
   // Le worker partage le résultat d'un envoi en vol : un second appui, forcé ou non, ne ferait que rejouer le premier.
@@ -228,6 +228,8 @@ async function commitDraft(ref: DraftRef, force: boolean): Promise<void> {
   }
   if (result.ok) {
     setFlow(key, { step: 'applied', label: result.value.label, returnTo })
+    // La vue relit l'objet écrit (rien d'autre ne le fait) : le rappel part dès que le succès est affiché.
+    onApplied?.()
     await refreshDraftState(ref).catch(() => {})
     return
   }
@@ -324,7 +326,7 @@ function SetupCard({ folder }: { folder: string }): OrcaNode {
   )
 }
 
-function FlowView({ draftRef, flow }: { draftRef: DraftRef; flow: Flow }): OrcaNode {
+function FlowView({ draftRef, flow, onApplied }: { draftRef: DraftRef; flow: Flow; onApplied: (() => void) | undefined }): OrcaNode {
   const key = draftKey(draftRef)
   switch (flow.step) {
     case 'review':
@@ -338,7 +340,7 @@ function FlowView({ draftRef, flow }: { draftRef: DraftRef; flow: Flow }): OrcaN
           <ChangesPreview
             prepared={flow.prepared}
             busy={flow.busy}
-            onConfirm={() => run(() => commitDraft(draftRef, false))}
+            onConfirm={() => run(() => commitDraft(draftRef, false, onApplied))}
             onCancel={() => setFlow(key, null)}
           />
         </Stack>
@@ -352,7 +354,7 @@ function FlowView({ draftRef, flow }: { draftRef: DraftRef; flow: Flow }): OrcaN
               <Button variant="outline" size="sm" disabled={flow.busy} onPress={() => run(() => reloadDraft(draftRef))}>
                 Reload
               </Button>
-              <Button variant="solid" size="sm" disabled={flow.busy} onPress={() => run(() => commitDraft(draftRef, true))}>
+              <Button variant="solid" size="sm" disabled={flow.busy} onPress={() => run(() => commitDraft(draftRef, true, onApplied))}>
                 Apply anyway
               </Button>
             </Row>
@@ -387,9 +389,19 @@ function FlowView({ draftRef, flow }: { draftRef: DraftRef; flow: Flow }): OrcaN
   }
 }
 
-type DraftControlsProps = { draftRef: DraftRef; label: string }
+/** Vrai tant qu'un récapitulatif, un conflit, un succès ou un avis de ce brouillon est affiché. */
+export function draftHasFlow(ref: DraftRef): boolean {
+  return read(draftFlows)[draftKey(ref)] !== undefined
+}
 
-export function DraftControls({ draftRef, label }: DraftControlsProps): OrcaNode {
+type DraftControlsProps = {
+  draftRef: DraftRef
+  label: string
+  /** Appelé dès que l'écriture est appliquée : la vue hôte relit l'objet écrit. */
+  onApplied?: () => void
+}
+
+export function DraftControls({ draftRef, label, onApplied }: DraftControlsProps): OrcaNode {
   const key = draftKey(draftRef)
   const status = read(draftsStatus)
   const info = read(draftInfos)[key] ?? null
@@ -405,7 +417,7 @@ export function DraftControls({ draftRef, label }: DraftControlsProps): OrcaNode
   return (
     <Stack gap="sm">
       {missing ? <SetupCard folder={status.folder} /> : null}
-      {flow !== undefined ? <FlowView draftRef={draftRef} flow={flow} /> : null}
+      {flow !== undefined ? <FlowView draftRef={draftRef} flow={flow} onApplied={onApplied} /> : null}
       {inFlow ? null : (
         <Stack gap="sm">
           {kept ? (

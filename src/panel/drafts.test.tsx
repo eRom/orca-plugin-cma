@@ -248,6 +248,34 @@ test('Apply shows the changes, and Confirm sends the token unforced and shows Ap
   await view.unmount()
 })
 
+test('onApplied fires once when the write is applied, not on a conflict or another refusal', async () => {
+  const calls = newCalls()
+  let applied = 0
+  const WithCallback = {
+    default: () => (
+      <Stack>
+        <DraftControls draftRef={REF} label="Edit YAML" onApplied={() => (applied += 1)} />
+      </Stack>
+    ),
+    setup: harness.setup
+  }
+  const refused = { ok: false, code: 'other', error: 'The API is down.' }
+  const view = await mount(WithCallback, {
+    host: mockHost({ requests: requests(calls, { info: UNAPPLIED, commits: [CONFLICT, refused, { ok: true, value: { label: 'Applied' } }] }) })
+  })
+  await applyFlow(view)
+  await view.press({ role: 'button', text: 'Confirm' })
+  assert.equal(applied, 0)
+  await view.press({ role: 'button', text: 'Apply anyway' })
+  assert.equal(applied, 0)
+  assert.ok(view.find({ type: 'Callout', text: /Could not apply/ }))
+  await view.press({ role: 'button', text: 'Confirm' })
+  assert.equal(applied, 1)
+  assert.ok(view.find({ type: 'Callout', text: /Applied/ }))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
 test('the version label of the worker is shown as is', async () => {
   const view = await mount(harness, {
     host: mockHost({ requests: requests(newCalls(), { info: UNAPPLIED, commits: [{ ok: true, value: { label: 'Applied, v6' } }] }) })

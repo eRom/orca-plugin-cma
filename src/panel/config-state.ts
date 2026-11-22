@@ -2,7 +2,8 @@
 // Séparé des vues pour que les formulaires (environnement, coffre, identifiant) importent l'état
 // sans repasser par `config-views`, qui les rend : aucun import circulaire.
 import { atom, plugin, read, set, update } from 'orca'
-import type { ConfigDetail, ConfigKind, ConfigRow } from '../protocol'
+import type { ConfigDetail, ConfigKind, ConfigRow, DraftRef, MemoryContent } from '../protocol'
+import { loadDraftControls } from './drafts'
 import { loadWorkspace, nav, pushView, run, workspace } from './state'
 
 /**
@@ -69,6 +70,41 @@ export async function loadDetail(kind: ConfigKind, id: string): Promise<void> {
 export function openConfig(kind: ConfigKind, id: string): void {
   update(nav, (stack) => pushView(stack, { view: 'config', kind, id }))
   run(() => loadDetail(kind, id))
+}
+
+// --- Mémoire ouverte ---
+
+/** La mémoire ouverte ; null tant que sa lecture n'est pas revenue. */
+export const memoryContent = atom<MemoryContent | null>('configs.memory', null)
+export const memoryError = atom<string | null>('configs.memory.error', null)
+
+/** Le brouillon d'une mémoire existante. */
+export function memoryDraft(memoryStoreId: string, memoryId: string, path: string): DraftRef {
+  return { kind: 'memory', memoryStoreId, memoryId, path }
+}
+
+/**
+ * Lit la mémoire ouverte, puis l'état de son brouillon. `keep` garde le contenu affiché pendant la
+ * relecture (après une écriture) : sans lui, la vue repasse par « Loading memory ».
+ */
+export async function loadMemory(memoryStoreId: string, memoryId: string, keep = false): Promise<void> {
+  if (!keep) set(memoryContent, null)
+  set(memoryError, null)
+  const result = await plugin.request('memory.read', { memoryStoreId, memoryId })
+  const top = read(nav).at(-1)
+  if (top?.view !== 'memory' || top.memoryStoreId !== memoryStoreId || top.memoryId !== memoryId) return
+  if (result.ok) {
+    set(memoryContent, result.value)
+    await loadDraftControls(memoryDraft(memoryStoreId, memoryId, result.value.path))
+  } else {
+    set(memoryError, result.error)
+  }
+}
+
+/** Ouvre une mémoire depuis le détail de sa banque. */
+export function openMemory(memoryStoreId: string, memoryId: string): void {
+  update(nav, (stack) => pushView(stack, { view: 'memory', memoryStoreId, memoryId }))
+  run(() => loadMemory(memoryStoreId, memoryId))
 }
 
 /** Ouvre le formulaire d'un identifiant du coffre ouvert (`credentialId` null : un nouvel identifiant). */

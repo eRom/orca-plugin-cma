@@ -3,21 +3,16 @@
 // l'état et les lectures sont dans `config-state`. État éphémère : seule la pile `nav` (et l'onglet, le filtre) survit à un redémarrage du panneau ;
 // les vues rouvertes se rechargent par `restoreConfigView`.
 import {
-  atom,
   Button,
   Callout,
   Card,
   Code,
   CodeView,
   KeyValue,
-  List,
-  ListItem,
   Markdown,
-  plugin,
   read,
   RelativeTime,
   Row,
-  set,
   shell,
   Spinner,
   Stack,
@@ -25,23 +20,13 @@ import {
   update,
   type OrcaNode
 } from 'orca'
-import type {
-  AgentDetail,
-  ConfigDetail,
-  ConfigKind,
-  ConfigRow,
-  DraftRef,
-  MemoryContent,
-  MemoryStoreDetail,
-  ToolPolicy,
-  ToolsetView
-} from '../protocol'
+import type { AgentDetail, ConfigDetail, ConfigKind, ConfigRow, ToolPolicy, ToolsetView } from '../protocol'
 import { clipBytes } from '../shared/text'
-import { DraftControls, loadDraftControls } from './drafts'
 import { EnvironmentFormView } from './environment-form'
+import { MemoryActions, MemoryStoreFormView } from './memory-forms'
 import { VaultFormView } from './vault-forms'
-import { configDetail, configDetailError, configRows, loadDetail, RENDER_ROW_CAP } from './config-state'
-import { ERROR_TEXT_LIMIT_BYTES, nav, popView, pushView, run, workspace } from './state'
+import { configDetail, configDetailError, configRows, loadDetail, loadMemory, memoryContent, memoryError, RENDER_ROW_CAP } from './config-state'
+import { ERROR_TEXT_LIMIT_BYTES, nav, popView, run, workspace } from './state'
 
 /** Mention affichée sous un texte coupé côté worker. */
 const TRUNCATED_NOTICE = 'Truncated, open in Console for the full text'
@@ -65,11 +50,6 @@ const POLICY_LABELS: Record<ToolPolicy, string> = {
   auto: 'auto'
 }
 
-// --- État ---
-
-const memoryContent = atom<MemoryContent | null>('configs.memory', null)
-const memoryError = atom<string | null>('configs.memory.error', null)
-
 /** Garde les lignes dont le nom ou l'identifiant contient la saisie, sans tenir compte de la casse. */
 export function filterRows(rows: readonly ConfigRow[], query: string): ConfigRow[] {
   const needle = query.trim().toLowerCase()
@@ -78,31 +58,6 @@ export function filterRows(rows: readonly ConfigRow[], query: string): ConfigRow
 }
 
 // --- Lectures ---
-
-async function loadMemory(memoryStoreId: string, memoryId: string): Promise<void> {
-  set(memoryContent, null)
-  set(memoryError, null)
-  const result = await plugin.request('memory.read', { memoryStoreId, memoryId })
-  const top = read(nav).at(-1)
-  if (top?.view !== 'memory' || top.memoryStoreId !== memoryStoreId || top.memoryId !== memoryId) return
-  if (result.ok) {
-    set(memoryContent, result.value)
-    await loadDraftControls(memoryDraft(memoryStoreId, memoryId, result.value.path))
-  } else {
-    set(memoryError, result.error)
-  }
-}
-
-/** Le brouillon d'une mémoire existante. */
-function memoryDraft(memoryStoreId: string, memoryId: string, path: string): DraftRef {
-  return { kind: 'memory', memoryStoreId, memoryId, path }
-}
-
-/** Ouvre une mémoire depuis le détail de sa banque. */
-export function openMemory(memoryStoreId: string, memoryId: string): void {
-  update(nav, (stack) => pushView(stack, { view: 'memory', memoryStoreId, memoryId }))
-  run(() => loadMemory(memoryStoreId, memoryId))
-}
 
 /**
  * Charge la vue de configuration au sommet de la pile si elle n'est pas déjà chargée : au
@@ -135,12 +90,6 @@ function openInConsole(url: string): void {
 
 function consoleUrl(workspaceId: string | null, kind: ConfigKind, id: string): string | null {
   return workspaceId ? `https://platform.claude.com/workspaces/${workspaceId}/${CONSOLE_SEGMENTS[kind]}/${encodeURIComponent(id)}` : null
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function clipTitle(text: string): string {
@@ -276,34 +225,7 @@ function AgentBody({ agent }: { agent: AgentDetail }) {
   )
 }
 
-// --- Banque de mémoire, mémoire ---
-
-function MemoryStoreBody({ store }: { store: MemoryStoreDetail }) {
-  return (
-    <Stack gap="md">
-      {store.description ? <Text size="sm">{clipBytes(store.description, LONG_TEXT_LIMIT_BYTES).text}</Text> : null}
-      <Section title="Memories">
-        {store.memories.length === 0 ? (
-          <Text muted size="sm">
-            No memories yet.
-          </Text>
-        ) : (
-          <List label="Memories">
-            {store.memories.slice(0, RENDER_ROW_CAP).map((memory) => {
-              const at = Date.parse(memory.updatedAt)
-              return (
-                <ListItem key={memory.id} title={clipTitle(memory.path)} description={formatSize(memory.sizeBytes)} onPress={() => openMemory(store.id, memory.id)}>
-                  {Number.isNaN(at) ? null : <RelativeTime at={at} format="short" muted />}
-                </ListItem>
-              )
-            })}
-          </List>
-        )}
-        <CapNotice total={store.memories.length} />
-      </Section>
-    </Stack>
-  )
-}
+// --- Mémoire ---
 
 export function MemoryView({ memoryStoreId, memoryId }: { memoryStoreId: string; memoryId: string }) {
   const memory = read(memoryContent)
@@ -334,7 +256,7 @@ export function MemoryView({ memoryStoreId, memoryId }: { memoryStoreId: string;
             </Text>
           )}
           {loaded.content.truncated ? <Truncated /> : null}
-          <DraftControls draftRef={memoryDraft(memoryStoreId, memoryId, loaded.path)} label="Edit content" />
+          <MemoryActions memory={loaded} />
         </Stack>
       )}
     </Stack>
@@ -350,7 +272,7 @@ function DetailBody({ detail }: { detail: ConfigDetail }) {
     case 'environment':
       return <EnvironmentFormView id={detail.id} />
     case 'memory_store':
-      return <MemoryStoreBody store={detail} />
+      return <MemoryStoreFormView id={detail.id} />
     case 'vault':
       return <VaultFormView id={detail.id} />
   }

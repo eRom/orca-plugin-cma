@@ -285,7 +285,8 @@ test('opens a memory from its store', async () => {
   })
   const view = await mount(panel, { host, persisted: openConfig('memory_store', 'memstore_a') })
   assert.ok(view.find({ type: 'ListItem', label: 'runbooks/deploy.md' }))
-  assert.ok(view.find({ text: /Runbooks of the team/ }))
+  // La description d'une banque est un champ du formulaire, plus un texte.
+  assert.equal(view.valueOf({ label: 'Description' }), 'Runbooks of the team.')
   await view.press({ type: 'ListItem', label: 'runbooks/deploy.md' })
   assert.deepEqual(memoryCalls, [{ memoryStoreId: 'memstore_a', memoryId: 'mem_a' }])
   const markdown = view.find({ type: 'Markdown' })

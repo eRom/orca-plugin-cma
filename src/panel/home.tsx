@@ -145,6 +145,11 @@ function ConfigList({ tab }: { tab: (typeof CONFIG_TABS)[number] }) {
           New environment
         </Button>
       ) : null}
+      {tab.value === 'memory_store' ? (
+        <Button icon="add" onPress={() => openNewConfig('memory_store')}>
+          New memory store
+        </Button>
+      ) : null}
       {tab.value === 'vault' ? (
         <Button icon="add" onPress={() => openNewConfig('vault')}>
           New vault
