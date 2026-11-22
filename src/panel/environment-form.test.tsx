@@ -1,9 +1,9 @@
-import { read } from 'orca'
+import { read, update } from 'orca'
 import { assert, mockHost, mount, test } from 'orca/testing'
 import type { ConfigKind, ConfigRow, EnvironmentDetail, EnvironmentForm, SaveInput } from '../protocol'
 import * as panel from '../panel'
 import { formDrafts } from './form-state'
-import { notice } from './state'
+import { nav, notice, popView } from './state'
 
 const WITH_KEY = {
   hasKey: true,
@@ -518,5 +518,27 @@ test('the fields are disabled while a save is in flight, so a keystroke cannot b
   assert.equal(calls.saves.length, 1)
   assert.deepEqual(seen, { name: true, description: true, metadata: true, network: true })
   assert.equal(view.find({ label: 'Description' })?.disabled, false)
+  await view.unmount()
+})
+
+test('creating an environment then pressing Back before the answer stays on home and does not open the new one', async () => {
+  const calls = newCalls()
+  const host = mockHost({
+    requests: requests(calls, {
+      'environment.save': async (input: SaveInput<EnvironmentForm>) => {
+        calls.saves.push(input)
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        // Un `await` plus tard, la personne a appuyé sur Back : le formulaire n'est plus au sommet de la pile.
+        update(nav, popView)
+        return { ok: true, value: { id: 'env_new', updatedAt: '2026-11-22T11:00:00Z' } }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN_NEW })
+  await view.type({ label: 'Name' }, 'plugin-test-env')
+  await view.press({ role: 'button', text: 'Create' })
+  assert.equal(calls.saves.length, 1)
+  assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }])
+  assert.deepEqual(view.errors, [])
   await view.unmount()
 })

@@ -45,7 +45,7 @@ import {
   setFieldText,
   touchField
 } from './form-state'
-import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, nav, popView, pushView, run } from './state'
+import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, nav, popIfTop, popView, pushView, run } from './state'
 
 /** Titre de l'avis d'un conflit : le même texte que celui du worker. */
 const CONFLICT_TITLE = 'Changed elsewhere since you opened it.'
@@ -153,9 +153,10 @@ async function saveForm(target: SaveTarget, force: boolean): Promise<void> {
     await loadConfigs('environment')
     discardForm(key)
     if (id === null) {
-      // Le détail du nouvel environnement remplace le formulaire de création.
-      update(nav, popView)
-      openConfig('environment', result.value.id)
+      // Le détail du nouvel environnement remplace le formulaire de création, s'il est encore ouvert (sinon : Back pressé).
+      if (popIfTop((entry) => entry.view === 'newConfig' && entry.kind === 'environment')) {
+        openConfig('environment', result.value.id)
+      }
     } else {
       await loadDetail('environment', id)
     }
@@ -171,11 +172,11 @@ async function reloadForm(key: string, id: string): Promise<void> {
 }
 
 /** Archive ou supprime, puis revient à l'accueil et relit la liste. Un refus de l'API remonte à `ConfirmAction`. */
-async function removeEnvironment(key: string, call: () => Promise<ApiResult<null>>): Promise<void> {
+async function removeEnvironment(key: string, id: string, call: () => Promise<ApiResult<null>>): Promise<void> {
   const result = await call()
   if (!result.ok) throw new Error(result.error)
   discardForm(key)
-  update(nav, popView)
+  popIfTop((entry) => entry.view === 'config' && entry.kind === 'environment' && entry.id === id)
   await loadConfigs('environment')
 }
 
@@ -358,7 +359,7 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
               question={archiveQuestion(name)}
               confirmLabel="Archive"
               disabled={busy}
-              onConfirm={() => removeEnvironment(key, () => plugin.request('resource.archive', { kind: 'environment', id }))}
+              onConfirm={() => removeEnvironment(key, id, () => plugin.request('resource.archive', { kind: 'environment', id }))}
             />
             <ConfirmAction
               actionKey={`environment:${id}:delete`}
@@ -366,7 +367,7 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
               question={deleteQuestion(name)}
               confirmLabel="Delete"
               disabled={busy}
-              onConfirm={() => removeEnvironment(key, () => plugin.request('resource.delete', { kind: 'environment', id }))}
+              onConfirm={() => removeEnvironment(key, id, () => plugin.request('resource.delete', { kind: 'environment', id }))}
             />
           </>
         ) : null}

@@ -1,9 +1,9 @@
-import { read } from 'orca'
+import { read, update } from 'orca'
 import { assert, mockHost, mount, test } from 'orca/testing'
 import type { ConfigKind, ConfigRow, CredentialForm, CredentialRow, SaveInput, VaultDetail, VaultForm } from '../protocol'
 import * as panel from '../panel'
 import { formDrafts, secretDrafts } from './form-state'
-import { notice } from './state'
+import { nav, notice, popView } from './state'
 
 const WITH_KEY = {
   hasKey: true,
@@ -748,5 +748,72 @@ test('the fields of a credential are disabled while its save is in flight', asyn
   await view.press({ role: 'button', text: 'Save' })
   assert.deepEqual(seen, { name: true, token: true })
   assert.equal(view.find({ label: 'Name' })?.disabled, false)
+  await view.unmount()
+})
+
+// --- Retour en arrière pendant un appel ---
+
+/** Un `await` plus tard, la personne a appuyé sur Back : l'écran d'origine n'est plus au sommet de la pile. */
+const backWhileSaving = (): void => update(nav, popView)
+
+test('creating a credential then pressing Back before the answer leaves the vault on top, not home', async () => {
+  const calls = newCalls()
+  const host = mockHost({
+    requests: requests(calls, {
+      'credential.save': async (input: CredentialSave) => {
+        calls.credentialSaves.push(input)
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        backWhileSaving()
+        return { ok: true, value: { id: 'vcrd_new', updatedAt: '2026-11-22T11:00:00Z' } }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: openCredential(null) })
+  await view.type({ label: 'MCP server URL' }, 'https://example.com/mcp')
+  await view.type({ label: 'Token' }, TOKEN)
+  await view.press({ role: 'button', text: 'Create' })
+  assert.equal(calls.credentialSaves.length, 1)
+  assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'config', kind: 'vault', id: 'vlt_a' }])
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('deleting a credential then pressing Back before the answer leaves the vault on top, not home', async () => {
+  const calls = newCalls()
+  const host = mockHost({
+    requests: requests(calls, {
+      'resource.delete': async (input: unknown) => {
+        calls.deletes.push(input)
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        backWhileSaving()
+        return { ok: true, value: null }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: openCredential('vcrd_env') })
+  await view.press({ role: 'button', text: 'Delete' })
+  await view.press({ role: 'button', text: 'Delete' })
+  assert.equal(calls.deletes.length, 1)
+  assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'config', kind: 'vault', id: 'vlt_a' }])
+  await view.unmount()
+})
+
+test('creating a vault then pressing Back before the answer stays on home and does not open the new vault', async () => {
+  const calls = newCalls()
+  const host = mockHost({
+    requests: requests(calls, {
+      'vault.save': async (input: SaveInput<VaultForm>) => {
+        calls.vaultSaves.push(input)
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        backWhileSaving()
+        return { ok: true, value: { id: 'vlt_new', updatedAt: '2026-11-22T11:00:00Z' } }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN_NEW_VAULT })
+  await view.type({ label: 'Name' }, 'plugin-test-vault')
+  await view.press({ role: 'button', text: 'Create' })
+  assert.equal(calls.vaultSaves.length, 1)
+  assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }])
   await view.unmount()
 })

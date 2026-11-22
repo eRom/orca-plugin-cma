@@ -45,7 +45,7 @@ import {
   setFieldText,
   touchField
 } from './form-state'
-import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, nav, popView, run } from './state'
+import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, nav, popIfTop, popView, run, type NavEntry } from './state'
 
 /** Titre de l'avis d'un conflit : le même texte que celui du worker. */
 const CONFLICT_TITLE = 'Changed elsewhere since you opened it.'
@@ -118,6 +118,15 @@ async function removeResource(key: string, call: () => Promise<ApiResult<null>>,
 function goBack(): void {
   update(nav, popView)
 }
+
+/** Le formulaire de création d'un coffre est-il la vue courante ? */
+const isNewVaultView = (entry: NavEntry): boolean => entry.view === 'newConfig' && entry.kind === 'vault'
+
+/** Le formulaire de cet identifiant (`credentialId` null : la création) est-il la vue courante ? */
+const isCredentialView =
+  (vaultId: string, credentialId: string | null) =>
+  (entry: NavEntry): boolean =>
+    entry.view === 'credential' && entry.vaultId === vaultId && entry.credentialId === credentialId
 
 /** Relit le coffre vivant et abandonne la saisie gardée. */
 async function reloadForm(key: string, vaultId: string): Promise<void> {
@@ -269,9 +278,8 @@ function VaultFormBody({ id, base, baseUpdatedAt, name, credentials }: VaultBody
           await loadConfigs('vault')
           discardForm(key)
           if (id === null) {
-            // Le détail du nouveau coffre remplace le formulaire de création.
-            update(nav, popView)
-            openConfig('vault', saved.id)
+            // Le détail du nouveau coffre remplace le formulaire de création, s'il est encore ouvert (sinon : Back pressé).
+            if (popIfTop(isNewVaultView)) openConfig('vault', saved.id)
           } else {
             await loadDetail('vault', id)
           }
@@ -316,7 +324,7 @@ function VaultFormBody({ id, base, baseUpdatedAt, name, credentials }: VaultBody
               question={archiveQuestion(name)}
               confirmLabel="Archive"
               disabled={busy}
-              onConfirm={() => removeResource(key, () => plugin.request('resource.archive', { kind: 'vault', id }), removeVault)}
+              onConfirm={() => removeResource(key, () => plugin.request('resource.archive', { kind: 'vault', id }), () => removeVault(id))}
             />
             <ConfirmAction
               actionKey={`vault:${id}:delete`}
@@ -324,7 +332,7 @@ function VaultFormBody({ id, base, baseUpdatedAt, name, credentials }: VaultBody
               question={deleteQuestion(name)}
               confirmLabel="Delete"
               disabled={busy}
-              onConfirm={() => removeResource(key, () => plugin.request('resource.delete', { kind: 'vault', id }), removeVault)}
+              onConfirm={() => removeResource(key, () => plugin.request('resource.delete', { kind: 'vault', id }), () => removeVault(id))}
             />
           </>
         ) : null}
@@ -335,8 +343,8 @@ function VaultFormBody({ id, base, baseUpdatedAt, name, credentials }: VaultBody
 }
 
 /** Après l'archivage ou la suppression d'un coffre : retour à l'accueil, liste relue. */
-async function removeVault(): Promise<void> {
-  update(nav, popView)
+async function removeVault(id: string): Promise<void> {
+  popIfTop((entry) => entry.view === 'config' && entry.kind === 'vault' && entry.id === id)
   await loadConfigs('vault')
 }
 
@@ -451,7 +459,7 @@ function CredentialFormBody({ vaultId, id, base, baseUpdatedAt, name }: Credenti
           // Le secret part avec la saisie : le champ revient vide.
           discardForm(key)
           // Un nouvel identifiant ramène au coffre ; une modification reste sur le formulaire relu.
-          if (creating) update(nav, popView)
+          if (creating) popIfTop(isCredentialView(vaultId, null))
           await loadDetail('vault', vaultId)
         }
       )
@@ -604,7 +612,7 @@ function CredentialFormBody({ vaultId, id, base, baseUpdatedAt, name }: Credenti
 /** « Archive » et « Delete » d'un identifiant : retour au coffre relu, puis la liste des coffres. */
 function RemoveActions({ vaultId, id, name, busy, formKeyOf }: { vaultId: string; id: string; name: string; busy: boolean; formKeyOf: string }) {
   const afterRemove = async (): Promise<void> => {
-    update(nav, popView)
+    popIfTop(isCredentialView(vaultId, id))
     await Promise.all([loadDetail('vault', vaultId), loadConfigs('vault')])
   }
   return (

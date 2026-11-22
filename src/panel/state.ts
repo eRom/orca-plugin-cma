@@ -39,6 +39,20 @@ export function popView(stack: NavEntry[]): NavEntry[] {
 }
 
 export const nav = atom<NavEntry[]>('nav', [{ view: 'home' }], { persist: 'plugin' })
+
+/**
+ * Dépile la vue courante seulement si c'est encore celle d'origine (`matches`). À appeler après un `await` :
+ * si la personne a appuyé sur Back entre-temps, dépiler encore retirerait une vue de trop. Dit si elle a dépilé.
+ */
+export function popIfTop(matches: (entry: NavEntry) => boolean): boolean {
+  const stack = read(nav)
+  const top = stack[stack.length - 1]
+  if (stack.length < 2 || top === undefined || !matches(top)) {
+    return false
+  }
+  set(nav, popView(stack))
+  return true
+}
 export const homeTab = atom<HomeTab>('home.tab', 'agent', { persist: 'plugin' })
 export const homeFilter = atom('home.filter', '', { persist: 'plugin' })
 export const sectionsOpen = atom(
