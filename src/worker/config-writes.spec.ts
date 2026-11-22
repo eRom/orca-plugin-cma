@@ -751,3 +751,45 @@ test('saveCredential keeps the fixed conflict message even with a very short sec
   const result = await handlers.saveCredential(credentialInput({ form: bearerForm({ token: '0' }) }))
   expect(result).toEqual({ ok: false, code: 'conflict', error: CONFLICT_MESSAGE })
 })
+
+// Un secret qui commence par un guillemet ou finit par un antislash revient échappé dans le corps JSON que le SDK
+// met dans le message : remplacer la forme brute d'abord en laisse un caractère (`\[secret]`, `[secret]\`).
+test('saveCredential leaves no fragment of a secret that starts with a quote or ends with a backslash', async () => {
+  const { default: Anthropic } = await import('@anthropic-ai/sdk')
+  for (const secret of ['"abc-secret-1', 'abc-secret-2\\']) {
+    // Le corps n'a pas de `error.message` : le SDK y met tout le JSON, secret échappé compris.
+    const refusal = new Anthropic.BadRequestError(
+      400,
+      { type: 'error', error: { type: 'invalid_request_error', reason: `bad value ${secret} end` } },
+      undefined,
+      new Headers()
+    )
+    const { handlers, logs } = fakeStore({ fail: refusal })
+    const result = await handlers.saveCredential(
+      credentialInput({ id: null, baseUpdatedAt: null, base: null, form: bearerForm({ token: secret }) })
+    )
+    expect(result.ok).toBe(false)
+    const everything = `${JSON.stringify(result)}\n${!result.ok ? result.error : ''}\n${logs.join('\n')}`
+    expect(!result.ok && result.error.includes('[secret]')).toBe(true)
+    expect(everything.includes('\\[secret]')).toBe(false)
+    expect(everything.includes('[secret]\\')).toBe(false)
+    expect(everything.includes('abc-secret')).toBe(false)
+  }
+})
+
+test('saveCredential redacts a secret echoed in the API message of a standard error body', async () => {
+  const { default: Anthropic } = await import('@anthropic-ai/sdk')
+  const secret = 'plugin-test-token-QUOKKA'
+  const refusal = new Anthropic.BadRequestError(
+    400,
+    { type: 'error', error: { type: 'invalid_request_error', message: `token ${secret} is not valid` } },
+    undefined,
+    new Headers()
+  )
+  const { handlers, logs } = fakeStore({ fail: refusal })
+  const result = await handlers.saveCredential(
+    credentialInput({ id: null, baseUpdatedAt: null, base: null, form: bearerForm({ token: secret }) })
+  )
+  expect(result).toEqual({ ok: false, code: 'other', error: 'API error 400: token [secret] is not valid' })
+  expect(logs.join('\n').includes(secret)).toBe(false)
+})

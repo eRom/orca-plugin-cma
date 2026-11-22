@@ -434,9 +434,10 @@ export function createWriteHandlers(store: ClientStore, log: (message: string) =
       return { ...result, error: SECRET_REFUSED_MESSAGE }
     }
     // Le SDK met le corps d'erreur en JSON dans le message : un secret avec retour à la ligne, guillemet
-    // ou antislash y revient échappé, d'où les deux formes pour chaque variante.
+    // ou antislash y revient échappé, d'où les deux formes pour chaque variante. Les plus longues d'abord : la
+    // forme brute d'un secret en `"` ou en `\` se retrouve dans l'échappée, et la remplacer avant en laisserait un caractère.
     const escaped = (text: string) => JSON.stringify(text).slice(1, -1)
-    const variants = [secret, escaped(secret), trimmed, escaped(trimmed)]
+    const variants = [...new Set([secret, escaped(secret), trimmed, escaped(trimmed)])].sort((a, b) => b.length - a.length)
     return { ...result, error: variants.reduce((text, variant) => text.split(variant).join('[secret]'), result.error) }
   }
 
