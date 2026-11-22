@@ -76,6 +76,8 @@ export type EnvironmentDetail = {
   network:
     | { mode: 'unrestricted' }
     | { mode: 'limited'; allowedHosts: string[]; allowPackageManagers: boolean; allowMcpServers: boolean }
+    /** Réseau géré par l'hôte d'un environnement `self_hosted` : l'API ne le décrit pas. */
+    | { mode: 'host_managed' }
   packages: KeyValueItem[]
   metadata: KeyValueItem[]
 }

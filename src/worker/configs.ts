@@ -68,8 +68,8 @@ function toolsetView(
 }
 
 /** Le réseau d'un environnement `cloud` ; `self_hosted` n'en porte pas, l'hôte le gère. */
-function networkMode(env: BetaEnvironment): string | null {
-  return env.config.type === 'cloud' ? env.config.networking.type : null
+function networkMode(env: BetaEnvironment): string {
+  return env.config.type === 'cloud' ? env.config.networking.type : 'host managed'
 }
 
 /**
@@ -89,8 +89,7 @@ export function toConfigRow<K extends ConfigKind>(
     }
     case 'environment': {
       const env = object as BetaEnvironment
-      const mode = networkMode(env)
-      return { kind, id: env.id, name: env.name, summary: mode ? `${env.config.type} · ${mode}` : env.config.type }
+      return { kind, id: env.id, name: env.name, summary: `${env.config.type} · ${networkMode(env)}` }
     }
     case 'memory_store': {
       const store = object as BetaManagedAgentsMemoryStore
@@ -206,9 +205,8 @@ export function toEnvironmentDetail(env: BetaEnvironment): EnvironmentDetail {
   const common = { kind: 'environment' as const, id: env.id, name: env.name, hosting: env.config.type }
   const metadata = toKeyValueItems(env.metadata)
   if (env.config.type !== 'cloud') {
-    // `self_hosted` ne décrit ni réseau ni paquets : l'hôte les gère. Le contrat n'a pas de
-    // mode « inconnu », `unrestricted` est donc un repli ; `hosting` dit la vérité à l'écran.
-    return { ...common, network: { mode: 'unrestricted' }, packages: [], metadata }
+    // `self_hosted` ne décrit ni réseau ni paquets : l'hôte les gère, et l'API n'en dit rien.
+    return { ...common, network: { mode: 'host_managed' }, packages: [], metadata }
   }
   const { networking, packages } = env.config
   return {

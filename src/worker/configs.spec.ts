@@ -202,6 +202,16 @@ test('maps an unrestricted environment with packages and metadata', () => {
   expect(detail.metadata).toEqual([{ key: 'team', value: 'sre' }])
 })
 
+// SYNTHÉTIQUE : aucun environnement `self_hosted` n'existe dans le workspace de test.
+test('marks a self-hosted network as host managed', () => {
+  const selfHosted = { ...environment, config: { type: 'self_hosted' } } as BetaEnvironment
+  const detail = toEnvironmentDetail(selfHosted)
+  expect(detail.hosting).toBe('self_hosted')
+  expect(detail.network).toEqual({ mode: 'host_managed' })
+  expect(detail.packages).toEqual([])
+  expect(toConfigRow('environment', selfHosted).summary).toBe('self_hosted · host managed')
+})
+
 test('flattens memories', () => {
   expect(toMemoryRows(memories)).toEqual([
     { id: 'mem_019QkfaDRwFebDCcpZEwq2S9', path: '/SOULD.md', sizeBytes: 67, updatedAt: '2026-11-22T07:33:08.244906Z' }
@@ -323,7 +333,6 @@ test('summarizes each kind of row', () => {
     summary: 'claude-haiku-5-5 · v5'
   })
   expect(toConfigRow('environment', environment).summary).toBe('cloud · limited')
-  expect(toConfigRow('environment', { ...environment, config: { type: 'self_hosted' } }).summary).toBe('self_hosted')
   expect(toConfigRow('memory_store', memoryStore)).toEqual({
     kind: 'memory_store',
     id: 'memstore_014xvEA4PybjSgmsJNaUQVxu',
