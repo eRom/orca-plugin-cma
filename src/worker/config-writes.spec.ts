@@ -694,3 +694,60 @@ test('saveCredential never leaks the secret through an API failure or the log', 
   expect(JSON.stringify(failed).includes(TOKEN)).toBe(false)
   expect(update.logs.join('\n').includes(TOKEN)).toBe(false)
 })
+
+test('saveCredential redacts a multi-line secret echoed by a real API error, raw and JSON-escaped', async () => {
+  const { default: Anthropic } = await import('@anthropic-ai/sdk')
+  // Une clé PEM avec guillemet et antislash : `JSON.stringify` du corps d'erreur les échappe.
+  const lines = ['-----BEGIN PLUGIN TEST KEY-----', 'abc"def\\ghi\tjkl', '-----END PLUGIN TEST KEY-----']
+  const secret = `${lines.join('\n')}\n`
+  const refusal = new Anthropic.BadRequestError(
+    400,
+    { type: 'error', error: { type: 'invalid_request_error', message: `Invalid secret_value ${secret}` } },
+    undefined,
+    new Headers()
+  )
+  const { handlers, logs } = fakeStore({ fail: refusal })
+  const result = await handlers.saveCredential(
+    credentialInput({ id: null, baseUpdatedAt: null, base: null, form: variableForm({ secretValue: secret }) })
+  )
+  expect(result.ok).toBe(false)
+  const everything = `${JSON.stringify(result)}\n${logs.join('\n')}`
+  for (const line of lines) {
+    expect(everything.includes(line)).toBe(false)
+    expect(everything.includes(JSON.stringify(line).slice(1, -1))).toBe(false)
+  }
+  expect(!result.ok && result.error.includes('[secret]')).toBe(true)
+})
+
+test('saveCredential replaces the whole message when the secret is shorter than 8 characters', async () => {
+  const short = fakeStore({ fail: new Error('API error 400: bad 0') })
+  const result = await short.handlers.saveCredential(
+    credentialInput({ id: null, baseUpdatedAt: null, base: null, form: variableForm({ secretValue: '0' }) })
+  )
+  expect(result).toEqual({ ok: false, code: 'other', error: 'The API refused the credential.' })
+  expect(short.logs).toEqual(['credential.save failed: The API refused the credential.'])
+
+  const sevenChars = fakeStore({ fail: new Error('echo 1234567') })
+  const seven = await sevenChars.handlers.saveCredential(
+    credentialInput({ id: null, baseUpdatedAt: null, base: null, form: bearerForm({ token: ' 1234567 ' }) })
+  )
+  expect(!seven.ok && seven.error).toBe('The API refused the credential.')
+
+  const eightChars = fakeStore({ fail: new Error('echo 12345678') })
+  const eight = await eightChars.handlers.saveCredential(
+    credentialInput({ id: null, baseUpdatedAt: null, base: null, form: bearerForm({ token: '12345678' }) })
+  )
+  expect(!eight.ok && eight.error).toBe('echo [secret]')
+})
+
+test('saveCredential keeps the API message untouched when no secret was sent', async () => {
+  const { handlers } = fakeStore({ fail: new Error('boom') })
+  const result = await handlers.saveCredential(credentialInput({ form: bearerForm({ token: '' }) }))
+  expect(result).toEqual({ ok: false, code: 'other', error: 'boom' })
+})
+
+test('saveCredential keeps the fixed conflict message even with a very short secret', async () => {
+  const { handlers } = fakeStore({ credential: bearerCredential({ updated_at: 'moved' }) })
+  const result = await handlers.saveCredential(credentialInput({ form: bearerForm({ token: '0' }) }))
+  expect(result).toEqual({ ok: false, code: 'conflict', error: CONFLICT_MESSAGE })
+})

@@ -258,6 +258,10 @@ export type WriteHandlers = {
   remove(ref: ResourceRef): Promise<ApiResult<null>>
 }
 
+/** En dessous de cette longueur, un secret n'est plus remplaçable dans un message d'erreur. */
+const SECRET_MIN_REDACTABLE = 8
+const SECRET_REFUSED_MESSAGE = 'The API refused the credential.'
+
 const invalid = (error: string): { ok: false; error: string; code: 'invalid' } => ({ ok: false, error, code: 'invalid' })
 
 /** Les types qui s'archivent : une mémoire n'a que la suppression. */
@@ -416,11 +420,23 @@ export function createWriteHandlers(store: ClientStore, log: (message: string) =
   // Le secret envoyé ne doit pas ressortir dans un message d'erreur de l'API, ni dans le journal.
   async function saveCredential(input: SaveInput<CredentialForm> & { vaultId: string }): Promise<ApiResult<Saved>> {
     const result = await writeCredential(input)
-    if (result.ok) {
+    // Seul le texte venu de l'API (code 'other') peut reprendre le secret ; les autres messages sont fixes.
+    if (result.ok || result.code !== 'other') {
       return result
     }
     const secret = input.form.type === 'static_bearer' ? input.form.token : input.form.secretValue
-    const variants = [secret, secret.trim()].filter((variant) => variant !== '')
+    const trimmed = secret.trim()
+    if (trimmed === '') {
+      return result
+    }
+    // Un secret très court ne se remplace pas sans abîmer le message (et le révéler) : on le jette en entier.
+    if (trimmed.length < SECRET_MIN_REDACTABLE) {
+      return { ...result, error: SECRET_REFUSED_MESSAGE }
+    }
+    // Le SDK met le corps d'erreur en JSON dans le message : un secret avec retour à la ligne, guillemet
+    // ou antislash y revient échappé, d'où les deux formes pour chaque variante.
+    const escaped = (text: string) => JSON.stringify(text).slice(1, -1)
+    const variants = [secret, escaped(secret), trimmed, escaped(trimmed)]
     return { ...result, error: variants.reduce((text, variant) => text.split(variant).join('[secret]'), result.error) }
   }
 
