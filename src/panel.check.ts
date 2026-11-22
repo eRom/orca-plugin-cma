@@ -300,7 +300,8 @@ function environmentDraftScenario() {
         'forms.drafts': {
           'environment:env_check': {
             form: { ...form, description: 'Runs the nightly checks and the weekly audit.' },
-            baseUpdatedAt: '2026-11-21T09:00:00Z'
+            base: form,
+            baseStamp: '2026-11-21T09:00:00Z'
           }
         }
       }
