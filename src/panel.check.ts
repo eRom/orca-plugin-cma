@@ -132,6 +132,17 @@ export default defineCheck({
       })
     ]
   }),
+  // Un nom d'outil de 2 000 octets et un serveur de 100 : le titre du Collapsible est coupé, le rendu n'est pas refusé.
+  'long tool title': sessionScenario({
+    row: sessionRow({ badge: 'idle', status: 'idle' }),
+    rows: [
+      text('u1', 'user_message', 'Run the tool.'),
+      {
+        ...(tool('t1', 'x'.repeat(2_000), 'running', { input: '{}', result: 'ok', state: 'done' }) as Extract<ThreadRow, { kind: 'tool' }>),
+        server: 's'.repeat(100)
+      }
+    ]
+  }),
   'huge thread': sessionScenario({
     row: sessionRow({ badge: 'idle', status: 'idle' }),
     rows: Array.from({ length: 50 }, (_, index) => text(`h${index}`, index % 2 === 0 ? 'user_message' : 'agent_message', hugeText(index)))

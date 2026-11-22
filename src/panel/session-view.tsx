@@ -64,6 +64,9 @@ type ToolRow = Extract<ThreadRow, { kind: 'tool' }>
 /** Plafond du titre de l'en-tête : un titre de l'API peut être long, l'en-tête reste lisible dans un panneau étroit. */
 const HEADER_TITLE_LIMIT_BYTES = 300
 
+/** Plafond du titre d'un outil : le nom et le serveur viennent de l'API, et un libellé trop long fait refuser tout le rendu. */
+const TOOL_TITLE_LIMIT_BYTES = 300
+
 const TOOL_STATE_LABELS: Record<ToolState, string> = {
   awaiting_approval: 'Waiting for approval',
   allowed: 'Allowed',
@@ -439,9 +442,10 @@ function Approval({ sessionId, row }: { sessionId: string; row: ToolRow }) {
 }
 
 function ToolCall({ sessionId, row }: { sessionId: string; row: ToolRow }) {
+  const title = clipBytes(`${row.server ? `${row.server}.` : ''}${row.name}`, TOOL_TITLE_LIMIT_BYTES).text
   return (
     <Stack gap="xs">
-      <Collapsible title={`${row.server ? `${row.server}.` : ''}${row.name}`} description={TOOL_STATE_LABELS[row.state]}>
+      <Collapsible title={title} description={TOOL_STATE_LABELS[row.state]}>
         <Stack gap="sm">
           <ToolIo label="Input" text={row.input.text} truncated={row.input.truncated} language="json" />
           {row.result ? <ToolIo label="Result" text={row.result.text} truncated={row.result.truncated} /> : null}

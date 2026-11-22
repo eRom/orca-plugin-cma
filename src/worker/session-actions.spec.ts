@@ -3,7 +3,7 @@ import type { BetaManagedAgentsSession } from '@anthropic-ai/sdk/resources/beta/
 import { expect, test } from 'bun:test'
 import { SESSION_CREATE_WAIT_MS, type SessionCreateInput } from '../protocol'
 import { describeError, type ClientStore } from './client'
-import { createSessionHandlers, toCreateParams, toSessionDetail, toSessionRow } from './session-actions'
+import { CONFIRM_UNCONFIRMED, createSessionHandlers, SEND_UNCONFIRMED, toCreateParams, toSessionDetail, toSessionRow } from './session-actions'
 
 const baseInput: SessionCreateInput = {
   agentId: 'agent_x',
@@ -407,6 +407,70 @@ test('a timed-out creation warns that the session may exist', async () => {
 test('a creation cut off mid-request warns that the session may exist', async () => {
   const store = creatingStore(async () => {
     throw new Anthropic.APIConnectionError({ message: 'other side closed' })
+  })
+  const result = await createSessionHandlers(store).create(baseInput)
+  expect(!result.ok && result.error.includes('sessions list')).toBe(true)
+})
+
+function sendingStore(send: () => Promise<unknown>): ClientStore {
+  const client = { beta: { sessions: { events: { send } } } }
+  return { get: async () => client, reset() {}, hasKey: async () => true } as unknown as ClientStore
+}
+
+// Un envoi dont la réponse se perd a pu partir : l'afficher comme un échec ferait renvoyer le message en double.
+test('send reports an unconfirmed send on a connection error', async () => {
+  const store = sendingStore(async () => {
+    throw new Anthropic.APIConnectionError({ message: 'cut' })
+  })
+  const result = await createSessionHandlers(store).send({ sessionId: 's', text: 'hi' })
+  expect(result).toEqual({ ok: false, code: 'other', error: SEND_UNCONFIRMED })
+})
+
+test('confirm reports an unconfirmed answer on a connection error', async () => {
+  const store = sendingStore(async () => {
+    throw new Anthropic.APIConnectionError({ message: 'cut' })
+  })
+  const result = await createSessionHandlers(store).confirm({ sessionId: 's', toolUseId: 't', allow: true, denyMessage: null })
+  expect(result).toEqual({ ok: false, code: 'other', error: CONFIRM_UNCONFIRMED })
+})
+
+// Le délai du SDK s'arrête à l'arrivée des en-têtes : seul un signal borne aussi la lecture du corps.
+test('create bounds the whole request with an abort signal', async () => {
+  let seen: { timeout?: number; signal?: unknown } = {}
+  const store = creatingStore(async (_params, options) => {
+    seen = options
+    return { id: 'sesn_new' }
+  })
+  await createSessionHandlers(store).create(baseInput)
+  expect(seen.signal instanceof AbortSignal).toBe(true)
+  expect(seen.timeout).toBe(90_000)
+})
+
+test('create gives each call its own abort signal', async () => {
+  const signals: unknown[] = []
+  const store = creatingStore(async (_params, options) => {
+    signals.push((options as { signal?: unknown }).signal)
+    return { id: 'sesn_new' }
+  })
+  const handlers = createSessionHandlers(store)
+  await handlers.create(baseInput)
+  await handlers.create(baseInput)
+  expect(signals[0] === signals[1]).toBe(false)
+})
+
+// Le signal qui expire pendant la lecture du corps lève une `APIUserAbortError`, pas une `APIConnectionError`.
+test('a creation aborted by its signal warns that the session may exist', async () => {
+  const store = creatingStore(async () => {
+    throw new Anthropic.APIUserAbortError()
+  })
+  const result = await createSessionHandlers(store).create(baseInput)
+  expect(!result.ok && result.error.includes('sessions list')).toBe(true)
+})
+
+// Constaté par la sonde (t1-abort-shape.log) : pendant la lecture du corps, le SDK laisse passer l'erreur brute du signal.
+test('a creation aborted while reading the body warns that the session may exist', async () => {
+  const store = creatingStore(async () => {
+    throw new DOMException('The operation was aborted.', 'AbortError')
   })
   const result = await createSessionHandlers(store).create(baseInput)
   expect(!result.ok && result.error.includes('sessions list')).toBe(true)

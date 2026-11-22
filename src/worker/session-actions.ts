@@ -149,12 +149,31 @@ const NO_RETRY = { maxRetries: 0 } as const
 /**
  * Une création abandonne bien avant que le panneau cesse d'attendre (SESSION_CREATE_WAIT_MS) : sinon il
  * rend la main pendant que l'appel court encore, la personne relance, et deux sessions sont facturées.
- * Limite : le SDK 1.8.0 arrête ce délai à l'arrivée des en-têtes, la lecture du corps n'est pas bornée.
+ * Le SDK 1.8.0 arrête `timeout` à l'arrivée des en-têtes : un signal, créé à chaque appel, borne aussi la
+ * lecture du corps.
  */
-const CREATE_OPTIONS = { ...NO_RETRY, timeout: 90_000 } as const
+const CREATE_TIMEOUT_MS = 90_000
+const CREATE_OPTIONS = { ...NO_RETRY, timeout: CREATE_TIMEOUT_MS } as const
 
 const CREATE_UNCONFIRMED =
   'The API did not confirm the creation. The session may still have been created: check the sessions list before trying again.'
+
+/** Un envoi dont la réponse se perd a pu partir : le dire évite que la personne renvoie le même message. */
+export const SEND_UNCONFIRMED = 'The message may have been sent: check the thread.'
+export const CONFIRM_UNCONFIRMED = 'Your answer may have been sent: check the thread.'
+
+/**
+ * Le signal expiré pendant la lecture du corps remonte brut (une `DOMException`), non enveloppé par le SDK :
+ * constaté par la sonde `docs/superpowers/runs/lot2/t1-create-probe.ts`.
+ */
+function isSignalAbort(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')
+}
+
+/** Une connexion coupée après l'envoi ne dit pas que la requête a échoué : l'erreur devient le message « non confirmé ». */
+function unconfirmedOnConnectionError(error: unknown, message: string): unknown {
+  return error instanceof Anthropic.APIConnectionError ? new Error(message) : error
+}
 
 /** Le classement `idle` que le sondeur connaît d'une session ; null quand il n'en a pas. */
 export type IdleLookup = (sessionId: string) => IdleClassification | null
@@ -178,32 +197,40 @@ export function createSessionHandlers(store: ClientStore, idleOf: IdleLookup = (
   return {
     send: ({ sessionId, text }) =>
       attempt(store, async (client) => {
-        await client.beta.sessions.events.send(
-          sessionId,
-          { events: [{ type: 'user.message', content: [{ type: 'text', text }] }] },
-          NO_RETRY
-        )
+        try {
+          await client.beta.sessions.events.send(
+            sessionId,
+            { events: [{ type: 'user.message', content: [{ type: 'text', text }] }] },
+            NO_RETRY
+          )
+        } catch (error) {
+          throw unconfirmedOnConnectionError(error, SEND_UNCONFIRMED)
+        }
         return null
       }),
 
     confirm: ({ sessionId, toolUseId, allow, denyMessage }) =>
       attempt(store, async (client) => {
         const message = denyMessage?.trim()
-        await client.beta.sessions.events.send(
-          sessionId,
-          {
-            events: [
-              {
-                type: 'user.tool_confirmation',
-                tool_use_id: toolUseId,
-                result: allow ? 'allow' : 'deny',
-                // L'API n'accepte `deny_message` que sur un refus.
-                ...(!allow && message ? { deny_message: message } : {})
-              }
-            ]
-          },
-          NO_RETRY
-        )
+        try {
+          await client.beta.sessions.events.send(
+            sessionId,
+            {
+              events: [
+                {
+                  type: 'user.tool_confirmation',
+                  tool_use_id: toolUseId,
+                  result: allow ? 'allow' : 'deny',
+                  // L'API n'accepte `deny_message` que sur un refus.
+                  ...(!allow && message ? { deny_message: message } : {})
+                }
+              ]
+            },
+            NO_RETRY
+          )
+        } catch (error) {
+          throw unconfirmedOnConnectionError(error, CONFIRM_UNCONFIRMED)
+        }
         return null
       }),
 
@@ -216,12 +243,22 @@ export function createSessionHandlers(store: ClientStore, idleOf: IdleLookup = (
     create: (input) =>
       attempt(store, async (client) => {
         try {
-          const session = await client.beta.sessions.create(toCreateParams(input), CREATE_OPTIONS)
+          const session = await client.beta.sessions.create(toCreateParams(input), {
+            ...CREATE_OPTIONS,
+            signal: AbortSignal.timeout(CREATE_TIMEOUT_MS)
+          })
           return { sessionId: session.id }
         } catch (error) {
-          // Un délai dépassé ou une connexion coupée ne dit pas que la création a échoué : la requête a pu
-          // aboutir côté API. Une fausse alerte coûte un coup d'œil à la liste, un faux échec une session en double.
-          if (error instanceof Anthropic.APIConnectionError) throw new Error(CREATE_UNCONFIRMED)
+          // Un délai dépassé, une connexion coupée ou le signal expiré en lisant le corps ne disent pas que la
+          // création a échoué : la requête a pu aboutir côté API. Une fausse alerte coûte un coup d'œil à la liste,
+          // un faux échec une session en double.
+          if (
+            error instanceof Anthropic.APIConnectionError ||
+            error instanceof Anthropic.APIUserAbortError ||
+            isSignalAbort(error)
+          ) {
+            throw new Error(CREATE_UNCONFIRMED)
+          }
           throw error
         }
       }),
