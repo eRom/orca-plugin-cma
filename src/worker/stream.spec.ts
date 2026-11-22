@@ -26,6 +26,8 @@ function fakeSource(options: {
   streamError?: unknown
   /** Levée par le premier appel de `history` seulement. */
   firstHistoryError?: unknown
+  /** Avec `firstHistoryError` : nombre d'événements rendus par ce premier appel avant la levée. */
+  firstHistoryYields?: number
 }) {
   const calls = { stream: 0, history: 0, status: 0 }
   const signals: AbortSignal[] = []
@@ -44,7 +46,10 @@ function fakeSource(options: {
       const call = calls.history++
       const events = histories[Math.min(call, histories.length - 1)]
       return (async function* () {
-        if (call === 0 && options.firstHistoryError) throw options.firstHistoryError
+        if (call === 0 && options.firstHistoryError) {
+          yield* events.slice(0, options.firstHistoryYields ?? 0)
+          throw options.firstHistoryError
+        }
         yield* events
       })()
     },
@@ -336,4 +341,21 @@ test('posts every missed row after a reconnect', async () => {
   const ids = new Set(recorder.postedIds())
   for (const row of missed) expect(ids.has(row.id)).toBe(true)
   expect(recorder.postedIds().filter((id) => id === 'old0').length).toBe(1)
+})
+
+test('keeps rows applied before a partial history failure', async () => {
+  // Le premier appel rend e1, e2 puis échoue ; le second rend e1, e2, e3.
+  const { source } = fakeSource({
+    streams: [() => emit(), () => emit()],
+    history: [[message('e1'), message('e2'), message('e3')]],
+    firstHistoryError: new Error('history cut'),
+    firstHistoryYields: 2,
+    statuses: ['terminated']
+  })
+  const recorder = recordingSink()
+  createWatcher(source, recorder.sink, options).watch(SESSION)
+  await recorder.closed()
+  expect(recorder.postedIds()).toEqual(['e1', 'e2', 'e3'])
+  // La relecture réussie reste la première : elle porte `hasEarlier` comme `tail` le calcule.
+  expect(recorder.threads.filter((post) => post.hasEarlier !== undefined).map((post) => post.hasEarlier)).toEqual([false])
 })
