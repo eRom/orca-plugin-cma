@@ -528,3 +528,15 @@ test('clips an oversized budget raise error', async () => {
   assert.deepEqual(view.refusals, [])
   await view.unmount()
 })
+
+test('windows 400 small rows to at most 100 and offers Load earlier', async () => {
+  const rows = Array.from({ length: 400 }, (_, index) => message(`m${index}`, `row-${index}-text`))
+  const host = mockHost({ requests: requests(rows) as never })
+  const view = await mount(panel, { host, persisted: OPEN_S1 })
+  const shown = view.findAll({ type: 'Markdown' }).length
+  assert.ok(shown > 0 && shown <= 100)
+  assert.ok(view.find({ text: /row-399-text/ }))
+  assert.ok(view.find({ role: 'button', text: 'Load earlier' }))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})

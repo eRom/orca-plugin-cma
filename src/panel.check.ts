@@ -136,6 +136,11 @@ export default defineCheck({
     row: sessionRow({ badge: 'idle', status: 'idle' }),
     rows: Array.from({ length: 50 }, (_, index) => text(`h${index}`, index % 2 === 0 ? 'user_message' : 'agent_message', hugeText(index)))
   }),
+  // 400 petites lignes : le panneau n'en dessine que la dernière page (100 au plus) et propose `Load earlier`.
+  'long thread': sessionScenario({
+    row: sessionRow({ badge: 'idle', status: 'idle' }),
+    rows: Array.from({ length: 400 }, (_, index) => text(`l${index}`, index % 2 === 0 ? 'user_message' : 'agent_message', `Line ${index}`))
+  }),
   'terminated session': sessionScenario({
     row: sessionRow({ badge: 'terminated', status: 'terminated' }),
     rows: [
