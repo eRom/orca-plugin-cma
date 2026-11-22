@@ -1,7 +1,17 @@
 // État du panneau : pile de navigation, réglages de l'accueil, avis d'erreur et identité du
 // workspace. Les atomes `persist: 'plugin'` survivent à un redémarrage du module du panneau.
 import { atom, plugin, read, set } from 'orca'
-import type { ApiResult, ConfigKind, SessionRow, WorkspaceInfo } from '../protocol'
+import type {
+  ApiResult,
+  ConfigKind,
+  Money,
+  Preview,
+  SessionDetail,
+  SessionRow,
+  StreamState,
+  ThreadRow,
+  WorkspaceInfo
+} from '../protocol'
 
 export type NavEntry =
   | { view: 'home' }
@@ -80,4 +90,81 @@ export async function loadSessions(): Promise<void> {
   } else {
     set(notice, result.error)
   }
+}
+
+// --- Vue d'une session : tout ceci est éphémère (rien n'est persisté), le worker garde le fil. ---
+
+/** Session dont la vue est ouverte ; les poussées des autres sessions sont ignorées. */
+export const viewedSession = atom<string | null>(null)
+/** Lignes du fil connues du panneau, de la plus ancienne à la plus récente. */
+export const threadRows = atom<ThreadRow[]>([])
+/** Messages en cours d'écriture (état complet à chaque poussée). */
+export const previews = atom<Preview[]>([])
+/** Fin (exclusive) de la page affichée ; null = les lignes les plus récentes. */
+export const pageEnd = atom<number | null>(null)
+/** Vrai quand le worker garde des lignes plus anciennes que celles du panneau. */
+export const hasEarlier = atom(false)
+export const streamState = atom<StreamState | null>(null)
+export const sessionDetail = atom<SessionDetail | null>(null)
+/** Coût et budget les plus frais : `session.updated` ou `session.detail`, le dernier arrivé gagne. */
+export const sessionUsage = atom<{ cost: Money | null; budget: Money | null } | null>(null)
+/** Vrai une fois la première réponse de `session.watch` reçue (réussie ou non). */
+export const threadLoaded = atom(false)
+export const loadingEarlier = atom(false)
+/** Texte du composeur. */
+export const draft = atom('')
+/** Motif de refus saisi, par id d'appel d'outil. */
+export const denyDraft = atom<Record<string, string>>({})
+/** Appels d'outil dont l'accord ou le refus est en route. */
+export const confirming = atom<string[]>([])
+export const raiseDraft = atom('')
+/** Erreur du relèvement de budget, affichée dans son propre formulaire. */
+export const raiseNotice = atom<string | null>(null)
+/** Erreur d'une action de la session, affichée près du composeur. */
+export const sessionNotice = atom<string | null>(null)
+
+/** Remet la vue à zéro pour une session (ou aucune). */
+export function resetSessionView(sessionId: string | null): void {
+  set(viewedSession, sessionId)
+  set(threadRows, [])
+  set(previews, [])
+  set(pageEnd, null)
+  set(hasEarlier, false)
+  set(streamState, null)
+  set(sessionDetail, null)
+  set(sessionUsage, null)
+  set(threadLoaded, false)
+  set(loadingEarlier, false)
+  set(draft, '')
+  set(denyDraft, {})
+  set(confirming, [])
+  set(raiseDraft, '')
+  set(raiseNotice, null)
+  set(sessionNotice, null)
+}
+
+/** Remplace les lignes déjà connues par id, ajoute les autres à la fin. Ne coupe jamais la liste. */
+export function mergeRows(current: readonly ThreadRow[], incoming: readonly ThreadRow[]): ThreadRow[] {
+  const next = [...current]
+  const indexById = new Map(next.map((row, index) => [row.id, index]))
+  for (const row of incoming) {
+    const index = indexById.get(row.id)
+    if (index === undefined) {
+      indexById.set(row.id, next.length)
+      next.push(row)
+    } else {
+      next[index] = row
+    }
+  }
+  return next
+}
+
+/** Place en tête les lignes plus anciennes pas encore connues ; renvoie la liste et le nombre ajouté. */
+export function prependRows(
+  current: readonly ThreadRow[],
+  older: readonly ThreadRow[]
+): { rows: ThreadRow[]; added: number } {
+  const known = new Set(current.map((row) => row.id))
+  const fresh = older.filter((row) => !known.has(row.id))
+  return { rows: [...fresh, ...current], added: fresh.length }
 }

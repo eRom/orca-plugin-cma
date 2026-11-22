@@ -3,6 +3,7 @@
 import { Callout, plugin, read, set, Spinner, Stack, type PanelContext } from 'orca'
 import { POLL_VISIBLE_MS } from './protocol'
 import { Home } from './panel/home'
+import { restoreOpenSession, SessionView, sessionSubscriptions } from './panel/session-view'
 import { loadSessions, loadWorkspace, nav, notice, run, sessionRows, workspace } from './panel/state'
 
 export function setup(ctx: PanelContext): void {
@@ -14,11 +15,15 @@ export function setup(ctx: PanelContext): void {
       if (rows.length === 0 && info?.hasKey && !info.keyRejected) {
         run(loadWorkspace)
       }
-    })
+    }),
+    ...sessionSubscriptions()
   )
   run(async () => {
     await loadWorkspace()
-    await loadSessions()
+    const info = read(workspace)
+    // La pile persistée peut garder une session ouverte : on la rouvre, si une clé utilisable l'autorise.
+    const reopen = info?.hasKey && !info.keyRejected ? restoreOpenSession() : Promise.resolve()
+    await Promise.all([loadSessions(), reopen])
   })
 
   // Le worker sonde vite tant qu'il sait le panneau visible : un ping au montage, puis toutes les 10 s.
@@ -36,8 +41,15 @@ export function setup(ctx: PanelContext): void {
 
 function CurrentView() {
   const top = read(nav).at(-1)
+  const info = read(workspace)
+  // Sans clé utilisable, aucune vue de détail ne peut se charger : l'accueil remontre le formulaire.
+  if (!info?.hasKey || info.keyRejected) {
+    return <Home />
+  }
   switch (top?.view) {
-    // Les autres vues (détail, session, nouvelle session) arrivent avec les tâches suivantes.
+    case 'session':
+      return <SessionView sessionId={top.sessionId} />
+    // Les autres vues (détail de configuration, nouvelle session) arrivent avec les tâches suivantes.
     default:
       return <Home />
   }

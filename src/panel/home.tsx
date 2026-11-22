@@ -21,6 +21,7 @@ import {
 } from 'orca'
 import { formatMoney } from '../shared/money'
 import { badgeLabel, badgeTone, sortSessions } from '../shared/sessions'
+import { openSession } from './session-view'
 import { loadSessions, nav, pushView, run, sectionsOpen, sessionRows, workspace } from './state'
 
 const keyDraft = atom('')
@@ -121,7 +122,7 @@ function SessionsSection() {
                 key={row.id}
                 title={row.title ?? row.id}
                 description={[row.agentName, formatMoney(row.cost)].filter(Boolean).join(' · ')}
-                onPress={() => update(nav, (stack) => pushView(stack, { view: 'session', sessionId: row.id }))}
+                onPress={() => openSession(row.id)}
               >
                 <Badge tone={badgeTone(row.badge)}>{badgeLabel(row.badge)}</Badge>
               </ListItem>
