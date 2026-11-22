@@ -41,3 +41,20 @@ test('shows the key form again when the key is rejected', async () => {
   assert.ok(view.find({ label: 'API key' }))
   await view.unmount()
 })
+
+test('keeps the key draft when key.set fails', async () => {
+  const host = mockHost({
+    requests: {
+      'workspace.info': { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null },
+      'key.set': { ok: false, code: 'unauthorized', error: 'The API key was rejected (401).' }
+    }
+  })
+  const view = await mount(panel, { host })
+  await view.type({ label: 'API key' }, 'sk-ant-typo')
+  await view.press({ role: 'button', text: 'Save key' })
+  assert.ok(view.find({ type: 'Callout', text: /The API key was rejected \(401\)\./ }))
+  const input = view.find({ label: 'API key' })
+  assert.ok(input)
+  assert.equal(view.valueOf(input), 'sk-ant-typo')
+  await view.unmount()
+})

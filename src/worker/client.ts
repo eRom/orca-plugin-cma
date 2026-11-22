@@ -100,9 +100,10 @@ export function failure(error: unknown): { ok: false; error: string; code: ApiEr
 }
 
 /**
- * Identité du workspace de la clé : l'id vient de l'en-tête `anthropic-workspace-id` d'un appel
- * de liste, le nom de l'organisation d'un appel dédié. Un 401 n'est pas une erreur ici, c'est
- * l'état « clé refusée » ; toute autre erreur est levée à l'appelant.
+ * Identité du workspace de la clé. Seul l'appel de liste des agents décide : un 401 est l'état
+ * « clé refusée », toute autre erreur est levée à l'appelant. L'id vient de l'en-tête
+ * `anthropic-workspace-id` de cet appel ; le nom de l'organisation est un complément, et son
+ * échec (403, 5xx, réseau) ne fait pas perdre le reste.
  */
 export async function workspaceInfo(store: ClientStore): Promise<WorkspaceInfo> {
   if (!(await store.hasKey())) {
@@ -111,12 +112,15 @@ export async function workspaceInfo(store: ClientStore): Promise<WorkspaceInfo> 
   try {
     const client = await store.get()
     const call = await client.beta.agents.list({ limit: 1 }).withResponse()
-    const organization = await client.beta.organization.retrieve()
+    const organizationName = await client.beta.organization.retrieve().then(
+      (organization) => organization.name,
+      () => null
+    )
     return {
       hasKey: true,
       keyRejected: false,
       workspaceId: call.response.headers.get('anthropic-workspace-id'),
-      organizationName: organization.name
+      organizationName
     }
   } catch (error) {
     if (error instanceof Anthropic.AuthenticationError) {
@@ -124,4 +128,31 @@ export async function workspaceInfo(store: ClientStore): Promise<WorkspaceInfo> 
     }
     throw error
   }
+}
+
+/**
+ * Enregistre une clé et ne la garde que si l'API l'accepte. Tout échec (401 ou autre) supprime
+ * le secret avant de rendre l'erreur : le panneau ne reste jamais bloqué sur une clé inutilisable.
+ */
+export async function setKey(
+  secrets: OrcaWorkerApi['secrets'],
+  store: ClientStore,
+  key: string
+): Promise<ApiResult<WorkspaceInfo>> {
+  await secrets.set(SECRET_NAME, key.trim())
+  store.reset()
+  let result: ApiResult<WorkspaceInfo>
+  try {
+    const info = await workspaceInfo(store)
+    result = info.keyRejected
+      ? { ok: false, error: 'The API key was rejected (401).', code: 'unauthorized' }
+      : { ok: true, value: info }
+  } catch (error) {
+    result = failure(error)
+  }
+  if (!result.ok) {
+    await secrets.delete(SECRET_NAME)
+    store.reset()
+  }
+  return result
 }

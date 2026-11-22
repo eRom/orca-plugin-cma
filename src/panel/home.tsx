@@ -8,13 +8,14 @@ const KEY_REJECTED = 'The API key was rejected (401).'
 
 async function saveKey(): Promise<void> {
   const result = await plugin.request('key.set', { key: read(keyDraft).trim() })
-  set(keyDraft, '')
   if (result.ok) {
+    set(keyDraft, '')
     set(workspace, result.value)
     return
   }
+  // Le worker a supprimé la clé refusée ; le brouillon reste, pour être corrigé sans tout retaper.
   if (result.code === 'unauthorized') {
-    // Le worker a supprimé la clé refusée : on remontre le formulaire avec l'avis.
+    // Le formulaire revient avec l'avis.
     set(workspace, { hasKey: false, keyRejected: true, workspaceId: null, organizationName: null })
     return
   }
