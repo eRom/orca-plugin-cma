@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { BetaManagedAgentsSession } from '@anthropic-ai/sdk/resources/beta/sessions/sessions'
 import { expect, test } from 'bun:test'
-import type { SessionCreateInput } from '../protocol'
+import { SESSION_CREATE_WAIT_MS, type SessionCreateInput } from '../protocol'
 import { describeError, type ClientStore } from './client'
 import { createSessionHandlers, toCreateParams, toSessionDetail, toSessionRow } from './session-actions'
 
@@ -350,7 +350,34 @@ test('billed calls never retry on their own', async () => {
   await handlers.send({ sessionId: 's', text: 'hi' })
   await handlers.confirm({ sessionId: 's', toolUseId: 't', allow: true, denyMessage: null })
   await handlers.interrupt({ sessionId: 's' })
-  expect(optionsSeen).toEqual([{ maxRetries: 0 }, { maxRetries: 0 }, { maxRetries: 0 }, { maxRetries: 0 }])
+  expect(optionsSeen.map((options) => (options as { maxRetries?: number }).maxRetries)).toEqual([0, 0, 0, 0])
+})
+
+function creatingStore(create: (params: unknown, options: { timeout?: number }) => Promise<unknown>): ClientStore {
+  const client = { beta: { sessions: { create } } }
+  return { get: async () => client, reset() {}, hasKey: async () => true } as unknown as ClientStore
+}
+
+// Le panneau cesse d'attendre au bout de SESSION_CREATE_WAIT_MS : un appel encore en route à ce moment
+// laisserait la personne relancer, et la session serait facturée deux fois.
+test('session creation gives up before the panel stops waiting', async () => {
+  let timeout: number | undefined
+  const store = creatingStore(async (_params, options) => {
+    timeout = options.timeout
+    return { id: 'sesn_new' }
+  })
+  await createSessionHandlers(store).create(baseInput)
+  expect(typeof timeout).toBe('number')
+  expect((timeout ?? Infinity) < SESSION_CREATE_WAIT_MS).toBe(true)
+})
+
+test('a timed-out creation warns that the session may exist', async () => {
+  const store = creatingStore(async () => {
+    throw new Anthropic.APIConnectionTimeoutError()
+  })
+  const result = await createSessionHandlers(store).create(baseInput)
+  expect(result.ok).toBe(false)
+  expect(!result.ok && result.error.includes('sessions list')).toBe(true)
 })
 
 // CONSTRUITS d'après la doc (https://platform.claude.com/docs/en/managed-agents/budgets), jamais capturés :

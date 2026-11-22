@@ -2,7 +2,7 @@
 // Rien n'est persisté ici (seule la pile `nav` l'est) : une session est facturée, donc le formulaire
 // repart vierge après un redémarrage et ne lance que des ids présents dans les listes fraîchement lues.
 import { atom, Button, Callout, Checkbox, Input, plugin, read, Row, Select, set, Spinner, Stack, Text, Textarea, update } from 'orca'
-import { DEFAULT_BUDGET_DOLLARS, type ConfigRow, type CreateFormOptions } from '../protocol'
+import { DEFAULT_BUDGET_DOLLARS, SESSION_CREATE_WAIT_MS, type ConfigRow, type CreateFormOptions } from '../protocol'
 import { dollarsToMinor } from '../shared/money'
 import { clipBytes } from '../shared/text'
 import { openSession } from './session-view'
@@ -10,8 +10,6 @@ import { ERROR_TEXT_LIMIT_BYTES, nav, popView, pushView, run } from './state'
 
 /** Plafond d'un nom dans le libellé du bouton : un libellé de plus de 1 Kio fait refuser le rendu. */
 const LABEL_NAME_LIMIT_BYTES = 80
-/** Délai d'une création de session : plus long que le défaut d'Orca, la première lecture d'un agent peut traîner. */
-const CREATE_TIMEOUT_MS = 120_000
 
 const options = atom<CreateFormOptions | null>(null)
 const agentId = atom('')
@@ -102,7 +100,8 @@ async function createSession(budgetOverride: 'typed' | 'none'): Promise<void> {
         budgetDollars: budgetOverride === 'none' || typedBudget === '' ? null : typedBudget,
         firstMessage: read(firstMessage).trim() || null
       },
-      { timeoutMs: CREATE_TIMEOUT_MS }
+      // Plus long que le défaut d'Orca : la première lecture d'un agent peut traîner.
+      { timeoutMs: SESSION_CREATE_WAIT_MS }
     )
     if (!result.ok) {
       if (result.code === 'model_not_budgetable') {

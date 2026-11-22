@@ -10,6 +10,8 @@ export const THREAD_WINDOW_BYTES = 384_000
 export const POLL_VISIBLE_MS = 10_000
 export const POLL_HIDDEN_MS = 60_000
 export const DEFAULT_BUDGET_DOLLARS = '5.00'
+/** Attente du panneau sur `session.create` (le plafond d'Orca) ; le worker abandonne l'appel à l'API avant. */
+export const SESSION_CREATE_WAIT_MS = 120_000
 
 export type ApiErrorCode =
   | 'no_key'

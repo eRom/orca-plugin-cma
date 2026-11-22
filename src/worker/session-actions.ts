@@ -1,5 +1,6 @@
 // Actions sur une session (envoi, accord, interruption, création, budget) et garde de dépense des
 // sessions de test. Les conversions sont pures ; les handlers n'ont que l'appel réseau en plus.
+import Anthropic from '@anthropic-ai/sdk'
 import type { BetaMonetaryAmount } from '@anthropic-ai/sdk/resources/beta/beta'
 import type {
   BetaManagedAgentsSession,
@@ -140,6 +141,15 @@ async function readDetail(client: Client, sessionId: string, idleOf: IdleLookup)
  */
 const NO_RETRY = { maxRetries: 0 } as const
 
+/**
+ * Une création abandonne bien avant que le panneau cesse d'attendre (SESSION_CREATE_WAIT_MS) : sinon il
+ * rend la main pendant que l'appel court encore, la personne relance, et deux sessions sont facturées.
+ */
+const CREATE_OPTIONS = { ...NO_RETRY, timeout: 90_000 } as const
+
+const CREATE_TIMED_OUT =
+  'The API did not answer in time. The session may still have been created: check the sessions list before trying again.'
+
 /** Le classement `idle` que le sondeur connaît d'une session ; null quand il n'en a pas. */
 export type IdleLookup = (sessionId: string) => IdleClassification | null
 
@@ -199,8 +209,14 @@ export function createSessionHandlers(store: ClientStore, idleOf: IdleLookup = (
 
     create: (input) =>
       attempt(store, async (client) => {
-        const session = await client.beta.sessions.create(toCreateParams(input), NO_RETRY)
-        return { sessionId: session.id }
+        try {
+          const session = await client.beta.sessions.create(toCreateParams(input), CREATE_OPTIONS)
+          return { sessionId: session.id }
+        } catch (error) {
+          // Un délai dépassé ne dit pas que la création a échoué : la requête a pu aboutir côté API.
+          if (error instanceof Anthropic.APIConnectionTimeoutError) throw new Error(CREATE_TIMED_OUT)
+          throw error
+        }
       }),
 
     raiseBudget: ({ sessionId, dollars }) =>
