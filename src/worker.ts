@@ -2,6 +2,7 @@
 import type { OrcaWorkerApi } from 'orca/worker'
 import type { ApiResult, ThreadRow, WorkspaceInfo } from './protocol'
 import { SECRET_NAME, attempt, createClientStore, describeError, setKey, workspaceInfo } from './worker/client'
+import { createSessionHandlers } from './worker/session-actions'
 import { createWatcher, sdkEventSource } from './worker/stream'
 
 export default async function activate(orca: OrcaWorkerApi): Promise<void> {
@@ -53,6 +54,15 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
       ? { ok: true, value: page }
       : { ok: false, code: 'other', error: 'This session is not open.' }
   })
+
+  const sessions = createSessionHandlers(store)
+  orca.panels.handle('session.send', sessions.send)
+  orca.panels.handle('session.confirm', sessions.confirm)
+  orca.panels.handle('session.interrupt', sessions.interrupt)
+  orca.panels.handle('session.create', sessions.create)
+  orca.panels.handle('session.raiseBudget', sessions.raiseBudget)
+  orca.panels.handle('session.detail', sessions.detail)
+  orca.panels.handle('diagnostics.testSpend', sessions.testSpend)
 
   orca.log('agent-claude-managed worker ready')
 }

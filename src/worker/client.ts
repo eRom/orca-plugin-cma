@@ -46,6 +46,22 @@ export function createClientStore(secrets: OrcaWorkerApi['secrets']): ClientStor
   }
 }
 
+/** Les refus de budget : le code vient du corps de la `BadRequestError`, le texte est le nôtre. */
+const BUDGET_ERRORS: { code: 'model_not_budgetable' | 'budget_not_raised' | 'budget_create_only'; message: string }[] = [
+  {
+    code: 'model_not_budgetable',
+    message: 'A model of this agent has no public price, so the session cannot have a budget.'
+  },
+  { code: 'budget_not_raised', message: 'The new budget must be above what the session already cost.' },
+  { code: 'budget_create_only', message: 'A budget can only be set when the session is created.' }
+]
+
+function budgetError(error: InstanceType<typeof Anthropic.BadRequestError>): { message: string; code: ApiErrorCode } | null {
+  // La forme exacte du corps n'est pas documentée : on cherche le code dans tout le corps.
+  const body = JSON.stringify(error.error ?? null)
+  return BUDGET_ERRORS.find((entry) => body.includes(entry.code)) ?? null
+}
+
 export function describeError(error: unknown): { message: string; code: ApiErrorCode } {
   if (error instanceof NoKeyError) {
     return { message: NO_KEY_MESSAGE, code: 'no_key' }
@@ -64,6 +80,12 @@ export function describeError(error: unknown): { message: string; code: ApiError
   }
   if (error instanceof Anthropic.APIConnectionError) {
     return { message: 'Could not reach api.anthropic.com.', code: 'other' }
+  }
+  if (error instanceof Anthropic.BadRequestError) {
+    const budget = budgetError(error)
+    if (budget) {
+      return budget
+    }
   }
   if (error instanceof Anthropic.APIError) {
     return { message: `API error ${error.status}: ${error.message}`, code: 'other' }

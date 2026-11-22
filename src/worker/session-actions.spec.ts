@@ -1,0 +1,209 @@
+import Anthropic from '@anthropic-ai/sdk'
+import type { BetaManagedAgentsSession } from '@anthropic-ai/sdk/resources/beta/sessions/sessions'
+import { expect, test } from 'bun:test'
+import type { SessionCreateInput } from '../protocol'
+import { describeError, type ClientStore } from './client'
+import { createSessionHandlers, toCreateParams, toSessionDetail, toSessionRow } from './session-actions'
+
+const baseInput: SessionCreateInput = {
+  agentId: 'agent_x',
+  environmentId: 'env_x',
+  title: null,
+  vaultIds: [],
+  memoryStoreIds: [],
+  budgetDollars: null,
+  firstMessage: null
+}
+
+test('toCreateParams builds a capped session', () => {
+  const params = toCreateParams({
+    ...baseInput,
+    title: 'plugin-test',
+    memoryStoreIds: ['memstore_1'],
+    budgetDollars: '0.50',
+    firstMessage: 'hi',
+    metadata: { purpose: 'plugin-test' }
+  })
+  expect(params.budget?.max_list_cost.amount).toBe('50')
+  expect(params.budget?.max_list_cost.currency).toBe('USD')
+  expect(params.resources?.[0]?.type).toBe('memory_store')
+  const event = params.initial_events?.[0]
+  expect(event?.type).toBe('user.message')
+  expect(event && 'content' in event ? event.content[0] : null).toEqual({ type: 'text', text: 'hi' })
+  expect(params.metadata?.purpose).toBe('plugin-test')
+  expect(params.agent).toBe('agent_x')
+  expect(params.environment_id).toBe('env_x')
+})
+
+test('toCreateParams omits empty parts', () => {
+  const params = toCreateParams({ ...baseInput, firstMessage: '  ', title: '' })
+  expect('budget' in params).toBe(false)
+  expect('initial_events' in params).toBe(false)
+  expect(params.title).toBe(null)
+})
+
+test('toCreateParams rejects an invalid budget instead of creating an uncapped session', () => {
+  expect(() => toCreateParams({ ...baseInput, budgetDollars: 'abc' })).toThrow()
+})
+
+function fakeSession(over: Partial<BetaManagedAgentsSession>): BetaManagedAgentsSession {
+  return {
+    id: 'sesn_1',
+    agent: { id: 'agent_1', name: 'Writer', version: 3 },
+    archived_at: null,
+    budget: null,
+    created_at: '2026-11-22T10:00:00Z',
+    environment_id: 'env_1',
+    metadata: {},
+    resources: [],
+    status: 'running',
+    title: 'Hello',
+    updated_at: '2026-11-22T10:05:00Z',
+    usage: {},
+    vault_ids: ['vlt_1'],
+    ...over
+  } as unknown as BetaManagedAgentsSession
+}
+
+test('toSessionRow reads cost and budget', () => {
+  const row = toSessionRow(
+    fakeSession({
+      usage: { list_cost: { amount: '1', currency: 'USD' } },
+      budget: { type: 'limit', max_list_cost: { amount: '50', currency: 'USD' } }
+    }),
+    null
+  )
+  expect(row.cost?.minor).toBe('1')
+  expect(row.budget?.minor).toBe('50')
+  expect(row.badge).toBe('running')
+  expect(row.status).toBe('running')
+  expect(row.agentName).toBe('Writer')
+  expect(row.pendingApprovals).toBe(0)
+})
+
+test('toSessionRow leaves cost and budget empty when absent', () => {
+  const row = toSessionRow(fakeSession({ status: 'idle' }), null)
+  expect(row.cost).toBe(null)
+  expect(row.budget).toBe(null)
+  expect(row.badge).toBe('idle')
+})
+
+test('toSessionRow takes the badge and approvals from the idle classification', () => {
+  const row = toSessionRow(fakeSession({ status: 'idle' }), { badge: 'needs_approval', pendingApprovals: 2 })
+  expect(row.badge).toBe('needs_approval')
+  expect(row.pendingApprovals).toBe(2)
+  expect(row.status).toBe('idle')
+})
+
+test('toSessionDetail lists resources and the environment name', () => {
+  const detail = toSessionDetail(
+    fakeSession({
+      resources: [
+        { id: 'r1', type: 'memory_store', memory_store_id: 'memstore_1', name: 'Notes', access: 'read_only' },
+        { id: 'r2', type: 'github_repository', url: 'https://github.com/a/b', mount_path: '/w/b' }
+      ] as never
+    }),
+    'Sandbox',
+    null
+  )
+  expect(detail.environmentName).toBe('Sandbox')
+  expect(detail.environmentId).toBe('env_1')
+  expect(detail.agentVersion).toBe(3)
+  expect(detail.vaultIds).toEqual(['vlt_1'])
+  expect(detail.resources.length).toBe(2)
+  expect(detail.resources[0]).toBe('Memory store Notes (read only)')
+  expect(detail.resources[1]).toBe('Repository https://github.com/a/b')
+})
+
+// Corps réel d'une BadRequestError de budget : voir l'avertissement sur les fixtures plus bas.
+function badRequest(body: unknown): InstanceType<typeof Anthropic.BadRequestError> {
+  return new Anthropic.BadRequestError(400, body as object, 'budget refused', new Headers())
+}
+
+test('maps budget_create_only', () => {
+  const error = badRequest(BUDGET_CREATE_ONLY_BODY)
+  expect(describeError(error).code).toBe('budget_create_only')
+})
+
+test('maps budget_not_raised', () => {
+  expect(describeError(badRequest(BUDGET_NOT_RAISED_BODY)).code).toBe('budget_not_raised')
+})
+
+test('maps model_not_budgetable', () => {
+  expect(describeError(badRequest(MODEL_NOT_BUDGETABLE_BODY)).code).toBe('model_not_budgetable')
+})
+
+test('a bad request without a budget reason stays other', () => {
+  const body = { type: 'error', error: { type: 'invalid_request_error', message: 'Cannot modify archived session' } }
+  expect(describeError(badRequest(body)).code).toBe('other')
+})
+
+// ATTENTION : ces trois corps ne sont PAS des captures. L'enveloppe `{ type, error: { type, message } }`
+// est celle observée le 22/11 (400 "Cannot modify archived session" sur test-001, archivée), mais
+// le corps réel des refus de budget n'a pas pu être capturé (aucune session sans budget ni coût
+// >= 1 cent à portée). Le code est donc placé à trois endroits différents pour que la détection
+// ne dépende pas d'une forme supposée.
+const BUDGET_CREATE_ONLY_BODY = {
+  type: 'error',
+  error: { type: 'invalid_request_error', message: 'Budget cannot be added', reason: 'budget_create_only' }
+}
+const BUDGET_NOT_RAISED_BODY = {
+  type: 'error',
+  error: { type: 'invalid_request_error', message: 'Budget must be raised (budget_not_raised)' }
+}
+const MODEL_NOT_BUDGETABLE_BODY = {
+  type: 'error',
+  error: { type: 'invalid_request_error', message: 'No public price', details: [{ reason: 'model_not_budgetable' }] }
+}
+
+// Faux client : `store.get()` rend un objet qui note les événements envoyés et sert une liste de sessions.
+function fakeStore(sessions: unknown[] = []) {
+  const sent: unknown[] = []
+  const client = {
+    beta: {
+      sessions: {
+        events: {
+          send: async (_id: string, params: { events: unknown[] }) => {
+            sent.push(...params.events)
+          }
+        },
+        list: () => ({
+          async *[Symbol.asyncIterator]() {
+            for (const session of sessions) yield session
+          }
+        })
+      }
+    }
+  }
+  const store = { get: async () => client, reset() {}, hasKey: async () => true } as unknown as ClientStore
+  return { store, sent }
+}
+
+test('confirm sends deny_message only on a non-empty denial', async () => {
+  const { store, sent } = fakeStore()
+  const handlers = createSessionHandlers(store)
+  await handlers.confirm({ sessionId: 's', toolUseId: 't1', allow: true, denyMessage: 'ignored' })
+  await handlers.confirm({ sessionId: 's', toolUseId: 't2', allow: false, denyMessage: '  ' })
+  await handlers.confirm({ sessionId: 's', toolUseId: 't3', allow: false, denyMessage: 'too risky' })
+  expect(sent).toEqual([
+    { type: 'user.tool_confirmation', tool_use_id: 't1', result: 'allow' },
+    { type: 'user.tool_confirmation', tool_use_id: 't2', result: 'deny' },
+    { type: 'user.tool_confirmation', tool_use_id: 't3', result: 'deny', deny_message: 'too risky' }
+  ])
+})
+
+test('testSpend counts only plugin-test sessions and sums a missing cost as zero', async () => {
+  const { store } = fakeStore([
+    { metadata: { purpose: 'plugin-test' }, usage: { list_cost: { amount: '30', currency: 'USD' } } },
+    { metadata: { purpose: 'plugin-test' }, usage: {} },
+    { metadata: {}, usage: { list_cost: { amount: '999', currency: 'USD' } } }
+  ])
+  const result = await createSessionHandlers(store).testSpend()
+  expect(result).toEqual({ ok: true, value: { sessions: 2, total: { minor: '30', currency: 'USD' } } })
+})
+
+test('raiseBudget refuses an invalid amount without calling the API', async () => {
+  const { store } = fakeStore()
+  const result = await createSessionHandlers(store).raiseBudget({ sessionId: 's', dollars: 'lots' })
+  expect(result.ok).toBe(false)
+})
