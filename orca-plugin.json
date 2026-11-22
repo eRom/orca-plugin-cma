@@ -4,7 +4,7 @@
   "id": "agent-claude-managed",
   "name": "Agent Claude Managed",
   "version": "0.0.1",
-  "description": "Probe: list your Claude Managed Agents and follow one session live, from Orca.",
+  "description": "Browse your Claude Managed Agents and drive their sessions from Orca.",
   "author": { "name": "Romain Ecarnot", "url": "https://github.com/eRom" },
   "license": "MIT",
   "engines": { "orca": ">=1.4.259" },
@@ -16,6 +16,6 @@
     "panels": [
       { "id": "managed", "title": "Managed Agents", "icon": "bot", "entry": "src/panel.tsx", "ui": "components" }
     ],
-    "statusBarItems": [{ "id": "stream", "icon": "bot", "text": "Managed", "tooltip": "Claude Managed Agents: no session followed" }]
+    "statusBarItems": [{ "id": "approvals", "icon": "bot", "text": "Managed", "tooltip": "Claude Managed Agents: no session followed" }]
   }
 }
