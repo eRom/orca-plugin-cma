@@ -86,6 +86,75 @@ test('a failed commit keeps the token so a forced retry goes through', async () 
   expect(await pending.commit(prepared.token, true)).toEqual(EXPIRED)
 })
 
+test('two simultaneous commits of one token run the write once and share its result', async () => {
+  const { pending, calls } = setup()
+  let release: () => void = () => {}
+  const gate = new Promise<void>((resolve) => (release = resolve))
+  const prepared = pending.stage(
+    async (force) => {
+      calls.push(force)
+      await gate
+      return committed
+    },
+    [change('a')],
+    true
+  )
+  const first = pending.commit(prepared.token, false)
+  // Un second appel pendant le vol, même avec `force`, partage le résultat en cours.
+  const second = pending.commit(prepared.token, true)
+  release()
+  expect(await first).toEqual(committed)
+  expect(await second).toEqual(committed)
+  expect(calls).toEqual([false])
+  expect(await pending.commit(prepared.token, false)).toEqual(EXPIRED)
+})
+
+test('after a failed in-flight commit a later forced commit still works', async () => {
+  const { pending, calls } = setup()
+  let release: () => void = () => {}
+  const gate = new Promise<void>((resolve) => (release = resolve))
+  const refused: ApiResult<Committed> = { ok: false, code: 'conflict', error: 'Changed elsewhere since you opened it.' }
+  const prepared = pending.stage(
+    async (force) => {
+      calls.push(force)
+      if (force) return committed
+      await gate
+      return refused
+    },
+    [change('a')],
+    false
+  )
+  const first = pending.commit(prepared.token, false)
+  const second = pending.commit(prepared.token, false)
+  release()
+  expect(await first).toEqual(refused)
+  expect(await second).toEqual(refused)
+  expect(calls).toEqual([false])
+  expect(await pending.commit(prepared.token, true)).toEqual(committed)
+  expect(calls).toEqual([false, true])
+})
+
+test('a commit that throws frees the token for another attempt', async () => {
+  const { pending, calls } = setup()
+  const prepared = pending.stage(
+    async (force) => {
+      calls.push(force)
+      if (calls.length === 1) throw new Error('boom')
+      return committed
+    },
+    [change('a')],
+    false
+  )
+  let thrown = false
+  try {
+    await pending.commit(prepared.token, false)
+  } catch {
+    thrown = true
+  }
+  expect(thrown).toBe(true)
+  expect(await pending.commit(prepared.token, false)).toEqual(committed)
+})
+
 test('expired entries are dropped when a new write is staged', async () => {
   const { pending, clock, calls } = setup()
   const old = pending.stage(async (force) => (calls.push(force), committed), [], false)

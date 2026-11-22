@@ -11,11 +11,19 @@ const EXPIRED_MESSAGE = 'This review expired: press Apply again.'
 export type PendingWrites = {
   /** Met l'écriture en attente ; `changes` est plafonné à `CHANGES_RENDER_CAP`, `totalChanges` garde le compte réel. */
   stage(commit: (force: boolean) => Promise<ApiResult<Committed>>, changes: FieldChange[], creates: boolean): PreparedWrite
-  /** Lance l'écriture. Un succès consomme le jeton ; un échec le garde, pour « Apply anyway ». */
+  /**
+   * Lance l'écriture. Un succès consomme le jeton ; un échec le garde, pour « Apply anyway ».
+   * Deux appels simultanés sur un jeton n'écrivent qu'une fois et partagent le résultat.
+   */
   commit(token: string, force: boolean): Promise<ApiResult<Committed>>
 }
 
-type Entry = { commit: (force: boolean) => Promise<ApiResult<Committed>>; expiresAt: number }
+type Entry = {
+  commit: (force: boolean) => Promise<ApiResult<Committed>>
+  expiresAt: number
+  /** L'écriture en vol : un appel simultané en partage le résultat au lieu d'écrire une seconde fois. */
+  inFlight?: Promise<ApiResult<Committed>>
+}
 
 export function createPendingWrites(now: () => number): PendingWrites {
   const entries = new Map<string, Entry>()
@@ -43,11 +51,21 @@ export function createPendingWrites(now: () => number): PendingWrites {
         entries.delete(token)
         return { ok: false, code: 'expired', error: EXPIRED_MESSAGE }
       }
-      const result = await entry.commit(force)
-      if (result.ok) {
-        entries.delete(token)
+      // Un second appel pendant le vol (double clic), quel que soit son `force`, rend le même résultat.
+      if (entry.inFlight) {
+        return entry.inFlight
       }
-      return result
+      const running = entry.commit(force)
+      entry.inFlight = running
+      try {
+        const result = await running
+        if (result.ok) {
+          entries.delete(token)
+        }
+        return result
+      } finally {
+        entry.inFlight = undefined
+      }
     }
   }
 }
