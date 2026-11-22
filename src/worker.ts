@@ -2,6 +2,7 @@
 import type { OrcaWorkerApi } from 'orca/worker'
 import type { ApiResult, SessionRow, ThreadRow, WorkspaceInfo } from './protocol'
 import { SECRET_NAME, attempt, createClientStore, describeError, failure, setKey, workspaceInfo } from './worker/client'
+import { createConfigHandlers } from './worker/configs'
 import { createSessionHandlers } from './worker/session-actions'
 import { createPoller, sdkPollSource } from './worker/session-poll'
 import { createWatcher, sdkEventSource } from './worker/stream'
@@ -125,6 +126,12 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   orca.panels.handle('session.raiseBudget', sessions.raiseBudget)
   orca.panels.handle('session.detail', sessions.detail)
   orca.panels.handle('diagnostics.testSpend', sessions.testSpend)
+
+  const configs = createConfigHandlers(store)
+  orca.panels.handle('configs.list', configs.list)
+  orca.panels.handle('configs.detail', configs.detail)
+  orca.panels.handle('memory.read', configs.readMemory)
+  orca.panels.handle('createForm.options', configs.formOptions)
 
   poller.start()
   orca.log('agent-claude-managed worker ready')

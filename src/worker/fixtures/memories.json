@@ -1,0 +1,13 @@
+[
+  {
+    "content_sha256": "c7a02334648dd1e3bdf8fdb1725f6e22e4b117faf186e5fda822abb8033af437",
+    "content_size_bytes": 67,
+    "created_at": "2026-11-22T07:33:08.244906Z",
+    "id": "mem_019QkfaDRwFebDCcpZEwq2S9",
+    "memory_store_id": "memstore_014xvEA4PybjSgmsJNaUQVxu",
+    "memory_version_id": "memver_01J46jtBFcwAH8AzZVnxJiGf",
+    "path": "/SOULD.md",
+    "type": "memory",
+    "updated_at": "2026-11-22T07:33:08.244906Z"
+  }
+]

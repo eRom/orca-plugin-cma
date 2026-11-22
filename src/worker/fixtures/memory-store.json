@@ -1,0 +1,10 @@
+{
+  "archived_at": null,
+  "created_at": "2026-11-22T07:32:22.451679Z",
+  "description": "Ceci est un test",
+  "id": "memstore_014xvEA4PybjSgmsJNaUQVxu",
+  "metadata": {},
+  "name": "orca-memory-001",
+  "type": "memory_store",
+  "updated_at": "2026-11-22T07:32:22.451679Z"
+}

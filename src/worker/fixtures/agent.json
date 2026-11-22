@@ -1,0 +1,74 @@
+{
+  "archived_at": null,
+  "created_at": "2026-11-22T05:55:15.478861Z",
+  "description": "Triages incident ticket",
+  "execution_identity": {
+    "type": "service_account"
+  },
+  "id": "agent_01DV6uCPTjRmUYstZEFsjQfS",
+  "mcp_servers": [
+    {
+      "name": "github",
+      "type": "url",
+      "url": "https://api.githubcopilot.com/mcp/"
+    }
+  ],
+  "metadata": {
+    "template": "incident-commander"
+  },
+  "model": {
+    "effort": {
+      "type": "high"
+    },
+    "id": "claude-haiku-5-5",
+    "speed": "standard"
+  },
+  "multiagent": null,
+  "name": "Incident commander",
+  "skills": [],
+  "system": "You are an on-call incident commander for a test\n\n\nBe decisive. If you're >70% confident it's a specific deploy, say so and recommend the revert.",
+  "tools": [
+    {
+      "configs": [
+        {
+          "enabled": false,
+          "name": "web_search",
+          "permission_policy": {
+            "type": "auto"
+          },
+          "type": "web_search"
+        },
+        {
+          "enabled": false,
+          "name": "web_fetch",
+          "permission_policy": {
+            "type": "auto"
+          },
+          "type": "web_fetch",
+          "url_sources": null
+        }
+      ],
+      "default_config": {
+        "enabled": true,
+        "permission_policy": {
+          "type": "auto"
+        }
+      },
+      "type": "agent_toolset_20260401"
+    },
+    {
+      "configs": [],
+      "default_config": {
+        "enabled": true,
+        "permission_policy": {
+          "type": "always_ask"
+        }
+      },
+      "mcp_server_name": "github",
+      "type": "mcp_toolset"
+    }
+  ],
+  "type": "agent",
+  "updated_at": "2026-11-22T06:09:25.869205Z",
+  "version": 5
+}

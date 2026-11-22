@@ -1,0 +1,30 @@
+{
+  "id": "env_01DH6Y3bU8txBGZfrmsqyxhY",
+  "type": "environment",
+  "name": "incident-commander-env",
+  "description": null,
+  "created_at": "2026-11-22T05:55:29.031689Z",
+  "updated_at": "2026-11-22T05:55:29.031689Z",
+  "archived_at": null,
+  "state": "active",
+  "config": {
+    "type": "cloud",
+    "packages": {
+      "type": "packages",
+      "pip": [],
+      "npm": [],
+      "apt": [],
+      "cargo": [],
+      "gem": [],
+      "go": []
+    },
+    "networking": {
+      "type": "limited",
+      "allow_mcp_servers": true,
+      "allow_package_managers": false,
+      "allowed_hosts": []
+    }
+  },
+  "metadata": {},
+  "scope": "organization"
+}
