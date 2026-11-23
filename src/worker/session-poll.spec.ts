@@ -1,8 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { BetaManagedAgentsSession } from '@anthropic-ai/sdk/resources/beta/sessions/sessions'
 import { expect, test } from 'bun:test'
-import { POLL_HIDDEN_MS, POLL_VISIBLE_MS, type SessionRow } from '../protocol'
-import { classifyIdle, createPoller, pollInterval, type PollerDeps } from './session-poll'
+import { POLL_HIDDEN_MS, POLL_VISIBLE_MS, type ResourceRef, type SessionRow } from '../protocol'
+import { classifyIdle, createPoller, pollInterval, thenSettleSessions, type PollerDeps } from './session-poll'
 
 function fakeSession(over: Partial<BetaManagedAgentsSession>): BetaManagedAgentsSession {
   return {
@@ -373,4 +373,37 @@ test('a trailing turn queued before a stop is dropped', async () => {
   await settle()
   expect(h.calls.list).toBe(1)
   expect(h.poller.snapshot()).toEqual([])
+})
+
+test('a removed session is gone from the snapshot once the removal handler resolves', async () => {
+  const h = harness({ sessions: [fakeSession({ id: 'sesn_a' }), fakeSession({ id: 'sesn_b' })] })
+  await h.poller.refresh()
+  expect(h.poller.snapshot().map((row) => row.id)).toEqual(['sesn_a', 'sesn_b'])
+  const remove = thenSettleSessions(
+    async (ref: ResourceRef) => {
+      h.state.sessions = h.state.sessions.filter((session) => session.id !== ref.id)
+      return { ok: true as const, value: null }
+    },
+    h.poller,
+    (message) => h.logs.push(message)
+  )
+  const result = await remove({ kind: 'session', id: 'sesn_a' })
+  expect(result.ok).toBe(true)
+  expect(h.poller.snapshot().map((row) => row.id)).toEqual(['sesn_b'])
+})
+
+test('a failed refresh after a removal is logged and does not turn the removal into a failure', async () => {
+  const h = harness({ sessions: [fakeSession({ id: 'sesn_a' })] })
+  h.state.listError = new Error('network down')
+  const remove = thenSettleSessions(async () => ({ ok: true as const, value: null }), h.poller, (message) => h.logs.push(message))
+  const result = await remove({ kind: 'session', id: 'sesn_a' })
+  expect(result.ok).toBe(true)
+  expect(h.logs.some((line) => line.includes('network down'))).toBe(true)
+})
+
+test('a non-session removal does not refresh the sessions', async () => {
+  const h = harness({ sessions: [fakeSession({ id: 'sesn_a' })] })
+  const remove = thenSettleSessions(async () => ({ ok: true as const, value: null }), h.poller, (message) => h.logs.push(message))
+  await remove({ kind: 'agent', id: 'agent_1' })
+  expect(h.calls.list).toBe(0)
 })

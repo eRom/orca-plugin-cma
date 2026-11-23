@@ -2,7 +2,7 @@
 // atteint...), calcule la cadence selon la visibilité du panneau et alimente la barre d'état.
 import Anthropic from '@anthropic-ai/sdk'
 import type { BetaManagedAgentsSession } from '@anthropic-ai/sdk/resources/beta/sessions/sessions'
-import { POLL_HIDDEN_MS, POLL_VISIBLE_MS, type SessionRow } from '../protocol'
+import { POLL_HIDDEN_MS, POLL_VISIBLE_MS, type ApiResult, type ResourceRef, type SessionRow } from '../protocol'
 import { statusBarText } from '../shared/sessions'
 import { describeError, type ClientStore } from './client'
 import { toSessionRow, type IdleClassification } from './session-actions'
@@ -302,5 +302,28 @@ export function sdkPollSource(store: ClientStore): Pick<PollerDeps, 'list' | 'la
       }
       return { stop, blocking }
     }
+  }
+}
+
+/**
+ * Archiver ou supprimer une session change la liste que le sondeur porte : on la relit AVANT de répondre au
+ * panneau, qui relit `sessions.list` dès sa réponse (sans cela il revoit un instant la session retirée).
+ * Un échec de la relecture se note seulement : l'archivage ou la suppression a réussi.
+ */
+export function thenSettleSessions(
+  handler: (ref: ResourceRef) => Promise<ApiResult<null>>,
+  poller: Pick<Poller, 'refresh'>,
+  log: (message: string) => void
+): (ref: ResourceRef) => Promise<ApiResult<null>> {
+  return async (ref) => {
+    const result = await handler(ref)
+    if (result.ok && ref.kind === 'session') {
+      try {
+        await poller.refresh()
+      } catch (error) {
+        log(`sessions refresh failed: ${describeError(error).message}`)
+      }
+    }
+    return result
   }
 }

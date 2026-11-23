@@ -6,7 +6,7 @@ import { DEFAULT_BUDGET_DOLLARS, SESSION_CREATE_WAIT_MS, type ConfigRow, type Cr
 import { dollarsToMinor } from '../shared/money'
 import { clipBytes } from '../shared/text'
 import { openSession } from './session-view'
-import { ERROR_TEXT_LIMIT_BYTES, nav, popView, pushView, run } from './state'
+import { ERROR_TEXT_LIMIT_BYTES, nav, popIfTop, popView, pushView, run } from './state'
 
 /** Plafond d'un nom dans le libellé du bouton : un libellé de plus de 1 Kio fait refuser le rendu. */
 const LABEL_NAME_LIMIT_BYTES = 80
@@ -111,10 +111,9 @@ async function createSession(budgetOverride: 'typed' | 'none'): Promise<void> {
       }
       return
     }
-    // La vue de la nouvelle session remplace le formulaire.
+    // La vue de la nouvelle session remplace le formulaire, sauf si la personne a quitté le formulaire pendant l'attente.
     resetForm()
-    update(nav, popView)
-    openSession(result.value.sessionId)
+    if (popIfTop((entry) => entry.view === 'newSession')) openSession(result.value.sessionId)
   } finally {
     set(creating, false)
   }

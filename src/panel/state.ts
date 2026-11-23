@@ -143,7 +143,9 @@ export const raiseDraft = atom('')
 export const raiseNotice = atom<string | null>(null)
 /** Erreur d'une action de la session, affichée près du composeur. */
 export const sessionNotice = atom<string | null>(null)
-/** Section « Manage session » (archiver, supprimer) : fermée à chaque nouvelle session. */
+/** Clé de la confirmation ouverte (`ConfirmAction`, `ConfirmPanel`) ; une seule à la fois. Éphémère. */
+export const pendingConfirmation = atom<string | null>(null)
+/** Section « Manage session »(archiver, supprimer) : fermée à chaque nouvelle session. */
 export const manageOpen = atom(false)
 /** Refus de l'API à l'archivage ou à la suppression, affiché sous les gestes de `Manage session`, là où la personne regarde. */
 export const manageNotice = atom<{ action: 'archive' | 'delete'; message: string } | null>(null)
@@ -175,6 +177,9 @@ export function resetSessionView(sessionId: string | null): void {
   set(denyDraft, {})
   set(confirming, [])
   set(raiseDraft, '')
+  // Les clés sont propres à une entité (`session:<id>:archive`) et une seule question est ouverte à la fois :
+  // celle d'une session ne survit pas à sa vue ; la question d'une autre vue (agent, mémoire) n'est pas touchée.
+  if (read(pendingConfirmation)?.startsWith('session:')) set(pendingConfirmation, null)
 }
 
 /** Remplace les lignes déjà connues par id, ajoute les autres à la fin. Ne coupe jamais la liste. */

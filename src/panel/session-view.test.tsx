@@ -610,7 +610,9 @@ function manageRequests(calls: ManageCalls, refusal: string | null = null, row: 
   return requests([message('m1')], {
     'sessions.list': () => {
       calls.lists += 1
-      return { ok: true, value: [row] }
+      // Une session archivée ou supprimée avec succès n'est plus dans la liste que rend le worker.
+      const removed = refusal === null && calls.archives.length + calls.deletes.length > 0
+      return { ok: true, value: removed ? [] : [row] }
     },
     'session.detail': { ok: true, value: sessionDetail(row) },
     'session.leave': (input: unknown) => {
@@ -721,6 +723,23 @@ test('Archive then Confirm archives the session, leaves it, returns home and rer
     assert.deepEqual(calls.leaves, [{ sessionId: 's1' }])
     assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }])
     assert.ok(calls.lists > listsBefore)
+    // La liste relue ne montre plus la session retirée.
+    assert.equal(view.find({ text: 'Triage run' }), null)
+    assert.ok(view.find({ text: 'No sessions yet.' }))
+    assert.deepEqual(view.errors, [])
+  })
+})
+
+test('a pending Archive question does not survive leaving the session and reopening it', async () => {
+  await withView(newManageCalls(), {}, async (view) => {
+    await openManage(view)
+    await view.press({ role: 'button', text: 'Archive' })
+    assert.ok(view.find({ type: 'Callout', text: /Archive Triage run\?/ }))
+    await view.press({ role: 'button', text: /Back/ })
+    await view.press({ type: 'ListItem', text: /Triage run/ })
+    await openManage(view)
+    assert.equal(view.find({ type: 'Callout', text: /Archive Triage run\?/ }), null)
+    assert.ok(view.find({ role: 'button', text: 'Archive' }))
     assert.deepEqual(view.errors, [])
   })
 })

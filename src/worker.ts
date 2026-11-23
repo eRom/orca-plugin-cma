@@ -12,7 +12,7 @@ import { createMemoryAdapter, createMemoryRename, releaseDeletedDrafts } from '.
 import { createFilePicker, createMemoryUploads, runOsascript } from './worker/memory-uploads'
 import { createPendingWrites } from './worker/pending-writes'
 import { createSessionHandlers } from './worker/session-actions'
-import { createPoller, sdkPollSource } from './worker/session-poll'
+import { createPoller, sdkPollSource, thenSettleSessions } from './worker/session-poll'
 import { createWatcher, sdkEventSource } from './worker/stream'
 
 export default async function activate(orca: OrcaWorkerApi): Promise<void> {
@@ -169,14 +169,9 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   orca.panels.handle('vault.save', writes.saveVault)
   orca.panels.handle('memoryStore.save', writes.saveMemoryStore)
   orca.panels.handle('credential.save', writes.saveCredential)
-  // Archiver ou supprimer une session change la liste que le sondeur porte : on la relit sans attendre.
-  const thenRefreshSessions =
-    (handler: (ref: ResourceRef) => Promise<ApiResult<null>>) =>
-    async (ref: ResourceRef): Promise<ApiResult<null>> => {
-      const result = await handler(ref)
-      if (result.ok && ref.kind === 'session') refreshSessions()
-      return result
-    }
+  // Archiver ou supprimer une session : le sondeur relit la liste avant la réponse (le panneau la relit juste après).
+  const thenRefreshSessions = (handler: (ref: ResourceRef) => Promise<ApiResult<null>>) =>
+    thenSettleSessions(handler, poller, (message) => orca.log(message))
 
   // Les écritures qui attendent une confirmation : un worker relancé repart d'un registre vide, et
   // le panneau reçoit alors `expired` (il relance l'écriture).

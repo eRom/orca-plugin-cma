@@ -1,6 +1,8 @@
 import { assert, mockHost, mount, test } from 'orca/testing'
 import type { ConfigRow, SessionCreateInput } from '../protocol'
 import * as panel from '../panel'
+import { set } from 'orca'
+import { nav } from './state'
 
 const WITH_KEY = {
   hasKey: true,
@@ -285,4 +287,23 @@ test('a failed list read shows its own callout with Retry, then the form', async
   assert.ok(view.find({ label: 'Agent' }))
   assert.deepEqual(view.errors, [])
   await view.unmount()
+})
+
+test('a view opened during the create is not popped when the create returns', async () => {
+  const host = mockHost({
+    requests: requests(() => {
+      // Pendant la création : Back, puis une autre vue ouverte.
+      set(nav, [{ view: 'home' }, { view: 'config', kind: 'agent', id: 'agent_a' }])
+      return { ok: true, value: { sessionId: 'sesn_new' } }
+    }) as never
+  })
+  const view = await mount(panel, { host, persisted: OPEN_FORM })
+  try {
+    await view.select({ label: 'Agent' }, 'agent_a')
+    await view.select({ label: 'Environment' }, 'env_a')
+    await view.press({ role: 'button', text: /Create session/ })
+    assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'config', kind: 'agent', id: 'agent_a' }])
+  } finally {
+    await view.unmount()
+  }
 })

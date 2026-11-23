@@ -2,13 +2,10 @@
 import { atom, Button, Callout, read, Row, set, Stack, Text, update } from 'orca'
 import { ConfirmInline } from '../blocks/confirm-inline'
 import { clipBytes } from '../shared/text'
-import { run } from './state'
+import { pendingConfirmation, run } from './state'
 
 /** Longueur maximale, en octets, d'un nom repris dans une question. */
 const NAME_LIMIT_BYTES = 200
-
-/** Clé de la confirmation ouverte ; une seule à la fois. Éphémère. */
-const pendingConfirmation = atom<string | null>(null)
 
 /** Clés des confirmations dont l'action est en route : leur bouton est désactivé. */
 const runningConfirmations = atom<string[]>([])
