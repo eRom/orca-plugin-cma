@@ -3,7 +3,7 @@
 // (qui importe `loadResources` d'ici) ni `resources.tsx` : aucun import circulaire.
 import { atom, plugin, read, set, type Atom } from 'orca'
 import type { ApiResult, FileRow, SkillRow } from '../protocol'
-import { loadWorkspace, workspace } from './state'
+import { loadWorkspace, pendingConfirmation, workspace } from './state'
 
 /** Lignes de chaque carte ; `null` tant que la première lecture n'est pas revenue (la carte montre un Spinner). */
 export const skillRows = atom<SkillRow[] | null>('resources.skills', null)
@@ -13,6 +13,25 @@ export const resourceErrors = atom<{ skills: string | null; files: string | null
   skills: null,
   files: null
 })
+
+/** Les deux cartes de l'onglet. */
+export type CardKey = 'skills' | 'files'
+
+/** L'avis d'une carte : il reste jusqu'à la prochaine action sur cette carte. `message` est le corps d'un refus. */
+export type CardNotice = { tone: 'success' | 'warning' | 'danger'; title: string; message: string | null }
+
+type PerCard<T> = Record<CardKey, T>
+
+export const resourceNotices = atom<PerCard<CardNotice | null>>('resources.notices', { skills: null, files: null })
+/** Le libellé de l'envoi en route de chaque carte (`null` au repos) : il grise les boutons d'envoi et nourrit le spinner. */
+export const resourceUploading = atom<PerCard<string | null>>('resources.uploading', { skills: null, files: null })
+/** Vrai tant que la boîte de choix d'une carte est ouverte : le worker n'en garde qu'une, un second choix serait le même. */
+export const resourcePicking = atom<PerCard<boolean>>('resources.picking', { skills: false, files: false })
+
+/** Écrit la valeur d'une seule carte dans un atome « par carte ». */
+export function setCardValue<T>(target: Atom<PerCard<T>>, card: CardKey, value: T): void {
+  set(target, { ...read(target), [card]: value })
+}
 
 /**
  * Change à chaque bascule de workspace : une réponse partie sous l'ancienne génération ne repeint pas le nouveau.
@@ -33,12 +52,20 @@ export function filterResources<T extends { id: string; name: string }>(rows: re
   return rows.filter((row) => row.name.toLowerCase().includes(needle) || row.id.toLowerCase().includes(needle))
 }
 
-/** Oublie ce que les cartes montraient (workspace changé) : lignes à `null`, erreurs vidées, réponses en vol périmées. */
+/**
+ * Oublie ce que les cartes montraient (workspace changé) : lignes à `null`, erreurs et avis vidés, envois et choix
+ * oubliés, question de suppression fermée, réponses en vol périmées.
+ */
 export function resetResources(): void {
   generation += 1
   set(skillRows, null)
   set(fileRows, null)
   set(resourceErrors, { skills: null, files: null })
+  set(resourceNotices, { skills: null, files: null })
+  set(resourceUploading, { skills: null, files: null })
+  set(resourcePicking, { skills: false, files: false })
+  const pending = read(pendingConfirmation)
+  if (pending?.startsWith('skill:') || pending?.startsWith('file:')) set(pendingConfirmation, null)
 }
 
 /**

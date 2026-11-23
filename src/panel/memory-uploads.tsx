@@ -20,7 +20,7 @@ const CONFLICT_TITLE = 'Changed elsewhere since you opened it.'
  * La boîte de dialogue du système attend la personne : bien plus que les 30 s par défaut d'une requête. Orca refuse
  * une attente de plus de 120 000 ms (`Too big: expected number to be <=120000`), c'est donc le plafond.
  */
-const PICK_TIMEOUT_MS = 120_000
+export const PICK_TIMEOUT_MS = 120_000
 /**
  * Dit sous la ligne quand la boîte n'a pas répondu dans ce délai. Elle reste ouverte côté worker, qui n'en garde qu'une :
  * un nouvel appui la rejoint (il reçoit sa réponse), il n'en ouvre pas une seconde.

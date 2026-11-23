@@ -81,6 +81,10 @@ export function unwrap<T>(result: ApiResult<T>): T | null {
 /** Texte d'erreur de l'API borné pour un `Text` : un plafond d'Orca dépassé refuserait tout le rendu. */
 export const ERROR_TEXT_LIMIT_BYTES = 8_000
 
+/** Plafonds d'un titre et d'un sous-titre de ligne : un libellé de plus de 1 Kio fait refuser le rendu. */
+export const ROW_TITLE_LIMIT_BYTES = 200
+export const ROW_SUBTITLE_LIMIT_BYTES = 300
+
 /** Lance une action du panneau ; un refus d'Orca ou du worker s'affiche au lieu de se perdre. */
 export function run(action: () => Promise<void>): void {
   set(notice, null)

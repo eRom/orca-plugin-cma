@@ -29,13 +29,20 @@ import { openNewSession } from './new-session'
 import { loadResources } from './resource-state'
 import { ResourcesTab } from './resources'
 import { openSession } from './session-view'
-import { ERROR_TEXT_LIMIT_BYTES, filterOf, homeTab, loadSessions, run, sessionRows, setFilterOf, workspace, type HomeTab } from './state'
+import {
+  ERROR_TEXT_LIMIT_BYTES,
+  filterOf,
+  homeTab,
+  loadSessions,
+  ROW_SUBTITLE_LIMIT_BYTES,
+  ROW_TITLE_LIMIT_BYTES,
+  run,
+  sessionRows,
+  setFilterOf,
+  workspace,
+  type HomeTab
+} from './state'
 import { WorkspacesSection } from './workspaces'
-
-
-/** Plafonds d'un titre et d'une description de ligne : un libellé de plus de 1 Kio fait refuser le rendu. */
-const ROW_TITLE_LIMIT_BYTES = 200
-const ROW_DESCRIPTION_LIMIT_BYTES = 300
 
 const CONFIG_TABS: { value: ConfigKind; label: string; noun: string; filter: string; icon: IconName }[] = [
   { value: 'agent', label: 'Agents', noun: 'agents', filter: 'agents', icon: 'bot' },
@@ -127,7 +134,7 @@ function ConfigList({ tab }: { tab: (typeof CONFIG_TABS)[number] }) {
               <ListItem
                 key={row.id}
                 title={clipBytes(row.name, ROW_TITLE_LIMIT_BYTES).text}
-                description={clipBytes(row.summary, ROW_DESCRIPTION_LIMIT_BYTES).text}
+                description={clipBytes(row.summary, ROW_SUBTITLE_LIMIT_BYTES).text}
                 onPress={() => openConfig(row.kind, row.id)}
               />
             ))}
@@ -172,7 +179,7 @@ function SessionsList() {
             <ListItem
               key={row.id}
               title={clipBytes(row.title ?? row.id, ROW_TITLE_LIMIT_BYTES).text}
-              description={clipBytes([row.agentName, formatMoney(row.cost)].filter(Boolean).join(' · '), ROW_DESCRIPTION_LIMIT_BYTES).text}
+              description={clipBytes([row.agentName, formatMoney(row.cost)].filter(Boolean).join(' · '), ROW_SUBTITLE_LIMIT_BYTES).text}
               onPress={() => openSession(row.id)}
             >
               <Badge tone={badgeTone(row.badge)}>{badgeLabel(row.badge)}</Badge>
