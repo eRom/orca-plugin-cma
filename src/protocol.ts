@@ -58,6 +58,13 @@ export type ConfigRow = { kind: ConfigKind; id: string; name: string; summary: s
 
 export type ToolPolicy = 'always_allow' | 'always_ask' | 'auto'
 
+/** Le libellé d'une politique, le même dans le formulaire et dans la revue des changements. */
+export const POLICY_LABELS: Record<ToolPolicy, string> = {
+  always_allow: 'always allow',
+  always_ask: 'always ask',
+  auto: 'auto'
+}
+
 export type ToolSetting = { name: string; enabled: boolean; policy: ToolPolicy | null }
 
 export type ToolsetView = {

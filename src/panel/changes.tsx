@@ -9,7 +9,7 @@ import { clipBytes } from '../shared/text'
 const PATH_LIMIT_BYTES = 300
 const VALUE_LIMIT_BYTES = 200
 
-/** Texte d'une valeur absente d'un côté du changement (champ ajouté ou retiré). */
+/** Texte d'un changement sans valeur ni avant ni après (ne devrait pas arriver, mais reste lisible). */
 const ABSENT = '(not set)'
 
 /** Coupe sur une frontière de caractère et signale la coupe par `…`. */
@@ -27,9 +27,13 @@ export function describeChange(change: FieldChange): string {
   if (lines !== null && (lines.added > 0 || lines.removed > 0)) {
     return `+${lines.added} / −${lines.removed} lines`
   }
-  const before = change.before === null ? ABSENT : clipLabel(change.before, VALUE_LIMIT_BYTES)
-  const after = change.after === null ? ABSENT : clipLabel(change.after, VALUE_LIMIT_BYTES)
-  return `${before} → ${after}`
+  if (change.before === null) {
+    return change.after === null ? ABSENT : `Added: ${clipLabel(change.after, VALUE_LIMIT_BYTES)}`
+  }
+  if (change.after === null) {
+    return `Removed: ${clipLabel(change.before, VALUE_LIMIT_BYTES)}`
+  }
+  return `${clipLabel(change.before, VALUE_LIMIT_BYTES)} → ${clipLabel(change.after, VALUE_LIMIT_BYTES)}`
 }
 
 type ChangesPreviewProps = {

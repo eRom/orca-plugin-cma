@@ -12,14 +12,16 @@ import {
   type AgentForm,
   type AgentToolsForm,
   type ApiResult,
+  POLICY_LABELS,
   type Committed,
+  type FieldChange,
   type PreparedWrite,
   type ToolPolicy
 } from '../protocol'
 import { agentToDocument, type AgentDocument } from './agent-yaml'
 import { agentVersionConflict, isVersionRefusal, sendAgent } from './agent-drafts'
 import { failure, type ClientStore } from './client'
-import { diffDocuments } from './diff'
+import { abbreviate, diffDocuments, leafChange } from './diff'
 import type { PendingWrites } from './pending-writes'
 
 type Tool = BetaManagedAgentsAgent['tools'][number]
@@ -225,6 +227,105 @@ export function applyAgentForm(doc: AgentDocument, form: AgentForm, base: AgentF
   return next
 }
 
+/** Le réglage d'un outil intégré en mots : `default` quand il hérite de tout, sinon ce qui est posé. */
+function toolSettingText(setting: { enabled: boolean | null; policy: ToolPolicy | null }): string {
+  const parts = [
+    setting.enabled === null ? null : setting.enabled ? 'enabled' : 'disabled',
+    setting.policy === null ? null : POLICY_LABELS[setting.policy]
+  ].filter((part) => part !== null)
+  return parts.length === 0 ? 'default' : parts.join(', ')
+}
+
+const toolsetText = (tools: AgentToolsForm): string => `${tools.enabled ? 'enabled' : 'disabled'}, ${POLICY_LABELS[tools.policy]}`
+
+const serverText = (server: AgentForm['mcpServers'][number]): string => `${server.url}, ${POLICY_LABELS[server.policy]}`
+
+/** Les réglages par outil qui diffèrent ; à la création, ceux qui sont posés. */
+function toolChanges(form: AgentToolsForm, base: AgentToolsForm | null, out: FieldChange[]): void {
+  for (const tool of form.tools) {
+    const before = base?.tools.find((candidate) => candidate.name === tool.name) ?? { enabled: null, policy: null }
+    if (before.enabled === tool.enabled && before.policy === tool.policy) {
+      continue
+    }
+    out.push(leafChange(`Tool ${tool.name}`, toolSettingText(before), toolSettingText(tool)))
+  }
+}
+
+function builtinChanges(form: AgentToolsForm | null, base: AgentToolsForm | null, out: FieldChange[]): void {
+  if (form === null) {
+    if (base !== null) {
+      out.push({ path: 'Built-in tools', before: toolsetText(base), after: null, lines: null })
+    }
+    return
+  }
+  if (base === null) {
+    out.push({ path: 'Built-in tools', before: null, after: toolsetText(form), lines: null })
+  } else {
+    if (form.enabled !== base.enabled) {
+      out.push(leafChange('Built-in tools', base.enabled ? 'enabled' : 'disabled', form.enabled ? 'enabled' : 'disabled'))
+    }
+    if (form.policy !== base.policy) {
+      out.push(leafChange('Built-in tools policy', POLICY_LABELS[base.policy], POLICY_LABELS[form.policy]))
+    }
+  }
+  toolChanges(form, base, out)
+}
+
+function serverChanges(form: AgentForm['mcpServers'], base: AgentForm['mcpServers'], out: FieldChange[]): void {
+  for (const server of form) {
+    const before = base.find((candidate) => candidate.name === server.name)
+    const path = `MCP server ${server.name}`
+    if (!before) {
+      out.push({ path, before: null, after: serverText(server), lines: null })
+      continue
+    }
+    if (before.url !== server.url) {
+      out.push(leafChange(`${path} URL`, before.url, server.url))
+    }
+    if (before.policy !== server.policy) {
+      out.push(leafChange(`${path} policy`, POLICY_LABELS[before.policy], POLICY_LABELS[server.policy]))
+    }
+  }
+  const kept = new Set(form.map((server) => server.name))
+  for (const server of base) {
+    if (!kept.has(server.name)) {
+      out.push({ path: `MCP server ${server.name}`, before: serverText(server), after: null, lines: null })
+    }
+  }
+}
+
+/**
+ * La revue d'un formulaire, dans ses propres mots : une ligne par réglage que la personne a changé (tout ce qui est
+ * posé, pour une création). Le différentiel du document en donnerait davantage (un serveur ajouté y amène aussi son
+ * toolset) et en JSON brut. Mêmes règles que `applyAgentForm` : un effort `null` n'écrit rien, donc ne se montre pas.
+ */
+export function formChanges(form: AgentForm, base: AgentForm | null): FieldChange[] {
+  const out: FieldChange[] = []
+  const text = (path: string, before: string | null, after: string): void => {
+    if (before !== after) {
+      out.push(before === null ? { path, before: null, after: abbreviate(after), lines: null } : leafChange(path, before, after))
+    }
+  }
+  text('Name', base?.name ?? null, form.name)
+  text('Model', base?.model ?? null, form.model)
+  if (form.effort !== null) {
+    text('Effort', base === null ? null : (base.effort ?? 'default'), form.effort)
+  }
+  const description = base?.description ?? ''
+  if (form.description !== description) {
+    if (form.description === '') {
+      out.push({ path: 'Description', before: abbreviate(description), after: null, lines: null })
+    } else if (description === '') {
+      out.push({ path: 'Description', before: null, after: abbreviate(form.description), lines: null })
+    } else {
+      out.push(leafChange('Description', description, form.description))
+    }
+  }
+  builtinChanges(form.builtinTools, base?.builtinTools ?? null, out)
+  serverChanges(form.mcpServers, base?.mcpServers ?? [], out)
+  return out
+}
+
 /** Les modèles que l'API propose (pagination parcourue). Un échec rend une liste vide : le panneau ajoute le modèle courant. */
 export async function agentFormOptions(client: Anthropic, log: (message: string) => void = () => {}): Promise<{ models: string[] }> {
   try {
@@ -271,10 +372,13 @@ export async function prepareAgentForm(
       before = agentToDocument(await (await store.get()).beta.agents.retrieve(agentId))
     }
     const after = applyAgentForm(before, form, agentId === null ? null : base)
-    const changes = diffDocuments(before, after)
-    if (changes.length === 0) {
+    // Le document décide s'il y a quelque chose à envoyer ; la revue montre le formulaire, sauf s'il ne dit rien.
+    const documentChanges = diffDocuments(before, after)
+    if (documentChanges.length === 0) {
       return { ok: false, code: 'nothing_to_apply', error: 'Nothing to apply: you have not changed anything.' }
     }
+    const described = formChanges(form, agentId === null ? null : base)
+    const changes = described.length > 0 ? described : documentChanges
     const commit = async (force: boolean): Promise<ApiResult<Committed>> => {
       try {
         const agent = await sendAgent(await store.get(), agentId, baseVersion, before, after, force)

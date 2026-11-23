@@ -33,6 +33,7 @@ import { SectionCollapsible } from '../blocks/section-collapsible'
 import {
   AGENT_EFFORTS,
   BUILTIN_TOOLS,
+  POLICY_LABELS,
   type AgentDetail,
   type AgentEffort,
   type AgentForm,
@@ -54,11 +55,7 @@ import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, nav, popIfTop, popView, run } fr
 /** Mention affichée sous un texte coupé côté worker. */
 export const TRUNCATED_NOTICE = 'Truncated, open in Console for the full text'
 
-export const POLICY_LABELS: Record<ToolPolicy, string> = {
-  always_allow: 'always allow',
-  always_ask: 'always ask',
-  auto: 'auto'
-}
+export { POLICY_LABELS }
 
 /** Titre de l'avis d'un conflit : le même texte que celui du worker. */
 const CONFLICT_TITLE = 'Changed elsewhere since you opened it.'

@@ -486,8 +486,8 @@ test('the preview rows say before to after, or the lines, and a reorder is not +
   assert.equal(describeChange(change({})), 'a → b')
   assert.equal(describeChange(change({ lines: { added: 3, removed: 1 } })), '+3 / −1 lines')
   assert.equal(describeChange(change({ before: 'x\ny', after: 'y\nx', lines: { added: 0, removed: 0 } })), 'x\ny → y\nx')
-  assert.equal(describeChange(change({ before: null })), '(not set) → b')
-  assert.equal(describeChange(change({ after: null })), 'a → (not set)')
+  assert.equal(describeChange(change({ before: null })), 'Added: b')
+  assert.equal(describeChange(change({ after: null })), 'Removed: a')
 })
 
 test('a long review keeps every label under the render limit and says how many changes it shows', async () => {

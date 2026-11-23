@@ -48,7 +48,8 @@ export function summarizeLines(before: string, after: string): { added: number; 
 
 const isLongText = (text: string): boolean => text.includes('\n') || Buffer.byteLength(text) > VALUE_MAX_BYTES
 
-function leafChange(path: string, before: unknown, after: unknown): FieldChange {
+/** Une valeur qui change ; deux textes longs (multiligne ou au-delà de 200 octets) portent en plus leur bilan de lignes. */
+export function leafChange(path: string, before: unknown, after: unknown): FieldChange {
   const lines =
     typeof before === 'string' && typeof after === 'string' && (isLongText(before) || isLongText(after))
       ? summarizeLines(before, after)

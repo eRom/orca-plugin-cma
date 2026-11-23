@@ -4,7 +4,7 @@ import { expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { BUILTIN_TOOLS, type AgentForm, type ApiResult, type Committed, type PreparedWrite } from '../protocol'
 import { agentToDocument, type AgentDocument } from './agent-yaml'
-import { agentFormOptions, applyAgentForm, prepareAgentForm, toAgentForm } from './agent-form'
+import { agentFormOptions, applyAgentForm, formChanges, prepareAgentForm, toAgentForm } from './agent-form'
 import type { ClientStore } from './client'
 import { diffDocuments } from './diff'
 import { createPendingWrites } from './pending-writes'
@@ -237,7 +237,7 @@ test('prepareAgentForm stages an update guarded by the opened version, with only
   const { api, pending, prepare } = setup()
   const prepared = await prepare({ agentId: 'agent_1', baseVersion: 5, form: POLICY_CHANGE, base: form })
   expect(prepared.ok && prepared.value.creates).toBe(false)
-  expect(prepared.ok && prepared.value.changes.map((change) => change.path)).toEqual(['tools[0].default_config.permission_policy.type'])
+  expect(prepared.ok && prepared.value.changes.map((change) => change.path)).toEqual(['Built-in tools policy'])
   // Rien n'est écrit tant que le jeton n'est pas confirmé.
   expect(only(api.calls, 'agents.update').length).toBe(0)
   expect(await commitOf(pending, prepared, false)).toEqual({ ok: true, value: { label: 'Applied, v6', id: 'agent_1' } })
@@ -252,7 +252,7 @@ test('with a stale version the token is a conflict, and a forced commit sends no
   await api.elsewhere({ description: 'Changed in the console.' })
   const prepared = await prepare({ agentId: 'agent_1', baseVersion: 5, form: POLICY_CHANGE, base: form })
   // La préparation ne vérifie pas la version : le jeton existe, et le récapitulatif ne montre que la politique.
-  expect(prepared.ok && prepared.value.changes.map((change) => change.path)).toEqual(['tools[0].default_config.permission_policy.type'])
+  expect(prepared.ok && prepared.value.changes.map((change) => change.path)).toEqual(['Built-in tools policy'])
   expect(await commitOf(pending, prepared, false)).toEqual({ ok: false, code: 'conflict', error: 'Changed elsewhere since you opened it (v5 → v6).' })
   expect(only(api.calls, 'agents.update').length).toBe(1)
   // Le jeton survit : « Apply anyway ».
@@ -277,7 +277,7 @@ test('I1: the changes are applied onto the live agent, so a forced send keeps a 
     base: form
   })
   // L'aperçu ne montre que la politique, et il est calculé sur l'agent vivant.
-  expect(prepared.ok && prepared.value.changes.map((change) => change.path)).toEqual(['tools[1].default_config.permission_policy.type'])
+  expect(prepared.ok && prepared.value.changes.map((change) => change.path)).toEqual(['MCP server github policy'])
   expect(await commitOf(pending, prepared, false)).toEqual({ ok: false, code: 'conflict', error: 'Changed elsewhere since you opened it (v5 → v6).' })
   expect(await commitOf(pending, prepared, true)).toEqual({ ok: true, value: { label: 'Applied, v7', id: 'agent_1' } })
   const stored = api.agents.get('agent_1')!.tools as Record<string, unknown>[]
@@ -355,4 +355,50 @@ test('agentFormOptions lists every model id across the pages, and falls back to 
   const logs: string[] = []
   expect(await agentFormOptions(failing, (message) => logs.push(message))).toEqual({ models: [] })
   expect(logs.length).toBe(1)
+})
+
+// --- La revue d'un formulaire ---
+
+const summary = (changes: { path: string; before: string | null; after: string | null }[]) =>
+  changes.map(({ path, before, after }) => ({ path, before, after }))
+
+test('AC-5 replay: adding a server and changing the default policy reviews as exactly those two changes, in words', async () => {
+  const { prepare } = setup()
+  const changed = withForm({ builtinTools: { ...form.builtinTools!, policy: 'always_ask' }, mcpServers: [...form.mcpServers, LINEAR] })
+  const prepared = await prepare({ agentId: 'agent_1', baseVersion: 5, form: changed, base: form })
+  expect(prepared.ok && summary(prepared.value.changes)).toEqual([
+    { path: 'Built-in tools policy', before: 'auto', after: 'always ask' },
+    { path: 'MCP server linear', before: null, after: 'https://mcp.linear.app/mcp, always ask' }
+  ])
+  expect(prepared.ok && prepared.value.totalChanges).toBe(2)
+})
+
+test('a removed server, a changed url and a per-tool setting each read as one line', () => {
+  const tools = form.builtinTools!.tools.map((tool) => (tool.name === 'bash' ? { ...tool, enabled: false } : tool.name === 'web_search' ? { ...tool, enabled: null, policy: null } : tool))
+  const changed = withForm({ builtinTools: { ...form.builtinTools!, tools }, mcpServers: [{ ...form.mcpServers[0]!, url: 'https://example.com/mcp' }] })
+  expect(summary(formChanges(changed, form))).toEqual([
+    { path: 'Tool bash', before: 'default', after: 'disabled' },
+    { path: 'Tool web_search', before: 'disabled, auto', after: 'default' },
+    { path: 'MCP server github URL', before: 'https://api.githubcopilot.com/mcp/', after: 'https://example.com/mcp' }
+  ])
+  expect(summary(formChanges(withForm({ mcpServers: [] }), form))).toEqual([
+    { path: 'MCP server github', before: 'https://api.githubcopilot.com/mcp/, always ask', after: null }
+  ])
+})
+
+test('a creation reviews what is set, and leaves out a default effort and an empty description', () => {
+  const created: AgentForm = { ...form, effort: null, description: '', builtinTools: { enabled: true, policy: 'auto', tools: form.builtinTools!.tools.map((tool) => ({ ...tool, enabled: null, policy: null })) }, mcpServers: [] }
+  expect(summary(formChanges(created, null))).toEqual([
+    { path: 'Name', before: null, after: 'Incident commander' },
+    { path: 'Model', before: null, after: 'claude-haiku-5-5' },
+    { path: 'Built-in tools', before: null, after: 'enabled, auto' }
+  ])
+})
+
+test('a null effort on an existing agent is not reviewed, as it is not sent', () => {
+  expect(formChanges(withForm({ effort: null }), form)).toEqual([])
+  expect(summary(formChanges(withForm({ effort: 'low', description: '' }), form))).toEqual([
+    { path: 'Effort', before: 'high', after: 'low' },
+    { path: 'Description', before: 'Triages incident ticket', after: null }
+  ])
 })
