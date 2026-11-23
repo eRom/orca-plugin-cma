@@ -25,19 +25,29 @@ export type ClientStore = {
 
 export function createClientStore(activeKey: () => Promise<string | null>): ClientStore {
   let client: Anthropic | null = null
+  // Génération courante : `reset` l'incrémente, ce qui périme toute lecture de clé encore en vol.
+  let generation = 0
   return {
     async get() {
-      if (client) {
+      for (;;) {
+        if (client) {
+          return client
+        }
+        const startedAt = generation
+        const key = await activeKey()
+        if (generation !== startedAt) {
+          // Le workspace actif a changé pendant la lecture : la clé lue est périmée, on relit.
+          continue
+        }
+        if (!key) {
+          throw new NoKeyError()
+        }
+        client = new Anthropic({ apiKey: key })
         return client
       }
-      const key = await activeKey()
-      if (!key) {
-        throw new NoKeyError()
-      }
-      client = new Anthropic({ apiKey: key })
-      return client
     },
     reset() {
+      generation += 1
       client = null
     },
     async hasKey() {

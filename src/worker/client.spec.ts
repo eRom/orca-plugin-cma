@@ -100,6 +100,30 @@ test('createClientStore caches the client until reset and rereads the active key
   expect(reads).toBe(2)
 })
 
+test('createClientStore drops a client built on a key read before a reset', async () => {
+  let key = 'plugin-test-token-QUOKKA-old'
+  const pending: ((value: string) => void)[] = []
+  const store = createClientStore(
+    () =>
+      new Promise<string>((resolve) => {
+        // Chaque lecture de clé reste en attente jusqu'à ce que le test la résolve.
+        pending.push(resolve)
+      })
+  )
+  const stale = store.get()
+  // Le workspace actif change pendant la lecture de la clé : reset puis nouvelle clé.
+  store.reset()
+  key = 'plugin-test-token-QUOKKA-new'
+  pending[0]!('plugin-test-token-QUOKKA-old')
+  // La lecture périmée relance une lecture avec la clé fraîche.
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  pending[1]!(key)
+  expect((await stale).apiKey).toBe('plugin-test-token-QUOKKA-new')
+  // Le client mis en cache est bien celui de la nouvelle clé.
+  expect((await store.get()).apiKey).toBe('plugin-test-token-QUOKKA-new')
+  expect(pending.length).toBe(2)
+})
+
 test('workspaceInfo without key lists the workspaces and does no network call', async () => {
   const { workspaces } = fakeWorkspaces([], null)
   const store = createClientStore(async () => null)
