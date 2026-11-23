@@ -1,9 +1,9 @@
 import { assert, mockHost, mount, test } from 'orca/testing'
 import type { SessionDetail, SessionRow, StreamState, ThreadRow, ToolState } from '../protocol'
 import * as panel from '../panel'
-import { set } from 'orca'
+import { read, set } from 'orca'
 import { restoreOpenSession } from './session-view'
-import { sending, sessionNotice } from './state'
+import { manageNotice, sending, sessionNotice, viewedSession } from './state'
 
 const WITH_KEY = {
   hasKey: true,
@@ -601,7 +601,7 @@ test('windows 400 small rows to at most 100 and offers Load earlier', async () =
 
 // --- Archiver et supprimer ---
 
-type ManageCalls = { archives: unknown[]; deletes: unknown[]; leaves: unknown[]; lists: number }
+type ManageCalls = { archives: unknown[]; deletes: unknown[]; leaves: unknown[]; lists: number; beforeAnswer?: () => void }
 type View = Awaited<ReturnType<typeof mount>>
 
 /** Les demandes de la vue d'une session, avec archivage et suppression comptés ; `refusal` fait refuser les deux. */
@@ -619,10 +619,12 @@ function manageRequests(calls: ManageCalls, refusal: string | null = null, row: 
     },
     'resource.archive': (input: unknown) => {
       calls.archives.push(input)
+      calls.beforeAnswer?.()
       return answer()
     },
     'resource.delete': (input: unknown) => {
       calls.deletes.push(input)
+      calls.beforeAnswer?.()
       return answer()
     }
   })
@@ -736,7 +738,7 @@ test('Delete then Confirm deletes the session, leaves it and returns home', asyn
   })
 })
 
-test('an API refusal shows in the session notice and the view stays open', async () => {
+test('an API refusal shows inside Manage session, not in the composer, and the view stays open', async () => {
   const calls = newManageCalls()
   const row = sessionRow({ status: 'running', badge: 'running' })
   await withView(calls, { refusal: 'Cannot archive a running session.', row }, async (view) => {
@@ -746,8 +748,48 @@ test('an API refusal shows in the session notice and the view stays open', async
     assert.deepEqual(calls.archives, [{ kind: 'session', id: 's1' }])
     assert.deepEqual(calls.leaves, [])
     assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'session', sessionId: 's1' }])
-    assert.ok(view.find({ type: 'Callout', text: /Cannot archive a running session\./ }))
+    const section = view.find({ type: 'Collapsible', text: /Manage session/ })
+    assert.equal(section?.props.open, true)
+    const notices = view.findAll({ type: 'Callout', text: /Cannot archive a running session\./ })
+    assert.equal(notices.length, 1)
+    assert.equal(notices[0]?.props.title, 'Could not archive')
+    assert.ok(/Cannot archive a running session\./.test(section?.text ?? ''))
+    // Le Composer n'a pas son propre avis : l'erreur n'est pas dupliquée au bas de la vue.
+    assert.equal(view.find({ type: 'Callout', text: /Action failed/ }), null)
     assert.ok(view.find({ text: 'Triage run' }))
+    assert.deepEqual(view.errors, [])
+  })
+})
+
+test('a Delete refusal is titled Could not delete, and a new attempt clears it', async () => {
+  const calls = newManageCalls()
+  await withView(calls, { refusal: 'Cannot delete a running session.' }, async (view) => {
+    await openManage(view)
+    await view.press({ role: 'button', text: 'Delete' })
+    await pressConfirm(view, 'Delete')
+    assert.equal(view.find({ type: 'Callout', text: /Cannot delete a running session\./ })?.props.title, 'Could not delete')
+    // Un second geste efface l'avis précédent avant de rappeler l'API.
+    let clearedBeforeCall: boolean | null = null
+    calls.beforeAnswer = () => {
+      clearedBeforeCall = read(manageNotice) === null
+    }
+    await view.press({ role: 'button', text: 'Delete' })
+    await pressConfirm(view, 'Delete')
+    assert.equal(clearedBeforeCall, true)
+    assert.deepEqual(calls.deletes, [{ kind: 'session', id: 's1' }, { kind: 'session', id: 's1' }])
+  })
+})
+
+test('a refusal landing after the user switched session is not shown', async () => {
+  const calls = newManageCalls()
+  await withView(calls, { refusal: 'Cannot archive a running session.' }, async (view) => {
+    await openManage(view)
+    await view.press({ role: 'button', text: 'Archive' })
+    // L'autre session devient la vue regardée pendant l'appel : le refus de s1 arrive trop tard pour s'afficher.
+    calls.beforeAnswer = () => set(viewedSession, 's2')
+    await pressConfirm(view, 'Archive')
+    assert.deepEqual(calls.archives, [{ kind: 'session', id: 's1' }])
+    assert.equal(view.find({ type: 'Callout', text: /Cannot archive a running session\./ }), null)
     assert.deepEqual(view.errors, [])
   })
 })

@@ -145,6 +145,8 @@ export const raiseNotice = atom<string | null>(null)
 export const sessionNotice = atom<string | null>(null)
 /** Section « Manage session » (archiver, supprimer) : fermée à chaque nouvelle session. */
 export const manageOpen = atom(false)
+/** Refus de l'API à l'archivage ou à la suppression, affiché sous les gestes de `Manage session`, là où la personne regarde. */
+export const manageNotice = atom<{ action: 'archive' | 'delete'; message: string } | null>(null)
 
 /**
  * Remet la vue à zéro pour une session (ou aucune). Rouvrir la session déjà affichée (worker redémarré,
@@ -167,6 +169,7 @@ export function resetSessionView(sessionId: string | null): void {
   set(raiseNotice, null)
   set(sessionNotice, null)
   set(manageOpen, false)
+  set(manageNotice, null)
   set(sending, false)
   set(draft, '')
   set(denyDraft, {})

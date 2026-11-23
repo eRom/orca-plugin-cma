@@ -39,6 +39,7 @@ import {
   hasEarlier,
   loadingEarlier,
   loadSessions,
+  manageNotice,
   manageOpen,
   mergeRows,
   nav,
@@ -144,14 +145,15 @@ function goBack(sessionId: string): void {
 
 /**
  * Archive ou supprime la session, la quitte, revient à la vue d'en dessous et relit la liste. Un refus de l'API
- * (une session `running`, par exemple) devient l'avis de la session : la vue reste ouverte.
+ * (une session `running`, par exemple) s'affiche sous les gestes de `Manage session` : la vue reste ouverte, et le refus
+ * d'une session qu'on a quittée entre-temps n'apparaît pas sur la session regardée.
  * Après les attentes, on ne dépile que si la vue d'origine est encore au sommet : un Back entre-temps a déjà dépilé.
  */
 async function removeSession(sessionId: string, mode: 'archive' | 'delete'): Promise<void> {
-  set(sessionNotice, null)
+  set(manageNotice, null)
   const result = await plugin.request(mode === 'archive' ? 'resource.archive' : 'resource.delete', { kind: 'session', id: sessionId })
   if (!result.ok) {
-    set(sessionNotice, result.error)
+    if (read(viewedSession) === sessionId) set(manageNotice, { action: mode, message: result.error })
     return
   }
   let popped = false
@@ -332,6 +334,7 @@ function Header({ sessionId }: { sessionId: string }) {
 function ManageSession({ sessionId }: { sessionId: string }) {
   const row = read(sessionRows)?.find((candidate) => candidate.id === sessionId) ?? null
   const name = row?.title || read(sessionDetail)?.title || sessionId
+  const failure = read(manageNotice)
   return (
     <SectionCollapsible title="Manage session" open={read(manageOpen)} onChange={(next) => set(manageOpen, next)}>
       <Stack gap="sm">
@@ -355,6 +358,7 @@ function ManageSession({ sessionId }: { sessionId: string }) {
           confirmLabel="Delete"
           onConfirm={() => removeSession(sessionId, 'delete')}
         />
+        {failure ? <ErrorCallout title={failure.action === 'archive' ? 'Could not archive' : 'Could not delete'} message={failure.message} /> : null}
       </Stack>
     </SectionCollapsible>
   )
@@ -589,9 +593,9 @@ function Thread({ sessionId }: { sessionId: string }) {
 }
 
 /** Erreur brute de l'API : le titre reste un libellé fixe, le texte va en enfant (un libellé de plus de 1 Kio fait refuser le rendu). */
-function ErrorCallout({ message }: { message: string }) {
+function ErrorCallout({ message, title = 'Action failed' }: { message: string; title?: string }) {
   return (
-    <Callout tone="danger" title="Action failed">
+    <Callout tone="danger" title={title}>
       <Text size="sm">{clipBytes(message, ERROR_TEXT_LIMIT_BYTES).text}</Text>
     </Callout>
   )
