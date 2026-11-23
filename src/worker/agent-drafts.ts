@@ -4,7 +4,7 @@
 // l'agent a son fichier canonique, ouvert dans l'éditeur ; le modèle revient à son état d'origine.
 import Anthropic from '@anthropic-ai/sdk'
 import type { AgentCreateParams, AgentUpdateParams, BetaManagedAgentsAgent } from '@anthropic-ai/sdk/resources/beta/agents/agents'
-import type { ApiResult, Committed, DraftRef } from '../protocol'
+import type { ApiResult, Committed, DraftRef, ResourceRef } from '../protocol'
 import {
   NEW_AGENT_YAML,
   agentToDocument,
@@ -108,6 +108,25 @@ export async function agentVersionConflict(
     )
   const error = current === null ? CONFLICT_MESSAGE : `Changed elsewhere since you opened it (v${base} → v${current}).`
   return { ok: false, error, code: 'conflict' }
+}
+
+/**
+ * Après l'archivage d'un agent : son brouillon propre est oublié (fichier et nom libérés, comme pour une mémoire
+ * supprimée). Un brouillon non appliqué reste, et le journal le dit. L'archivage étant fait, un échec ici se journalise
+ * seulement. Tout autre type de ressource est sans effet.
+ */
+export async function releaseArchivedDrafts(ref: ResourceRef, drafts: () => Drafts, log: (message: string) => void = () => {}): Promise<void> {
+  if (ref.kind !== 'agent') {
+    return
+  }
+  try {
+    const { kept } = await drafts().release((known) => known.kind === 'agent' && known.agentId === ref.id)
+    for (const file of kept) {
+      log(`agent draft kept (unapplied edits): ${file}`)
+    }
+  } catch (error) {
+    log(`agent drafts not released: ${messageOf(error)}`)
+  }
 }
 
 export function createAgentAdapter(

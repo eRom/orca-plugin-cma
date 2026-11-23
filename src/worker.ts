@@ -1,7 +1,7 @@
 // Worker du plugin : le seul côté qui a le réseau. Il détient la clé API et répond au panneau.
 import type { OrcaWorkerApi } from 'orca/worker'
 import type { ApiResult, ResourceRef, SessionRow, ThreadRow, WorkspaceInfo } from './protocol'
-import { createAgentAdapter } from './worker/agent-drafts'
+import { createAgentAdapter, releaseArchivedDrafts } from './worker/agent-drafts'
 import { agentFormOptions, prepareAgentForm } from './worker/agent-form'
 import { SECRET_NAME, attempt, createClientStore, describeError, failure, setKey, workspaceInfo } from './worker/client'
 import { createWriteHandlers } from './worker/config-writes'
@@ -177,7 +177,6 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
       if (result.ok && ref.kind === 'session') refreshSessions()
       return result
     }
-  orca.panels.handle('resource.archive', thenRefreshSessions(writes.archive))
 
   // Les écritures qui attendent une confirmation : un worker relancé repart d'un registre vide, et
   // le panneau reçoit alors `expired` (il relance l'écriture).
@@ -201,6 +200,15 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   orca.panels.handle('file.pick', createFilePicker({ platform: process.platform, run: runOsascript }))
   orca.panels.handle('memory.stageUploads', createMemoryUploads(store, pendingWrites, (message) => orca.log(message)))
   orca.panels.handle('memory.rename', createMemoryRename(store, () => drafts, (message) => orca.log(message)))
+  // Un agent archivé n'a plus de brouillon propre à garder : son fichier et son nom se libèrent.
+  const archiveThenRelease = thenRefreshSessions(writes.archive)
+  orca.panels.handle('resource.archive', async (ref) => {
+    const result = await archiveThenRelease(ref)
+    if (result.ok) {
+      await releaseArchivedDrafts(ref, () => drafts, (message) => orca.log(message))
+    }
+    return result
+  })
   // Une mémoire ou une banque supprimée n'a plus de brouillon propre à garder : son fichier et son nom se libèrent.
   const removeThenRelease = thenRefreshSessions(writes.remove)
   orca.panels.handle('resource.delete', async (ref) => {
@@ -212,7 +220,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   })
   // Le formulaire d'agent : les modèles proposés, puis l'écriture mise en attente (confirmée par `write.commit`).
   orca.panels.handle('agent.formOptions', () => attempt(store, (client) => agentFormOptions(client, (message) => orca.log(message))))
-  orca.panels.handle('agent.prepareForm', (input) => prepareAgentForm(store, pendingWrites, (message) => orca.log(message), input))
+  orca.panels.handle('agent.prepareForm', (input) => prepareAgentForm(store, pendingWrites, input))
   orca.panels.handle('drafts.status', drafts.status)
   orca.panels.handle('draft.open', drafts.open)
   orca.panels.handle('draft.discard', drafts.discard)

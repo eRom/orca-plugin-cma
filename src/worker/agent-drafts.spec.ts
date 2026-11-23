@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DraftRef } from '../protocol'
 import { NEW_AGENT_YAML, agentToDocument, renderAgentYaml, type AgentDocument } from './agent-yaml'
-import { NEW_AGENT_FILE, agentFile, createAgentAdapter, sendAgent } from './agent-drafts'
+import { NEW_AGENT_FILE, agentFile, createAgentAdapter, releaseArchivedDrafts, sendAgent } from './agent-drafts'
 import type { ClientStore } from './client'
 import { REGISTRY_FILE, createDrafts, type Drafts } from './drafts'
 import type { EditorHost } from './editor-host'
@@ -526,4 +526,33 @@ test('sendAgent updates with the version unless forced, and creates from the doc
   const created = await sendAgent(client, null, null, {}, { name: 'a', model: 'claude-haiku-5-5' }, false)
   expect(created.version).toBe(1)
   expect(only(api.calls, 'agents.create')[0]?.args).toEqual([{ name: 'a', model: 'claude-haiku-5-5' }])
+})
+
+test('m4: archiving an agent releases its clean draft, keeps and logs an unapplied one, and leaves every other draft alone', async () => {
+  const { drafts, api, folder, registry, edit, logs } = setup()
+  api.state.agents.set('agent_2', { ...structuredClone(fixture), id: 'agent_2', name: 'Second' } as unknown as AgentRecord)
+  await drafts.open(EXISTING)
+  await drafts.open({ kind: 'agent', agentId: 'agent_2' })
+  await drafts.open(NEW)
+  await releaseArchivedDrafts({ kind: 'agent', id: 'agent_1' }, () => drafts, (message) => logs.push(message))
+  expect(existsSync(join(folder, EXISTING_FILE))).toBe(false)
+  expect(Object.keys(registry().entries).sort()).toEqual([NEW_AGENT_FILE, 'agents/second--agent_2.yaml'])
+  // Un brouillon modifié et non appliqué reste, et le journal le dit.
+  edit('agents/second--agent_2.yaml', 'Be decisive.', 'Be calm.')
+  await releaseArchivedDrafts({ kind: 'agent', id: 'agent_2' }, () => drafts, (message) => logs.push(message))
+  expect(existsSync(join(folder, 'agents/second--agent_2.yaml'))).toBe(true)
+  expect(logs.some((message) => message.includes('agent draft kept') && message.includes('agents/second--agent_2.yaml'))).toBe(true)
+  // Le modèle du nouvel agent n'est jamais celui d'un agent archivé ; un autre type de ressource est sans effet.
+  expect(existsSync(join(folder, NEW_AGENT_FILE))).toBe(true)
+  await releaseArchivedDrafts({ kind: 'environment', id: 'env_1' }, () => drafts, (message) => logs.push(message))
+  expect(Object.keys(registry().entries).sort()).toEqual([NEW_AGENT_FILE, 'agents/second--agent_2.yaml'])
+  cleanup()
+})
+
+test('m4: a draft that cannot be released does not make the archive fail, and says so in the log', async () => {
+  const { drafts, logs } = setup()
+  const broken = { ...drafts, release: async () => Promise.reject(new Error('disk full')) } as unknown as Drafts
+  await releaseArchivedDrafts({ kind: 'agent', id: 'agent_1' }, () => broken, (message) => logs.push(message))
+  expect(logs.some((message) => message.includes('agent drafts not released') && message.includes('disk full'))).toBe(true)
+  cleanup()
 })

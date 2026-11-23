@@ -93,8 +93,22 @@ test('model and effort rewrite model.id and model.effort as { type }, and keep t
   expect(after.model).toEqual({ id: 'claude-opus-5-5', effort: { type: 'low' }, speed: 'standard' })
   const effortOnly = applyAgentForm(doc, withForm({ effort: 'max' }), form)
   expect(diffDocuments(doc, effortOnly).map((change) => change.path)).toEqual(['model.effort.type'])
+})
+
+test('an existing agent has no way back to a default effort: a null effort in the form changes nothing', async () => {
+  // L'API garde l'effort stocké quand il est omis à la mise à jour, et le rend toujours : « Default » n'existe qu'à la création.
   const cleared = applyAgentForm(doc, withForm({ effort: null }), form)
-  expect(cleared.model).toEqual({ id: 'claude-haiku-5-5', speed: 'standard' })
+  expect(diffDocuments(doc, cleared)).toEqual([])
+  expect(cleared.model).toEqual({ id: 'claude-haiku-5-5', effort: { type: 'high' }, speed: 'standard' })
+  const { prepare } = setup()
+  expect(await prepare({ agentId: 'agent_1', baseVersion: 5, form: withForm({ effort: null }), base: form })).toEqual({
+    ok: false,
+    code: 'nothing_to_apply',
+    error: 'Nothing to apply: you have not changed anything.'
+  })
+  // Avec un autre changement, l'effort stocké part tel quel : jamais effacé.
+  const withModel = applyAgentForm(doc, withForm({ model: 'claude-opus-5-5', effort: null }), form)
+  expect(withModel.model).toEqual({ id: 'claude-opus-5-5', effort: { type: 'high' }, speed: 'standard' })
 })
 
 test('a per-tool setting writes an entry with only the fields that are set, keeps the other fields of an existing one, and drops an entry that inherits again', () => {
@@ -207,10 +221,8 @@ function fakeApi() {
 function setup() {
   const api = fakeApi()
   const pending = createPendingWrites(() => 0)
-  const logs: string[] = []
-  const prepare = (input: Parameters<typeof prepareAgentForm>[3]): Promise<ApiResult<PreparedWrite>> =>
-    prepareAgentForm(api.store, pending, (message) => logs.push(message), input)
-  return { api, pending, logs, prepare }
+  const prepare = (input: Parameters<typeof prepareAgentForm>[2]): Promise<ApiResult<PreparedWrite>> => prepareAgentForm(api.store, pending, input)
+  return { api, pending, prepare }
 }
 
 const only = (calls: Call[], method: string): Call[] => calls.filter((call) => call.method === method)
@@ -251,13 +263,35 @@ test('with a stale version the token is a conflict, and a forced commit sends no
   expect(api.agents.get('agent_1')?.description).toBe('Changed in the console.')
 })
 
-test('when the opened version cannot be read back, the live version stands in for it and the log says so', async () => {
-  const { api, logs, prepare } = setup()
-  await api.elsewhere({ description: 'Changed in the console.' })
-  api.agents.get('agent_1')!.version = 6
-  const prepared = await prepare({ agentId: 'agent_1', baseVersion: 3, form: POLICY_CHANGE, base: form })
-  expect(prepared.ok).toBe(true)
-  expect(logs.some((message) => message.includes('agent_1 v3 could not be read back'))).toBe(true)
+test('I1: the changes are applied onto the live agent, so a forced send keeps a per-tool setting added elsewhere on the same key', async () => {
+  const { api, pending, prepare } = setup()
+  // Le formulaire est ouvert à la v5 ; la politique de github change dans le formulaire. Entre-temps (v6), le YAML
+  // d'un autre éditeur ajoute un réglage par outil sur le toolset de github : la même clé `tools`.
+  const [builtin, github] = structuredClone(api.agents.get('agent_1')!.tools) as Record<string, unknown>[]
+  const setting = { name: 'list_commits', enabled: true, permission_policy: { type: 'always_allow' } }
+  await api.elsewhere({ tools: [builtin, { ...github, configs: [setting] }] })
+  const prepared = await prepare({
+    agentId: 'agent_1',
+    baseVersion: 5,
+    form: withForm({ mcpServers: [{ ...form.mcpServers[0]!, policy: 'auto' }] }),
+    base: form
+  })
+  // L'aperçu ne montre que la politique, et il est calculé sur l'agent vivant.
+  expect(prepared.ok && prepared.value.changes.map((change) => change.path)).toEqual(['tools[1].default_config.permission_policy.type'])
+  expect(await commitOf(pending, prepared, false)).toEqual({ ok: false, code: 'conflict', error: 'Changed elsewhere since you opened it (v5 → v6).' })
+  expect(await commitOf(pending, prepared, true)).toEqual({ ok: true, value: { label: 'Applied, v7', id: 'agent_1' } })
+  const stored = api.agents.get('agent_1')!.tools as Record<string, unknown>[]
+  const saved = stored[1] as { configs: unknown[]; default_config: { permission_policy: { type: string } } }
+  expect(saved.default_config.permission_policy.type).toBe('auto')
+  expect(saved.configs).toEqual([setting])
+})
+
+test('a guarded send of the form still carries the opened version, and reads the live agent once', async () => {
+  const { api, pending, prepare } = setup()
+  const prepared = await prepare({ agentId: 'agent_1', baseVersion: 5, form: POLICY_CHANGE, base: form })
+  expect(only(api.calls, 'agents.retrieve').map((call) => call.args)).toEqual([['agent_1', undefined]])
+  await commitOf(pending, prepared, false)
+  expect((only(api.calls, 'agents.update')[0]?.args[1] as Record<string, unknown>).version).toBe(5)
 })
 
 test('an unchanged form has nothing to apply, and an existing agent is never prepared without the version the form opened', async () => {

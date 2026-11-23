@@ -16,8 +16,8 @@ import {
   type PreparedWrite,
   type ToolPolicy
 } from '../protocol'
-import type { AgentDocument } from './agent-yaml'
-import { agentVersionConflict, isVersionRefusal, openedAgentDocument, sendAgent } from './agent-drafts'
+import { agentToDocument, type AgentDocument } from './agent-yaml'
+import { agentVersionConflict, isVersionRefusal, sendAgent } from './agent-drafts'
 import { failure, type ClientStore } from './client'
 import { diffDocuments } from './diff'
 import type { PendingWrites } from './pending-writes'
@@ -70,10 +70,14 @@ function toolsOf(doc: AgentDocument): Mapping[] {
   return doc.tools as Mapping[]
 }
 
-/** Le modèle et l'effort : `model.id` et `model.effort` (`{ type }`) ; les autres clés du modèle (`speed`, ...) restent. */
+/**
+ * Le modèle et l'effort : `model.id` et `model.effort` (`{ type }`) ; les autres clés du modèle (`speed`, ...) restent.
+ * Un effort `null` n'écrit rien : à la création, l'agent a l'effort par défaut ; sur une mise à jour, l'API garde la
+ * valeur stockée quand elle est omise, et la rend toujours. Il n'y a donc pas de retour au défaut pour un agent existant.
+ */
 function applyModel(doc: AgentDocument, form: AgentForm, base: AgentForm | null): void {
   const modelChanged = base === null || form.model !== base.model
-  const effortChanged = base === null || form.effort !== base.effort
+  const effortChanged = form.effort !== null && (base === null || form.effort !== base.effort)
   if (!modelChanged && !effortChanged) {
     return
   }
@@ -82,11 +86,7 @@ function applyModel(doc: AgentDocument, form: AgentForm, base: AgentForm | null)
     model.id = form.model
   }
   if (effortChanged) {
-    if (form.effort === null) {
-      delete model.effort
-    } else {
-      model.effort = { type: form.effort }
-    }
+    model.effort = { type: form.effort }
   }
   doc.model = model
 }
@@ -244,13 +244,14 @@ export type PrepareAgentFormInput = { agentId: string | null; baseVersion: numbe
 /**
  * Met en attente l'écriture d'un formulaire. La version n'est pas vérifiée ici : l'envoi porte celle que le
  * formulaire a ouverte (`baseVersion`), et un agent changé ailleurs est refusé au `write.commit` (`conflict`,
- * jeton gardé pour « Apply anyway »). Les changements se calculent contre le document ouvert, jamais contre
- * l'agent vivant : un envoi forcé ne ramène pas une clé que la console a changée.
+ * jeton gardé pour « Apply anyway »). Les changements du formulaire (l'écart `form` / `base`) s'appliquent sur
+ * l'agent vivant, pas sur la version ouverte : l'aperçu et un envoi forcé ne portent que ce que la personne a
+ * changé, et une clé de premier niveau partagée (`tools`) garde ce qu'un autre éditeur y a ajouté. Le brouillon
+ * YAML suit l'autre règle (le document ouvert), parce qu'il envoie un fichier entier.
  */
 export async function prepareAgentForm(
   store: ClientStore,
   pending: PendingWrites,
-  log: (message: string) => void,
   input: PrepareAgentFormInput
 ): Promise<ApiResult<PreparedWrite>> {
   const { agentId, baseVersion, form, base } = input
@@ -267,7 +268,7 @@ export async function prepareAgentForm(
       if (baseVersion === null) {
         return { ok: false, code: 'other', error: 'The form lost its version: open the agent again.' }
       }
-      before = await openedAgentDocument(store, agentId, baseVersion, log)
+      before = agentToDocument(await (await store.get()).beta.agents.retrieve(agentId))
     }
     const after = applyAgentForm(before, form, agentId === null ? null : base)
     const changes = diffDocuments(before, after)
