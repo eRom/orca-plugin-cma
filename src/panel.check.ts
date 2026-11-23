@@ -13,9 +13,11 @@ import type {
   DraftInfo,
   EnvironmentDetail,
   EnvironmentForm,
+  FileRow,
   MemoryStoreDetail,
   SessionDetail,
   SessionRow,
+  SkillRow,
   StreamState,
   ThreadRow
 } from './protocol'
@@ -174,6 +176,34 @@ export default defineCheck({
           { kind: 'agent', id: 'agent_check', name: 'Incident commander', summary: 'v3 · claude-haiku-5-5' },
           { kind: 'agent', id: 'agent_other', name: 'Writer', summary: 'v1 · claude-sonnet-5' }
         ] satisfies ConfigRow[]
+      }
+    }
+  },
+  // L'onglet Resources : deux skills (un nom de 120 caractères) et trois fichiers (9441 octets, 12 Mo, un lié à la session « Audit »).
+  resources: {
+    persisted: { plugin: { 'home.tab': 'resources' } },
+    requests: {
+      'workspace.info': WITH_KEY,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'configs.list': { ok: true as const, value: [] },
+      'sessions.list': {
+        ok: true as const,
+        value: [{ ...session, id: 'sesn_check', title: 'Audit', status: 'idle', badge: 'idle', updatedAt: '2026-11-22T12:00:00Z' }]
+      },
+      'skills.list': {
+        ok: true as const,
+        value: [
+          { id: 'skill_01Aa', name: 'incident-triage', latestVersionId: '1759178010641129', updatedAt: '2026-11-21T10:00:00Z' },
+          { id: 'skill_01Bb', name: 'a'.repeat(120), latestVersionId: '1759178010641130', updatedAt: '2026-11-22T09:30:00Z' }
+        ] satisfies SkillRow[]
+      },
+      'files.list': {
+        ok: true as const,
+        value: [
+          { id: 'file_01Aa', name: 'report.pdf', sizeBytes: 9441, createdAt: '2026-11-20T08:00:00Z', sessionId: null },
+          { id: 'file_01Bb', name: 'dataset.csv', sizeBytes: 12_000_000, createdAt: '2026-11-21T08:00:00Z', sessionId: null },
+          { id: 'file_01Cc', name: 'audit-notes.md', sizeBytes: 2048, createdAt: '2026-11-22T08:00:00Z', sessionId: 'sesn_check' }
+        ] satisfies FileRow[]
       }
     }
   },
