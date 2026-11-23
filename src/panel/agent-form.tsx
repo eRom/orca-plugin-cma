@@ -151,14 +151,15 @@ function resetAddServer(): void {
   set(serverTouched, { name: false, url: false })
 }
 
-/** Les flux qui survivent à la sortie d'un écran : une revue ou un conflit au repos. */
+/** Les flux qui survivent à la sortie d'un écran : tout sauf un résultat déjà lu ou un avis. */
 export function withoutTransientFlows(current: Record<string, Flow>): Record<string, Flow> {
-  return Object.fromEntries(Object.entries(current).filter(([, flow]) => flow.step !== 'applied' && flow.step !== 'notice' && !isBusy(flow)))
+  return Object.fromEntries(Object.entries(current).filter(([, flow]) => flow.step !== 'applied' && flow.step !== 'notice'))
 }
 
 /**
- * À la sortie d'un écran d'agent : le résultat d'une écriture, un avis, un envoi en route (« Creating… », revue ou
- * conflit occupés) et le formulaire d'ajout ne survivent pas. Un envoi encore en vol rend son résultat quand il revient.
+ * À la sortie d'un écran d'agent : le résultat d'une écriture, un avis et le formulaire d'ajout ne survivent pas.
+ * Un envoi en vol (« Creating… », revue occupée) reste : Create demeure grisé au retour jusqu'à l'atterrissage du
+ * premier envoi, sans quoi un second `write.commit` créerait l'agent en double.
  */
 export function leaveAgentView(): void {
   update(flows, withoutTransientFlows)

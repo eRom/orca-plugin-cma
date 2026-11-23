@@ -72,7 +72,7 @@ export function sendAgent(
  * qu'un autre éditeur a changées depuis (même forcé). C'est l'agent vivant quand sa version est celle de la base ;
  * sinon la version ouverte, relue par `retrieve(id, { version })`. Si cette relecture échoue (404, rétention), la
  * version vivante sert de repli : le différentiel montre alors aussi les changements d'ailleurs.
- * Partagée avec le formulaire d'agent (`agent-form.ts`), qui suit la même règle.
+ * Utilisée seulement par la préparation du brouillon YAML d'agent, dans ce fichier.
  */
 export async function openedAgentDocument(
   store: ClientStore,

@@ -3,7 +3,7 @@ import { assert, mockHost, mount, test } from 'orca/testing'
 import type { AgentDetail, AgentForm, ConfigKind, ConfigRow, DraftInfo, DraftRef, PreparedWrite } from '../protocol'
 import { BUILTIN_TOOLS } from '../protocol'
 import * as panel from '../panel'
-import { withoutTransientFlows } from './agent-form'
+import { leaveAgentView, withoutTransientFlows } from './agent-form'
 import { formDrafts } from './form-state'
 
 const WITH_KEY = { hasKey: true, keyRejected: false, workspaceId: 'wrkspc_x', organizationName: 'Check Org' }
@@ -672,7 +672,7 @@ test('m5: when reading the detail back fails after a successful update, the revi
   await view.unmount()
 })
 
-test('m5: leaving an agent screen drops every write in flight and the results already read, and keeps a settled review', () => {
+test('leaving an agent screen drops the results already read and keeps every write in flight and every review', () => {
   const prepared: PreparedWrite = { token: 'plugin-test-token-QUOKKA-xyz', changes: [], totalChanges: 0, creates: false }
   const kept = withoutTransientFlows({
     a: { step: 'preparing' },
@@ -684,7 +684,40 @@ test('m5: leaving an agent screen drops every write in flight and the results al
     g: { step: 'review', prepared, busy: false, error: null },
     h: { step: 'conflict', prepared, busy: false, message: 'm' }
   })
-  assert.deepEqual(Object.keys(kept), ['g', 'h'])
+  assert.deepEqual(Object.keys(kept), ['a', 'b', 'c', 'd', 'g', 'h'])
+})
+
+test('leaving the view while a Create is in flight keeps Create disabled, so the agent is created once', async () => {
+  const calls = newCalls()
+  const host = mockHost({
+    requests: requests(calls, {
+      'write.commit': async (input: { token: string; force: boolean }) => {
+        calls.commits.push(input)
+        await sleep(120)
+        return { ok: true, value: { label: 'Applied, v1', id: 'agent_new' } }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN_NEW })
+  await view.type({ label: 'Name' }, 'plugin-test-agent')
+  await view.select({ label: 'Model' }, 'claude-sonnet-5')
+  // L'envoi part sans être attendu : on sort de l'écran pendant que `write.commit` est en vol.
+  const pressing = view.press({ role: 'button', text: 'Create' })
+  await sleep(50)
+  assert.equal(calls.commits.length, 1)
+  leaveAgentView()
+  await sleep(10)
+  // Au retour, la saisie gardée est encore là : Create reste grisé tant que le premier envoi n'a pas atterri.
+  const creating = view.find({ role: 'button', text: 'Creating…' })
+  assert.ok(creating)
+  assert.equal(creating.disabled, true)
+  // Un second appui pendant le vol est refusé (bouton grisé) : une seule préparation, un seul `write.commit`.
+  await assert.rejects(view.press({ role: 'button', text: /Creat/ }), /disabled/)
+  await pressing
+  assert.equal(calls.prepares.length, 1)
+  assert.equal(calls.commits.length, 1)
+  assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'config', kind: 'agent', id: 'agent_new' }])
+  await view.unmount()
 })
 
 test('after a write the old base never shows while the list and the detail are read again', async () => {
