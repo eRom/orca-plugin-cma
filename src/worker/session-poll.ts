@@ -255,7 +255,7 @@ export function createPoller(deps: PollerDeps): Poller {
   }
 }
 
-/** Les appels réels : chaque appel relit le client du store, qu'un `key.set` a pu remplacer. */
+/** Les appels réels : chaque appel relit le client du store, qu'une bascule de workspace ou un remplacement de clé a pu remplacer. */
 export function sdkPollSource(store: ClientStore): Pick<PollerDeps, 'list' | 'lastIdle'> {
   return {
     async list() {

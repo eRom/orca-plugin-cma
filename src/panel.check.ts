@@ -28,6 +28,30 @@ const WITH_KEY = {
   workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }]
 }
 
+/** Deux workspaces associés, le premier actif. */
+const WORKSPACES_INFO = {
+  hasKey: true,
+  keyRejected: false,
+  workspaceId: 'wrkspc_0198iz9hody2oYuZvJ1SMcHz',
+  organizationName: 'Check Org',
+  workspaces: [
+    { localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_0198iz9hody2oYuZvJ1SMcHz', active: true },
+    { localId: 'ws_2', name: 'Orca-claude', workspaceId: 'wrkspc_013Mp1kNaYDSgw93rzjxpQkF', active: false }
+  ]
+}
+
+function workspacesScenario(persisted?: { plugin: Record<string, unknown> }) {
+  return {
+    ...(persisted ? { persisted } : {}),
+    requests: {
+      'workspace.info': WORKSPACES_INFO,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'configs.list': { ok: true as const, value: [] },
+      'sessions.list': { ok: true as const, value: [] }
+    }
+  }
+}
+
 const session = {
   agentId: 'agent_check',
   agentName: 'Writer',
@@ -107,6 +131,20 @@ export default defineCheck({
   },
   'rejected key': {
     requests: { 'workspace.info': { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null, workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] } }
+  },
+  // La section des workspaces : deux lignes, le badge Active sur la première, ✓ et ✎ sur la seconde.
+  workspaces: workspacesScenario(),
+  // Le formulaire d'ajout ouvert sous le groupe (Name, API key, Add, Cancel).
+  'add workspace': workspacesScenario({ plugin: { 'workspaces.addOpen': true } }),
+  // Le détail ✎ d'une ligne inactive : nom, remplacement de clé, Console, Remove.
+  'edit workspace': workspacesScenario({ plugin: { 'workspaces.editing': { localId: 'ws_2' } } }),
+  // La clé de l'actif a disparu du Mac : badge Key missing, détail ouvert d'office sur Replace key, onglets absents.
+  'key missing': {
+    requests: { 'workspace.info': { ...WORKSPACES_INFO, hasKey: false, workspaceId: null } }
+  },
+  // La clé de l'actif est refusée : badge Key rejected et même détail ouvert.
+  'key rejected with two workspaces': {
+    requests: { 'workspace.info': { ...WORKSPACES_INFO, keyRejected: true, workspaceId: null } }
   },
   'new session form': newSessionScenario(),
   'new environment form': newEnvironmentScenario(),

@@ -21,36 +21,35 @@ test('shows the key form without a key', async () => {
   await view.unmount()
 })
 
-test('shows the workspace line with a key', async () => {
+test('shows the workspace list with a key, always open', async () => {
   const host = mockHost({
     requests: { 'workspace.info': WITH_KEY, 'sessions.visibility': { bootId: 'boot-1', watching: null }, 'configs.list': { ok: true, value: [] }, 'sessions.list': { ok: true, value: [] } }
   })
   const view = await mount(panel, { host })
-  // La section workspace est repliée par défaut quand la clé est bonne.
-  await view.toggle({ type: 'Collapsible', text: /Anthropic workspace/ })
+  assert.ok(view.find({ text: 'Default' }))
   assert.ok(view.find({ text: /wrkspc_x/ }))
-  assert.ok(view.find({ role: 'button', text: 'Forget key' }))
+  assert.ok(view.find({ type: 'Badge', text: 'Active' }))
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
 
-test('shows the key form again when the key is rejected', async () => {
+test('marks the active workspace Key rejected and opens Replace key when the key is rejected', async () => {
   const host = mockHost({
     requests: {
       'workspace.info': { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null, workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] }
     }
   })
   const view = await mount(panel, { host })
-  assert.ok(view.find({ type: 'Callout', text: /The API key was rejected \(401\)\./ }))
-  assert.ok(view.find({ label: 'API key' }))
+  assert.ok(view.find({ type: 'Badge', text: 'Key rejected' }))
+  assert.ok(view.find({ label: 'Replace key' }))
   await view.unmount()
 })
 
-test('keeps the key draft when key.set fails', async () => {
+test('keeps the key draft when workspaces.add fails', async () => {
   const host = mockHost({
     requests: {
       'workspace.info': { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null, workspaces: [] },
-      'key.set': { ok: false, code: 'unauthorized', error: 'The API key was rejected (401).' }
+      'workspaces.add': { ok: false, code: 'unauthorized', error: 'The API key was rejected (401).' }
     }
   })
   const view = await mount(panel, { host })
@@ -166,7 +165,7 @@ test('re-reads the workspace when the worker reports an empty list after a rejec
   const view = await mount(panel, { host })
   assert.equal(view.findAll({ type: 'ListItem' }).length, 1)
   await view.post('sessions.changed', { rows: [] })
-  assert.ok(view.find({ type: 'Callout', text: /The API key was rejected \(401\)\./ }))
+  assert.ok(view.find({ type: 'Badge', text: 'Key rejected' }))
   assert.equal(view.findAll({ type: 'ListItem' }).length, 0)
   await view.unmount()
 })
@@ -193,37 +192,6 @@ test('clips oversized session labels so Orca still renders the home', async () =
   await view.unmount()
 })
 
-test('Forget key asks for a confirmation before clearing the key', async () => {
-  let cleared = 0
-  const host = mockHost({
-    requests: {
-      'workspace.info': WITH_KEY,
-      'sessions.visibility': { bootId: 'boot-1', watching: null },
-      'configs.list': { ok: true, value: [] },
-      'sessions.list': { ok: true, value: [] },
-      'key.clear': () => {
-        cleared += 1
-        return { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null, workspaces: [] }
-      }
-    }
-  })
-  const view = await mount(panel, { host })
-  await view.toggle({ type: 'Collapsible', text: /Anthropic workspace/ })
-  await view.press({ role: 'button', text: 'Forget key' })
-  assert.equal(cleared, 0)
-  assert.equal(view.find({ role: 'button', text: 'Forget key' }), null)
-  // Annuler rend le premier bouton, sans rien effacer.
-  await view.press({ role: 'button', text: 'Cancel' })
-  assert.equal(cleared, 0)
-  assert.ok(view.find({ role: 'button', text: 'Forget key' }))
-  await view.press({ role: 'button', text: 'Forget key' })
-  await view.press({ role: 'button', text: 'Confirm forget key' })
-  assert.equal(cleared, 1)
-  assert.ok(view.find({ label: 'API key' }))
-  assert.deepEqual(view.errors, [])
-  await view.unmount()
-})
-
 test('opens on the Sessions tab, with no Configurations or Sessions section to fold', async () => {
   const kinds: unknown[] = []
   const host = mockHost({
@@ -245,11 +213,8 @@ test('opens on the Sessions tab, with no Configurations or Sessions section to f
   )
   assert.ok(view.find({ type: 'IconButton', label: 'New session' }))
   assert.ok(view.find({ type: 'ListItem', text: /First/ }))
-  // Seule la section du workspace se replie encore.
-  assert.deepEqual(
-    view.findAll({ type: 'Collapsible' }).map((entry) => entry.props.title),
-    ['Anthropic workspace']
-  )
+  // Plus aucune section ne se replie.
+  assert.deepEqual(view.findAll({ type: 'Collapsible' }), [])
   // L'onglet Sessions ne lit aucune liste de configuration.
   assert.deepEqual(kinds, [])
   assert.deepEqual(view.errors, [])

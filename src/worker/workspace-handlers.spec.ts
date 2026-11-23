@@ -123,27 +123,6 @@ test('rename switches nothing', async () => {
   expect(calls).toEqual([])
 })
 
-test('key.set adds Default when there is no workspace, then replaces the active key', async () => {
-  const { handlers, workspaces, map } = setup()
-  expect((await handlers.setKey({ key: KEY_A })).ok).toBe(true)
-  expect((await workspaces.index()).entries.map((entry) => entry.name)).toEqual(['Default'])
-  expect((await handlers.setKey({ key: KEY_C })).ok).toBe(true)
-  expect(map.get('anthropic-api-key:ws_1')).toBe(KEY_C)
-  const rejected = await handlers.setKey({ key: 'plugin-test-token-QUOKKA-bad' })
-  expect(!rejected.ok && rejected.code).toBe('unauthorized')
-  expect(map.get('anthropic-api-key:ws_1')).toBe(KEY_C)
-})
-
-test('key.clear removes the active workspace and hands back the info', async () => {
-  const { handlers, workspaces, calls } = setup()
-  await handlers.setKey({ key: KEY_A })
-  calls.length = 0
-  expect(await handlers.clearKey()).toEqual(INFO)
-  expect((await workspaces.index()).entries).toEqual([])
-  expect(calls).toEqual(['store.reset', 'watcher.stop', 'pending.clear', 'poller.stop'])
-  expect(await handlers.clearKey()).toEqual(INFO)
-})
-
 test('a handler waits for the migration before reading the index', async () => {
   const map = new Map<string, string>()
   let finishMigration: () => void = () => {}

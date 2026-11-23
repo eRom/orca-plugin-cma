@@ -160,6 +160,15 @@ export function isTouched(key: string, field: string): boolean {
   return read(touchedFields)[fieldKey(key, field)] === true
 }
 
+/** Oublie toutes les saisies : celles d'un workspace visent des objets qui n'existent pas dans le suivant. */
+export function clearAllForms(): void {
+  update(formDrafts, () => ({}))
+  update(secretDrafts, () => ({}))
+  update(formConflict, () => ({}))
+  update(rawTexts, () => ({}))
+  update(touchedFields, () => ({}))
+}
+
 /** Oublie la saisie, le secret, le conflit, les textes bruts et les champs touchés de ce formulaire. */
 export function clearForm(key: string): void {
   const without = <V>(record: Record<string, V>): Record<string, V> => {

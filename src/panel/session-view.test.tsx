@@ -351,7 +351,7 @@ test('loads a restored session once a rejected key is replaced', async () => {
         infoCalls += 1
         return infoCalls === 1 ? { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null, workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] } : WITH_KEY
       },
-      'key.set': { ok: true, value: WITH_KEY },
+      'workspaces.replaceKey': { ok: true, value: WITH_KEY },
       'session.watch': (input: unknown) => {
         watched.push(input)
         return { ok: true, value: { rows: [message('m1', 'Back again')], hasEarlier: false, stream: OPEN_STREAM } }
@@ -364,9 +364,9 @@ test('loads a restored session once a rejected key is replaced', async () => {
   })
   const view = await mount(panel, { host, persisted: OPEN_S1 })
   // Clé refusée : l'accueil montre le formulaire, aucune session n'est chargée.
-  assert.ok(view.find({ label: 'API key' }))
+  assert.ok(view.find({ label: 'Replace key' }))
   assert.deepEqual(watched, [])
-  await view.type({ label: 'API key' }, 'sk-ant-fresh')
+  await view.type({ label: 'Replace key' }, 'sk-ant-fresh')
   await view.press({ role: 'button', text: 'Save key' })
   assert.deepEqual(watched, [{ sessionId: 's1' }])
   assert.deepEqual(detailed, [{ sessionId: 's1' }])

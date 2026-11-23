@@ -117,24 +117,6 @@ export function createWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     rename,
     replaceKey,
     remove,
-    activate,
-    /** Ancienne requête `key.set` (le panneau d'avant la Task 3) : crée « Default », sinon remplace la clé de l'actif. */
-    setKey: async ({ key }: { key: string }): Promise<ApiResult<WorkspaceInfo>> => {
-      await deps.ready
-      const { activeLocalId } = await workspaces.index()
-      return activeLocalId === null ? add({ name: 'Default', key }) : replaceKey({ localId: activeLocalId, key })
-    },
-    /** Ancienne requête `key.clear` : retire le workspace actif. */
-    clearKey: async (): Promise<WorkspaceInfo> => {
-      await deps.ready
-      const { activeLocalId } = await workspaces.index()
-      if (activeLocalId !== null) {
-        const result = await workspaces.remove(activeLocalId)
-        if (result.ok && result.value.activeChanged) {
-          await switchWorkspace()
-        }
-      }
-      return readInfo()
-    }
+    activate
   }
 }

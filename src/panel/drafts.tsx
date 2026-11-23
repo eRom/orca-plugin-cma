@@ -75,6 +75,11 @@ function setInfo(key: string, info: DraftInfo | null): void {
   update(draftInfos, (infos) => ({ ...infos, [key]: info }))
 }
 
+/** Oublie ce que le panneau sait des brouillons : ils viennent du workspace qu'on quitte et se relisent à l'ouverture d'une vue. */
+export function resetDraftInfos(): void {
+  set(draftInfos, {})
+}
+
 function setOpened(key: string, opened: boolean): void {
   update(draftOpened, (current) => {
     const next = { ...current }

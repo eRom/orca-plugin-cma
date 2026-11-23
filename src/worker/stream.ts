@@ -358,7 +358,7 @@ export function createWatcher(source: EventSource, sink: WatchSink, options: Wat
   }
 }
 
-/** Source réelle : chaque appel relit le client du store, qu'un `key.set` a pu remplacer. */
+/** Source réelle : chaque appel relit le client du store, qu'une bascule de workspace ou un remplacement de clé a pu remplacer. */
 export function sdkEventSource(store: ClientStore): EventSource {
   return {
     async stream(sessionId, signal) {

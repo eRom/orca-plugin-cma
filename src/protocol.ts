@@ -383,8 +383,6 @@ export type CreateFormOptions = {
 declare module 'orca' {
   interface PluginRequests {
     'workspace.info': { output: WorkspaceInfo }
-    'key.set': { input: { key: string }; output: ApiResult<WorkspaceInfo> }
-    'key.clear': { output: WorkspaceInfo }
     'workspaces.add': { input: { name: string; key: string }; output: ApiResult<WorkspaceInfo> }
     'workspaces.rename': { input: { localId: string; name: string }; output: ApiResult<WorkspaceInfo> }
     'workspaces.replaceKey': { input: { localId: string; key: string }; output: ApiResult<WorkspaceInfo> }

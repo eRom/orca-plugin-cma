@@ -1,38 +1,35 @@
-// Accueil du panneau : la section repliable « Anthropic workspace » (clé et identité), puis une barre de
+// Accueil du panneau : la section « Anthropic workspace » (liste des workspaces, bascule, clé), puis une barre de
 // cinq onglets (Sessions, Agents, Envs, Memory, Vaults) et la liste de l'onglet choisi.
 import {
-  atom,
   Badge,
   Box,
   Button,
   Callout,
-  Collapsible,
   EmptyState,
   IconButton,
   Input,
-  Link,
   List,
   ListItem,
-  plugin,
   read,
   Row,
   set,
   Spinner,
   Stack,
   Text,
-  update,
   type IconName
 } from 'orca'
 import type { ConfigKind, SessionRow } from '../protocol'
 import { formatMoney } from '../shared/money'
 import { badgeLabel, badgeTone, sortSessions } from '../shared/sessions'
 import { clipBytes } from '../shared/text'
-import { configErrors, configRows, loadConfigs, loadConfigTab, openConfig, openNewAgent, RENDER_ROW_CAP, resetConfigs } from './config-state'
-import { filterRows, restoreConfigView } from './config-views'
+import { configErrors, configRows, loadConfigs, openConfig, openNewAgent, RENDER_ROW_CAP } from './config-state'
+import { filterRows } from './config-views'
 import { openNewConfig } from './environment-form'
-import { openNewSession, restoreNewSession } from './new-session'
-import { openSession, restoreOpenSession } from './session-view'
-import { ERROR_TEXT_LIMIT_BYTES, homeFilter, homeTab, loadSessions, run, sectionsOpen, sessionRows, workspace, type HomeTab } from './state'
+import { openNewSession } from './new-session'
+import { openSession } from './session-view'
+import { ERROR_TEXT_LIMIT_BYTES, homeFilter, homeTab, loadSessions, run, sessionRows, workspace, type HomeTab } from './state'
+import { WorkspacesSection } from './workspaces'
+
 
 /** Plafonds d'un titre et d'une description de ligne : un libellé de plus de 1 Kio fait refuser le rendu. */
 const ROW_TITLE_LIMIT_BYTES = 200
@@ -49,96 +46,6 @@ const HOME_TABS: { value: HomeTab; label: string; icon: IconName }[] = [
   { value: 'sessions', label: 'Sessions', icon: 'activity' },
   ...CONFIG_TABS
 ]
-
-const keyDraft = atom('')
-const KEY_REJECTED = 'The API key was rejected (401).'
-
-async function saveKey(): Promise<void> {
-  const result = await plugin.request('key.set', { key: read(keyDraft).trim() })
-  if (result.ok) {
-    set(keyDraft, '')
-    set(workspace, result.value)
-    // Les sessions et les listes de l'ancienne clé ne valent plus rien : on relit celles de la nouvelle.
-    set(sessionRows, null)
-    resetConfigs()
-    await loadSessions()
-    // Une vue de session restée au sommet de la pile (clé absente ou refusée au démarrage) n'a jamais chargé son fil.
-    await Promise.all([restoreOpenSession(), restoreNewSession(), restoreConfigView(), loadConfigTab()])
-    return
-  }
-  // Le worker a supprimé la clé refusée ; le brouillon reste, pour être corrigé sans tout retaper.
-  if (result.code === 'unauthorized') {
-    // Le formulaire revient avec l'avis.
-    set(workspace, { hasKey: false, keyRejected: true, workspaceId: null, organizationName: null, workspaces: [] })
-    return
-  }
-  throw new Error(result.error)
-}
-
-/** Vrai après un premier appui sur `Forget key` : le second appui, confirmé, efface la clé. */
-const confirmingForget = atom(false)
-
-async function forgetKey(): Promise<void> {
-  set(confirmingForget, false)
-  set(workspace, await plugin.request('key.clear'))
-  set(sessionRows, null)
-  resetConfigs()
-}
-
-function KeyForm({ rejected }: { rejected: boolean }) {
-  return (
-    <Stack gap="sm">
-      {rejected ? <Callout tone="danger" title={KEY_REJECTED} /> : null}
-      <Callout tone="warning" title="Add your Anthropic API key">
-        <Stack gap="sm">
-          <Text muted size="sm">
-            Orca stores it encrypted in your OS keyring. Only this plugin's worker uses it.
-          </Text>
-          <Input
-            label="API key"
-            type="password"
-            placeholder="sk-ant-..."
-            value={read(keyDraft)}
-            onChange={(value) => set(keyDraft, value)}
-            onSubmit={() => run(saveKey)}
-          />
-          <Button onPress={() => run(saveKey)} disabled={!read(keyDraft).trim()}>
-            Save key
-          </Button>
-        </Stack>
-      </Callout>
-    </Stack>
-  )
-}
-
-function WorkspaceLine() {
-  const info = read(workspace)
-  const label = [info?.workspaceId, info?.organizationName].filter(Boolean).join(' · ')
-  return (
-    <Stack gap="sm">
-      <Text>{label || 'Workspace unknown'}</Text>
-      <Row gap="sm" wrap>
-        {info?.workspaceId ? (
-          <Link href={`https://platform.claude.com/workspaces/${info.workspaceId}/agents`}>Console</Link>
-        ) : null}
-        {read(confirmingForget) ? (
-          <>
-            <Button variant="solid" tone="danger" size="sm" onPress={() => run(forgetKey)}>
-              Confirm forget key
-            </Button>
-            <Button variant="ghost" size="sm" onPress={() => set(confirmingForget, false)}>
-              Cancel
-            </Button>
-          </>
-        ) : (
-          <Button variant="ghost" tone="danger" size="sm" onPress={() => set(confirmingForget, true)}>
-            Forget key
-          </Button>
-        )}
-      </Row>
-    </Stack>
-  )
-}
 
 /** Libellé du bouton « + » de chaque onglet : il nomme l'action pour les lecteurs d'écran et dans l'infobulle. */
 const NEW_LABELS: Record<ConfigKind, string> = {
@@ -310,17 +217,9 @@ export function Home() {
     return null
   }
   const needsKey = !info.hasKey || info.keyRejected
-  // La section est repliée par défaut, mais reste ouverte tant que la clé manque ou est refusée.
-  const open = needsKey || read(sectionsOpen).workspace
   return (
     <Stack gap="md">
-      <Collapsible
-        title="Anthropic workspace"
-        open={open}
-        onChange={(next) => update(sectionsOpen, (current) => ({ ...current, workspace: next }))}
-      >
-        {needsKey ? <KeyForm rejected={info.keyRejected} /> : <WorkspaceLine />}
-      </Collapsible>
+      <WorkspacesSection info={info} />
       {needsKey ? null : <HomeTabs />}
     </Stack>
   )

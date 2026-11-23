@@ -108,9 +108,6 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   orca.panels.handle('workspaces.replaceKey', workspaceHandlers.replaceKey)
   orca.panels.handle('workspaces.remove', workspaceHandlers.remove)
   orca.panels.handle('workspaces.activate', workspaceHandlers.activate)
-  // Provisoire : le panneau d'avant les workspaces parle encore `key.set` / `key.clear`.
-  orca.panels.handle('key.set', workspaceHandlers.setKey)
-  orca.panels.handle('key.clear', workspaceHandlers.clearKey)
 
   orca.panels.handle('session.watch', ({ sessionId }) => attempt(store, async () => watcher.watch(sessionId)))
 

@@ -56,9 +56,6 @@ export function popIfTop(matches: (entry: NavEntry) => boolean): boolean {
 }
 export const homeTab = atom<HomeTab>('home.tab', 'sessions', { persist: 'plugin' })
 export const homeFilter = atom('home.filter', '', { persist: 'plugin' })
-/** Seule la section « Anthropic workspace » se replie encore ; une valeur persistée plus ancienne garde des clés ignorées. */
-export const sectionsOpen = atom('home.sections', { workspace: false }, { persist: 'plugin' })
-
 /** Identité du workspace ; null tant que le worker n'a pas répondu. */
 export const workspace = atom<WorkspaceInfo | null>(null)
 
