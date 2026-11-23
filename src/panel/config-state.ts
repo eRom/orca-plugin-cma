@@ -4,6 +4,7 @@
 import { atom, plugin, read, set, update } from 'orca'
 import type { ConfigDetail, ConfigKind, ConfigRow, DraftRef, MemoryContent, MemoryStoreDetail } from '../protocol'
 import { loadDraftControls, refreshDraftsStatus, refreshDraftState } from './drafts'
+import { loadResources } from './resource-state'
 import { homeTab, loadWorkspace, nav, pushView, run, workspace } from './state'
 
 /**
@@ -30,10 +31,11 @@ export function resetConfigs(): void {
   set(agentModels, null)
 }
 
-/** Lit la liste de configuration de l'onglet d'accueil, s'il en montre une ; les sessions ont leur propre lecture. */
+/** Lit la liste de l'onglet d'accueil, s'il en montre une ; les sessions ont leur propre lecture. */
 export function loadConfigTab(): Promise<void> {
   const tab = read(homeTab)
-  return tab === 'sessions' ? Promise.resolve() : loadConfigs(tab)
+  if (tab === 'sessions') return Promise.resolve()
+  return tab === 'resources' ? loadResources() : loadConfigs(tab)
 }
 
 /**

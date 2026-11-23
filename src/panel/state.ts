@@ -22,8 +22,8 @@ export type NavEntry =
   | { view: 'newConfig'; kind: ConfigKind }
   | { view: 'credential'; vaultId: string; credentialId: string | null }
 
-/** Onglets de l'accueil : les sessions, puis les quatre types de configuration. */
-export type HomeTab = 'sessions' | 'agent' | 'environment' | 'memory_store' | 'vault'
+/** Onglets de l'accueil : les sessions, les quatre types de configuration, puis les ressources (skills et fichiers). */
+export type HomeTab = 'sessions' | 'agent' | 'environment' | 'memory_store' | 'vault' | 'resources'
 
 /** Profondeur maximale : accueil, un détail, une mémoire ouverte depuis une banque. */
 const MAX_DEPTH = 3

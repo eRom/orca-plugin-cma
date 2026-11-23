@@ -1,5 +1,5 @@
 // Accueil du panneau : la section « Workspaces » (liste des workspaces, bascule, clé), puis une barre de
-// cinq onglets (Sessions, Agents, Envs, Memory, Vaults) et la liste de l'onglet choisi.
+// six onglets (Sessions, Agents, Envs, Memory, Vaults, Resources) et la liste de l'onglet choisi.
 import {
   Badge,
   Box,
@@ -26,6 +26,8 @@ import { configErrors, configRows, loadConfigs, openConfig, openNewAgent, RENDER
 import { filterRows } from './config-views'
 import { openNewConfig } from './environment-form'
 import { openNewSession } from './new-session'
+import { loadResources } from './resource-state'
+import { ResourcesTab } from './resources'
 import { openSession } from './session-view'
 import { ERROR_TEXT_LIMIT_BYTES, filterOf, homeTab, loadSessions, run, sessionRows, setFilterOf, workspace, type HomeTab } from './state'
 import { WorkspacesSection } from './workspaces'
@@ -44,7 +46,8 @@ const CONFIG_TABS: { value: ConfigKind; label: string; noun: string; filter: str
 
 const HOME_TABS: { value: HomeTab; label: string; icon: IconName }[] = [
   { value: 'sessions', label: 'Sessions', icon: 'activity' },
-  ...CONFIG_TABS
+  ...CONFIG_TABS,
+  { value: 'resources', label: 'Resources', icon: 'package' }
 ]
 
 /** Libellé du bouton « + » de chaque onglet : il nomme l'action pour les lecteurs d'écran et dans l'infobulle. */
@@ -64,7 +67,7 @@ function openNew(kind: ConfigKind): void {
  * Le filtre de l'onglet et, à sa droite, le bouton « + » de création. Composé en natif : `SearchBar` du kit
  * dessine ses actions en `ghost sm`, trop discrètes pour la seule action de création de l'onglet.
  */
-function FilterRow({ tab, noun, newLabel, onNew }: { tab: HomeTab; noun: string; newLabel: string; onNew: () => void }) {
+function FilterRow({ tab, noun, newLabel, onNew }: { tab: HomeTab; noun: string; newLabel?: string; onNew?: () => void }) {
   return (
     <Row gap="sm" align="center">
       {[
@@ -79,9 +82,12 @@ function FilterRow({ tab, noun, newLabel, onNew }: { tab: HomeTab; noun: string;
             onChange={(value) => setFilterOf(tab, value)}
           />
         </Box>,
-        <Box key="new" shrink={false}>
-          <IconButton icon="add" label={newLabel} variant="outline" onPress={onNew} />
-        </Box>
+        // Sans création propre (l'onglet Resources a un `+` par carte), pas de bouton.
+        onNew === undefined || newLabel === undefined ? null : (
+          <Box key="new" shrink={false}>
+            <IconButton icon="add" label={newLabel} variant="outline" onPress={onNew} />
+          </Box>
+        )
       ]}
     </Row>
   )
@@ -181,10 +187,10 @@ function SessionsList() {
 function selectTab(tab: HomeTab): void {
   set(homeTab, tab)
   // Les lignes déjà lues restent affichées pendant la relecture.
-  run(() => (tab === 'sessions' ? loadSessions() : loadConfigs(tab)))
+  run(() => (tab === 'sessions' ? loadSessions() : tab === 'resources' ? loadResources() : loadConfigs(tab)))
 }
 
-/** Les cinq onglets et la liste de l'onglet choisi, sans section repliable autour. */
+/** Les six onglets et la liste de l'onglet choisi, sans section repliable autour. */
 function HomeTabs() {
   const current = read(homeTab)
   const configTab = CONFIG_TABS.find((tab) => tab.value === current)
@@ -206,7 +212,16 @@ function HomeTabs() {
           </Button>
         ))}
       </Box>
-      {configTab ? <ConfigList key={configTab.value} tab={configTab} /> : <SessionsList />}
+      {configTab ? (
+        <ConfigList key={configTab.value} tab={configTab} />
+      ) : current === 'resources' ? (
+        <Stack gap="sm">
+          <FilterRow tab="resources" noun="resources" />
+          <ResourcesTab />
+        </Stack>
+      ) : (
+        <SessionsList />
+      )}
     </Stack>
   )
 }

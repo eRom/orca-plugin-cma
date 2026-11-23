@@ -13,6 +13,7 @@ import { restoreConfigView } from './config-views'
 import { clearDraftState } from './drafts'
 import { clearAllForms } from './form-state'
 import { restoreNewSession } from './new-session'
+import { resetResources } from './resource-state'
 import { restoreOpenSession } from './session-view'
 import {
   ERROR_TEXT_LIMIT_BYTES,
@@ -83,6 +84,7 @@ export async function resetForWorkspace(): Promise<void> {
   resetSessionView(null)
   set(sessionRows, null)
   resetConfigs()
+  resetResources()
   set(homeFilters, {})
   clearAllForms()
   resetAgentForms()
@@ -96,6 +98,7 @@ export async function resetForWorkspace(): Promise<void> {
 async function reloadActive(): Promise<void> {
   set(sessionRows, null)
   resetConfigs()
+  resetResources()
   await loadSessions()
   // Une vue de session restée au sommet de la pile (clé absente ou refusée au démarrage) n'a jamais chargé son fil.
   await Promise.all([restoreOpenSession(), restoreNewSession(), restoreConfigView(), loadConfigTab()])
