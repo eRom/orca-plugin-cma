@@ -144,7 +144,7 @@ async function readDetail(client: Client, sessionId: string, idleOf: IdleLookup)
  * Une session est facturée : le SDK ne réessaie jamais seul un envoi ou une création dont la réponse
  * se perd (un nouvel essai après un délai dépassé dupliquerait le message ou la session).
  */
-const NO_RETRY = { maxRetries: 0 } as const
+export const NO_RETRY = { maxRetries: 0 } as const
 
 /**
  * Une création abandonne bien avant que le panneau cesse d'attendre (SESSION_CREATE_WAIT_MS) : sinon il
@@ -168,7 +168,7 @@ export const CONFIRM_UNCONFIRMED = 'Your answer may have been sent: check the th
  * 1.8.0 n'enveloppe en `APIConnectionError` que les échecs avant les en-têtes, une coupure pendant le corps
  * remonte brute (`TypeError`, `DOMException`). Le doute devient le message « non confirmé », la cause est gardée.
  */
-function unconfirmedUnlessAnswered(error: unknown, message: string): unknown {
+export function unconfirmedUnlessAnswered(error: unknown, message: string): unknown {
   return error instanceof Anthropic.APIError && typeof error.status === 'number'
     ? error
     : new Error(message, { cause: error })

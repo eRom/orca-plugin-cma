@@ -11,6 +11,7 @@ import { createEditorHost } from './worker/editor-host'
 import { createMemoryAdapter, createMemoryRename, releaseDeletedDrafts } from './worker/memory-drafts'
 import { createFilePicker, createMemoryUploads, runOsascript } from './worker/memory-uploads'
 import { createPendingWrites } from './worker/pending-writes'
+import { createResourceHandlers } from './worker/resources'
 import { createSessionHandlers } from './worker/session-actions'
 import { createPoller, sdkPollSource, thenSettleSessions } from './worker/session-poll'
 import { createWatcher, sdkEventSource } from './worker/stream'
@@ -211,7 +212,27 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   })
   // Le choix d'un fichier et l'envoi groupé de mémoires : le contenu des fichiers reste dans le worker.
   orca.panels.handle('file.pick', createFilePicker({ platform: process.platform, run: runOsascript }))
-  orca.panels.handle('memory.stageUploads', createMemoryUploads(store, pendingWrites, (message) => orca.log(message)))
+  // Les skills et les fichiers de l'espace : listes, envois (le contenu est lu ici) et suppressions.
+  const resources = createResourceHandlers(store)
+  orca.panels.handle(
+    'skills.pickFolder',
+    createFilePicker(
+      { platform: process.platform, run: runOsascript },
+      { kind: 'folder', prompt: 'Choose a skill folder (it must contain SKILL.md)' }
+    )
+  )
+  orca.panels.handle(
+    'files.pickFile',
+    createFilePicker({ platform: process.platform, run: runOsascript }, { kind: 'file', prompt: 'Choose a file to upload' })
+  )
+  orca.panels.handle('skills.list', resources.listSkills)
+  orca.panels.handle('skills.upload', resources.uploadSkill)
+  orca.panels.handle('skills.uploadVersion', resources.uploadSkillVersion)
+  orca.panels.handle('skills.delete', resources.deleteSkill)
+  orca.panels.handle('files.list', resources.listFiles)
+  orca.panels.handle('files.upload', resources.uploadFile)
+  orca.panels.handle('files.delete', resources.deleteFile)
+  orca.panels.handle('memory.stageUploads',createMemoryUploads(store, pendingWrites, (message) => orca.log(message)))
   orca.panels.handle('memory.rename', createMemoryRename(store, () => drafts, (message) => orca.log(message)))
   // Un agent archivé n'a plus de brouillon propre à garder : son fichier et son nom se libèrent.
   const archiveThenRelease = thenRefreshSessions(writes.archive)
