@@ -30,17 +30,17 @@ export function resetConfigs(): void {
   set(agentModels, null)
 }
 
-/**
- * Lit la liste d'un type. Sans clé utilisable il n'y a rien à lire ; un 401 est l'état « clé
- * refusée » : on relit l'identité du workspace, qui remontre le formulaire. Les lignes déjà lues
- * restent affichées pendant la relecture.
- */
 /** Lit la liste de configuration de l'onglet d'accueil, s'il en montre une ; les sessions ont leur propre lecture. */
 export function loadConfigTab(): Promise<void> {
   const tab = read(homeTab)
   return tab === 'sessions' ? Promise.resolve() : loadConfigs(tab)
 }
 
+/**
+ * Lit la liste d'un type. Sans clé utilisable il n'y a rien à lire ; un 401 est l'état « clé
+ * refusée » : on relit l'identité du workspace, qui remontre le formulaire. Les lignes déjà lues
+ * restent affichées pendant la relecture.
+ */
 export async function loadConfigs(kind: ConfigKind): Promise<void> {
   const info = read(workspace)
   if (!info?.hasKey || info.keyRejected) return

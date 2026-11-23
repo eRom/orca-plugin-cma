@@ -152,6 +152,30 @@ test('counts approvals across sessions', async () => {
   h.poller.stop()
 })
 
+test('a restart empties the status bar even when its first turn fails without a 401', async () => {
+  const h = harness({
+    sessions: [fakeSession({ id: 'sesn_a' })],
+    idle: { sesn_a: { stop: { type: 'requires_action', event_ids: ['x'] }, blocking: [ask] } }
+  })
+  h.poller.start()
+  await settle()
+  expect(h.bars.at(-1)?.text).toBe('1 approval')
+  // La bascule vers un autre workspace dont le premier tour échoue (réseau, 5xx) : la barre ne garde pas l'ancien compte.
+  h.state.listError = new Error('network down')
+  h.poller.start()
+  await settle()
+  expect(h.bars.at(-1)?.text).toBe('Managed')
+  h.poller.stop()
+})
+
+test('the first start does not touch the status bar before its first turn', async () => {
+  const h = harness({ sessions: [], listError: new Error('network down') })
+  h.poller.start()
+  await settle()
+  expect(h.bars).toEqual([])
+  h.poller.stop()
+})
+
 test('only asks events for idle sessions, and only when updated_at changed', async () => {
   const h = harness({
     sessions: [

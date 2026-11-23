@@ -11,6 +11,8 @@ export type WorkspaceHandlerDeps = {
   poller: { start(): void; stop(): void }
   /** L'état à rendre au panneau après un changement (`workspaceInfo` du magasin). */
   info: () => Promise<WorkspaceInfo>
+  /** Dit à tous les panneaux que l'actif a changé (`workspace.changed`) : un panneau qui n'a pas fait la demande l'apprend ainsi. */
+  announce: (info: WorkspaceInfo) => void
   log: (message: string) => void
   /** Résolue quand la migration de l'ancienne clé est faite : aucun gestionnaire ne lit l'index avant. */
   ready: Promise<void>
@@ -37,15 +39,15 @@ export function createWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
-   * L'état à rendre après une mutation réussie. Si sa lecture échoue (réseau, 5xx), la mutation a quand même eu
-   * lieu (et la bascule aussi) : on rend un état dégradé tiré de l'index, jamais un échec que le panneau lirait
-   * comme « rien n'a changé ».
+   * L'état à rendre au panneau, après une mutation réussie comme à sa lecture. Si la lecture échoue (réseau, 429,
+   * 5xx), on rend un état dégradé tiré de l'index, jamais un échec : après une mutation, le panneau le lirait comme
+   * « rien n'a changé » ; à la lecture, il resterait muet, sans liste pour basculer ni remplacer la clé.
    */
   async function readInfo(): Promise<WorkspaceInfo> {
     try {
       return await deps.info()
     } catch (error) {
-      deps.log(`workspace info unreadable after a change: ${error instanceof Error ? error.message : String(error)}`)
+      deps.log(`workspace info unreadable, answered from the index: ${error instanceof Error ? error.message : String(error)}`)
       const index = await workspaces.index()
       const active = index.entries.find((entry) => entry.localId === index.activeLocalId)
       return {
@@ -58,9 +60,19 @@ export function createWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     }
   }
 
-  /** Une mutation réussie rend l'état frais du panneau ; une mutation refusée rend son erreur. */
-  async function infoAfter(result: ApiResult<unknown>): Promise<ApiResult<WorkspaceInfo>> {
-    return result.ok ? { ok: true, value: await readInfo() } : result
+  /**
+   * Une mutation réussie rend l'état frais du panneau ; une mutation refusée rend son erreur. Quand elle a changé
+   * l'actif (`switched`), tous les panneaux en sont avertis avec ce même état.
+   */
+  async function infoAfter(result: ApiResult<unknown>, switched = false): Promise<ApiResult<WorkspaceInfo>> {
+    if (!result.ok) {
+      return result
+    }
+    const info = await readInfo()
+    if (switched) {
+      deps.announce(info)
+    }
+    return { ok: true, value: info }
   }
 
   async function add({ name, key }: { name: string; key: string }): Promise<ApiResult<WorkspaceInfo>> {
@@ -68,10 +80,11 @@ export function createWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     const before = await workspaces.index()
     const result = await workspaces.add(name, key)
     // Le premier workspace ajouté devient actif : le sondeur n'avait rien à suivre jusque-là.
-    if (result.ok && before.activeLocalId === null) {
+    const switched = result.ok && before.activeLocalId === null
+    if (switched) {
       await switchWorkspace()
     }
-    return infoAfter(result)
+    return infoAfter(result, switched)
   }
 
   async function rename({ localId, name }: { localId: string; name: string }): Promise<ApiResult<WorkspaceInfo>> {
@@ -93,25 +106,27 @@ export function createWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   async function remove({ localId }: { localId: string }): Promise<ApiResult<WorkspaceInfo>> {
     await deps.ready
     const result = await workspaces.remove(localId)
-    if (result.ok && result.value.activeChanged) {
+    const switched = result.ok && result.value.activeChanged
+    if (switched) {
       await switchWorkspace()
     }
-    return infoAfter(result)
+    return infoAfter(result, switched)
   }
 
   async function activate({ localId }: { localId: string }): Promise<ApiResult<WorkspaceInfo>> {
     await deps.ready
     const result = await workspaces.activate(localId)
-    if (result.ok && result.value.activeChanged) {
+    const switched = result.ok && result.value.activeChanged
+    if (switched) {
       await switchWorkspace()
     }
-    return infoAfter(result)
+    return infoAfter(result, switched)
   }
 
   return {
     info: async (): Promise<WorkspaceInfo> => {
       await deps.ready
-      return deps.info()
+      return readInfo()
     },
     add,
     rename,

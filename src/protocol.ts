@@ -437,6 +437,8 @@ declare module 'orca' {
   }
   interface PluginPanelEvents {
     'sessions.changed': { rows: SessionRow[] }
+    /** Le workspace actif a changé (bascule, retrait de l'actif, premier ajout) : l'état à jour, pour les panneaux qui n'ont pas fait la demande. */
+    'workspace.changed': WorkspaceInfo
     'stream.state': StreamState
     /** Lignes nouvelles ou modifiées (à fusionner par `id`) et état complet des aperçus. */
     'session.thread': {

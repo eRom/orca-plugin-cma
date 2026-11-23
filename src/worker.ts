@@ -82,7 +82,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     log: (message) => orca.log(message)
   })
 
-  // Les erreurs autres qu'un 401 sont levées : on les rend en texte lisible pour le panneau.
+  // Les erreurs autres qu'un 401 sont levées : on les rend en texte lisible ; le gestionnaire les journalise et répond d'après l'index.
   async function readableWorkspaceInfo(): Promise<WorkspaceInfo> {
     try {
       return await workspaceInfo(store, workspaces)
@@ -99,6 +99,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     pendingWrites,
     poller,
     info: readableWorkspaceInfo,
+    announce: (info) => orca.panels.post('workspace.changed', info),
     log: (message) => orca.log(message),
     ready: migrated
   })

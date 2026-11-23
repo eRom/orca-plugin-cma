@@ -13,6 +13,9 @@ function setup(info: () => Promise<WorkspaceInfo> = async () => INFO) {
   const logs: string[] = []
   const map = new Map<string, string>()
   const calls: string[] = []
+  const announced: WorkspaceInfo[] = []
+  // Quand vrai, `delete` lève (l'hôte refuse l'effacement d'un secret).
+  const fail = { delete: false }
   let counter = 0
   const table: Record<string, string> = { [KEY_A]: 'wrkspc_a', [KEY_B]: 'wrkspc_b', [KEY_C]: 'wrkspc_a' }
   const workspaces = createWorkspaces({
@@ -22,12 +25,15 @@ function setup(info: () => Promise<WorkspaceInfo> = async () => INFO) {
         map.set(name, value)
       },
       delete: async (name: string) => {
+        if (fail.delete) {
+          throw new Error('host refused to delete')
+        }
         map.delete(name)
       }
     } as never,
     probe: async (key) => (table[key] ? { workspaceId: table[key] } : 'rejected'),
     newId: () => `ws_${++counter}`,
-    log: () => {}
+    log: (message) => logs.push(message)
   })
   const handlers = createWorkspaceHandlers({
     workspaces,
@@ -36,10 +42,11 @@ function setup(info: () => Promise<WorkspaceInfo> = async () => INFO) {
     pendingWrites: { clear: () => calls.push('pending.clear') },
     poller: { start: () => calls.push('poller.start'), stop: () => calls.push('poller.stop') },
     info,
+    announce: (value) => announced.push(value),
     log: (message) => logs.push(message),
     ready: Promise.resolve()
   })
-  return { handlers, workspaces, calls, map, logs }
+  return { handlers, workspaces, calls, map, logs, announced, fail }
 }
 
 const SWITCH = ['store.reset', 'watcher.stop', 'pending.clear', 'poller.start']
@@ -146,6 +153,7 @@ test('a handler waits for the migration before reading the index', async () => {
       infoCalls += 1
       return INFO
     },
+    announce: () => {},
     log: () => {},
     ready
   })
@@ -184,7 +192,7 @@ test('activate still succeeds with a degraded info when reading the info fails',
       ]
     }
   })
-  expect(logs).toEqual(['workspace info unreadable after a change: Could not reach api.anthropic.com.'])
+  expect(logs).toEqual(['workspace info unreadable, answered from the index: Could not reach api.anthropic.com.'])
 })
 
 test('add with an unreadable info succeeds, so a retry is not answered as a duplicate', async () => {
@@ -202,4 +210,57 @@ test('a refused mutation still returns its own error when info would fail', asyn
   })
   const result = await handlers.activate({ localId: 'ws_9' })
   expect(!result.ok && result.code).toBe('other')
+})
+
+test('removing the active workspace still switches when the key secret cannot be deleted', async () => {
+  const { handlers, calls, workspaces, fail, logs } = setup()
+  await handlers.add({ name: 'First', key: KEY_A })
+  await handlers.add({ name: 'Second', key: KEY_B })
+  calls.length = 0
+  fail.delete = true
+  const result = await handlers.remove({ localId: 'ws_1' })
+  expect(result.ok).toBe(true)
+  // Sans la bascule, le worker garderait le client, le sondeur et les écritures de A alors que l'index dit B.
+  expect(calls).toEqual(SWITCH)
+  expect((await workspaces.index()).activeLocalId).toBe('ws_2')
+  expect(logs.join('\n').includes(KEY_A)).toBe(false)
+})
+
+test('workspace.info never throws: a network error answers from the index with the active row marked', async () => {
+  const { handlers, logs } = setup(async () => {
+    throw new Error('Could not reach api.anthropic.com.')
+  })
+  await handlers.add({ name: 'First', key: KEY_A })
+  await handlers.add({ name: 'Second', key: KEY_B })
+  await handlers.activate({ localId: 'ws_2' })
+  logs.length = 0
+  expect(await handlers.info()).toEqual({
+    hasKey: true,
+    keyRejected: false,
+    workspaceId: 'wrkspc_b',
+    organizationName: null,
+    workspaces: [
+      { localId: 'ws_1', name: 'First', workspaceId: 'wrkspc_a', active: false },
+      { localId: 'ws_2', name: 'Second', workspaceId: 'wrkspc_b', active: true }
+    ]
+  })
+  expect(logs).toEqual(['workspace info unreadable, answered from the index: Could not reach api.anthropic.com.'])
+})
+
+test('a switch announces the fresh info to every panel, other changes announce nothing', async () => {
+  const { handlers, announced } = setup()
+  await handlers.add({ name: 'First', key: KEY_A })
+  expect(announced).toEqual([INFO])
+  announced.length = 0
+  await handlers.add({ name: 'Second', key: KEY_B })
+  await handlers.rename({ localId: 'ws_2', name: 'Renamed' })
+  await handlers.replaceKey({ localId: 'ws_1', key: KEY_C })
+  await handlers.activate({ localId: 'ws_1' })
+  expect((await handlers.activate({ localId: 'ws_9' })).ok).toBe(false)
+  expect(announced).toEqual([])
+  await handlers.activate({ localId: 'ws_2' })
+  expect(announced).toEqual([INFO])
+  announced.length = 0
+  await handlers.remove({ localId: 'ws_2' })
+  expect(announced).toEqual([INFO])
 })

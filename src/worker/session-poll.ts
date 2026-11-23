@@ -229,6 +229,11 @@ export function createPoller(deps: PollerDeps): Poller {
   return {
     start() {
       halt()
+      // Un redémarrage (bascule de workspace, clé remplacée) : la barre ne garde pas les accords de l'ancien actif si le
+      // premier tour du nouveau échoue sans 401. Rien n'est envoyé tant qu'aucune barre n'est partie.
+      if (barSent !== null) {
+        sendBar(statusBarText([]))
+      }
       running = true
       loop()
     },

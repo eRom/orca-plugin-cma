@@ -124,6 +124,31 @@ export function createWorkspaces(deps: WorkspacesDeps): Workspaces {
     return { workspaceId: probed.workspaceId }
   }
 
+  /**
+   * Efface l'ancien secret une fois la migration écrite. Un échec se note (sans la clé) mais ne défait rien : la clé
+   * vit déjà dans son secret propre, et le démarrage suivant retente l'effacement.
+   */
+  async function deleteLegacy(): Promise<void> {
+    try {
+      await secrets.delete(LEGACY_SECRET)
+    } catch {
+      log('legacy key secret could not be deleted after the migration: retried at the next start')
+    }
+  }
+
+  /**
+   * Un index existe déjà : si l'ancien secret est encore là après une migration réussie, on le retente. Rien n'est
+   * effacé tant que l'index est illisible ou que l'entrée migrée n'a plus sa clé : l'ancien secret serait alors le seul.
+   */
+  async function retryLegacyDeletion(rawIndex: string): Promise<void> {
+    const parsed = parseIndex(rawIndex)
+    const migrated = parsed?.migratedLocalId
+    if (!migrated || !(await secrets.get(LEGACY_SECRET)) || !(await secrets.get(keySecret(migrated)))) {
+      return
+    }
+    await deleteLegacy()
+  }
+
   const holderOf = (index: WorkspaceIndex, workspaceId: string, except?: string) =>
     index.entries.find((entry) => entry.workspaceId === workspaceId && entry.localId !== except)
 
@@ -140,7 +165,9 @@ export function createWorkspaces(deps: WorkspacesDeps): Workspaces {
 
     migrate() {
       return serialized(async () => {
-        if ((await secrets.get(INDEX_SECRET)) != null) {
+        const existing = await secrets.get(INDEX_SECRET)
+        if (existing != null) {
+          await retryLegacyDeletion(existing)
           return
         }
         const legacy = await secrets.get(LEGACY_SECRET)
@@ -162,7 +189,7 @@ export function createWorkspaces(deps: WorkspacesDeps): Workspaces {
           activeLocalId: localId,
           migratedLocalId: localId
         })
-        await secrets.delete(LEGACY_SECRET)
+        await deleteLegacy()
         log('migrated the legacy API key to the workspace Default')
       })
     },
@@ -266,7 +293,12 @@ export function createWorkspaces(deps: WorkspacesDeps): Workspaces {
           entries,
           activeLocalId: activeChanged ? (entries[0]?.localId ?? null) : index.activeLocalId
         })
-        await secrets.delete(keySecret(localId))
+        // Un effacement refusé laisse un secret inerte : il se note (sans la clé) et la bascule a quand même lieu.
+        try {
+          await secrets.delete(keySecret(localId))
+        } catch {
+          log(`key secret of ${localId} could not be deleted: left in place, unused`)
+        }
         return { ok: true, value: { activeChanged } }
       })
     },

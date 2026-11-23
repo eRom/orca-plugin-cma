@@ -157,8 +157,8 @@ export function failure(error: unknown): { ok: false; error: string; code: ApiEr
 /**
  * Identité du workspace de la clé. Seul l'appel de liste des agents décide : un 401 est l'état
  * « clé refusée », toute autre erreur est levée à l'appelant. L'id vient de l'en-tête
- * `anthropic-workspace-id` de cet appel ; le nom de l'organisation est un complément, et son
- * échec (403, 5xx, réseau) ne fait pas perdre le reste. Les champs décrivent l'actif ; `workspaces`
+ * `anthropic-workspace-id` de cet appel ; aucun autre appel n'est fait (le nom de l'organisation,
+ * que rien ne lit, n'est plus demandé). Les champs décrivent l'actif ; `workspaces`
  * liste tous ceux qui sont associés. Un actif dont l'id était inconnu (migration) l'apprend ici.
  */
 export async function workspaceInfo(store: ClientStore, workspaces: Workspaces): Promise<WorkspaceInfo> {
@@ -176,17 +176,13 @@ export async function workspaceInfo(store: ClientStore, workspaces: Workspaces):
   try {
     const client = await store.get()
     const call = await client.beta.agents.list({ limit: 1 }).withResponse()
-    const organizationName = await client.beta.organization.retrieve().then(
-      (organization) => organization.name,
-      () => null
-    )
     const workspaceId = call.response.headers.get('anthropic-workspace-id')
     const active = index.entries.find((entry) => entry.localId === index.activeLocalId)
     if (active && active.workspaceId === null && workspaceId) {
       await workspaces.noteWorkspaceId(active.localId, workspaceId)
       learned = workspaceId
     }
-    return { hasKey: true, keyRejected: false, workspaceId, organizationName, workspaces: rows() }
+    return { hasKey: true, keyRejected: false, workspaceId, organizationName: null, workspaces: rows() }
   } catch (error) {
     if (error instanceof Anthropic.AuthenticationError) {
       return { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null, workspaces: rows() }
@@ -196,12 +192,18 @@ export async function workspaceInfo(store: ClientStore, workspaces: Workspaces):
 }
 
 /**
+ * Le client des sondes (migration, ajout, remplacement de clé) : une clé candidate ne mérite ni les deux
+ * relances ni les dix minutes par défaut du SDK, une saisie attend la réponse.
+ */
+export const createProbeClient = (apiKey: string): Anthropic => new Anthropic({ apiKey, timeout: 10_000, maxRetries: 0 })
+
+/**
  * Lit le workspace d'une clé candidate par l'appel de liste des agents (en-tête
  * `anthropic-workspace-id`). Un 401 se dit `'rejected'` ; toute autre erreur est levée.
  */
 export async function probeKey(
   key: string,
-  makeClient: (apiKey: string) => Anthropic = (apiKey) => new Anthropic({ apiKey })
+  makeClient: (apiKey: string) => Anthropic = createProbeClient
 ): Promise<{ workspaceId: string | null } | 'rejected'> {
   try {
     const call = await makeClient(key).beta.agents.list({ limit: 1 }).withResponse()

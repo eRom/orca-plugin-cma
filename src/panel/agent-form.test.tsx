@@ -795,3 +795,35 @@ test('Generate with Claude is disabled, explained, and presses nothing', async (
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
+
+test('a workspace switch forgets the new agent flow and the MCP server form of the previous workspace', async () => {
+  const other = {
+    ...WITH_KEY,
+    workspaces: [
+      { localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: false },
+      { localId: 'ws_2', name: 'Other', workspaceId: 'wrkspc_y', active: true }
+    ]
+  }
+  const host = mockHost({
+    requests: requests(newCalls(), {
+      'agent.prepareForm': { ok: false, code: 'other', error: 'Plugin test refusal under the first workspace.' }
+    })
+  })
+  const view = await mount(panel, { host, persisted: { plugin: { 'home.tab': 'agent', nav: [{ view: 'home' }, { view: 'newConfig', kind: 'agent' }] } } })
+  await view.type({ label: 'Name' }, 'plugin-test-agent')
+  await view.select({ label: 'Model' }, 'claude-sonnet-5')
+  await view.press({ role: 'button', text: 'Create' })
+  assert.ok(view.find({ type: 'Callout', text: /Plugin test refusal/ }))
+  await view.press({ role: 'button', text: 'Add MCP server' })
+  assert.ok(view.find({ label: 'URL' }))
+  // Un autre panneau a basculé : celui-ci revient à l'accueil du nouvel actif.
+  await view.post('workspace.changed', other)
+  assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }])
+  await view.press({ type: 'IconButton', label: 'New agent' })
+  assert.equal(view.find({ type: 'Callout', text: /Plugin test refusal/ }), null)
+  assert.equal(view.find({ label: 'URL' }), null)
+  assert.equal(view.valueOf({ label: 'Name' }), '')
+  assert.ok(view.find({ role: 'button', text: 'Add MCP server' }))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})

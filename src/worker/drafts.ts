@@ -376,9 +376,14 @@ export function createDrafts(deps: {
     if (!slot) {
       return { file, known: undefined, replaced: false }
     }
-    // Le brouillon d'un autre workspace n'est jamais repris ni remplacé, propre ou non.
     if (slot.entry.workspace !== active) {
-      return NAME_TAKEN
+      // Le brouillon d'un workspace encore dans l'index n'est jamais repris ni remplacé, propre ou non. Celui d'un
+      // workspace retiré n'a plus de maître (retirer puis ré-ajouter le même workspace donne un autre `localId`) :
+      // l'actif l'adopte tel quel, fichier et travail non appliqué gardés, puis le traitement ordinaire suit.
+      if ((await deps.workspace.nameOf(slot.entry.workspace)) !== null) {
+        return NAME_TAKEN
+      }
+      slot.entry.workspace = active
     }
     if (sameRef(slot.entry.ref, ref)) {
       return { file: slot.key, known: slot.entry, replaced: false }

@@ -166,6 +166,15 @@ export function leaveAgentView(): void {
   resetAddServer()
 }
 
+/**
+ * Le workspace actif a changé : tous les flux (même un envoi en vol, dont la préparation est jetée côté worker avec
+ * les écritures en attente) et le formulaire d'ajout d'un serveur appartenaient à l'ancien.
+ */
+export function resetAgentForms(): void {
+  set(flows, {})
+  resetAddServer()
+}
+
 /** Oublie la saisie gardée de ce formulaire, et le résultat ou l'avis affiché. */
 function discardForm(key: string): void {
   clearForm(key)

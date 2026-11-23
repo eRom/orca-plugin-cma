@@ -809,3 +809,49 @@ test('without an active workspace, open, discard and prepare answer as without a
   expect(existsSync(join(folder, FILE))).toBe(true)
   cleanup()
 })
+
+test('a draft of a workspace removed from the index is adopted by the active one when its agent is opened again', async () => {
+  const { drafts, folder, space } = setup()
+  await drafts.open(AGENT)
+  writeFileSync(join(folder, FILE), 'name: My edit\n')
+  // Le workspace est retiré puis ré-ajouté : l'ancien `localId` n'est plus dans l'index, l'actif en a un nouveau.
+  delete space.state.names['ws-a']
+  space.state.active = 'ws-new'
+  space.state.names['ws-new'] = 'Default'
+  const reopened = await drafts.open(AGENT)
+  expect(reopened.ok).toBe(true)
+  expect(reopened.ok && reopened.value.file).toBe(FILE)
+  expect(reopened.ok && reopened.value.unapplied).toBe(true)
+  // Le travail non appliqué est intact, et l'entrée appartient maintenant à l'actif.
+  expect(readFileSync(join(folder, FILE), 'utf8')).toBe('name: My edit\n')
+  expect(registryOf(folder).entries[FILE]?.workspace).toBe('ws-new')
+  const state = await drafts.state(AGENT)
+  expect(state.ok && state.value?.unapplied).toBe(true)
+  cleanup()
+})
+
+test('an orphan draft is adopted at its file name by another agent only when it is clean', async () => {
+  const other: AgentRef = { kind: 'agent', agentId: 'agent_other' }
+  const { drafts, folder, space } = setup({ file: () => 'agents/shared.yaml' })
+  await drafts.open(AGENT)
+  delete space.state.names['ws-a']
+  space.state.active = 'ws-new'
+  space.state.names['ws-new'] = 'Default'
+  // Propre : le brouillon périmé est remplacé comme n'importe quel brouillon propre de l'actif.
+  expect((await drafts.open(other)).ok).toBe(true)
+  expect(registryOf(folder).entries['agents/shared.yaml']?.ref).toEqual(other)
+  cleanup()
+})
+
+test('an orphan draft with unapplied work still protects its file name from another agent', async () => {
+  const other: AgentRef = { kind: 'agent', agentId: 'agent_other' }
+  const { drafts, folder, space } = setup({ file: () => 'agents/shared.yaml' })
+  await drafts.open(AGENT)
+  writeFileSync(join(folder, 'agents/shared.yaml'), 'name: My edit\n')
+  delete space.state.names['ws-a']
+  space.state.active = 'ws-new'
+  space.state.names['ws-new'] = 'Default'
+  expect(await drafts.open(other)).toEqual({ ok: false, code: 'other', error: 'Another draft already uses this file name.' })
+  expect(readFileSync(join(folder, 'agents/shared.yaml'), 'utf8')).toBe('name: My edit\n')
+  cleanup()
+})

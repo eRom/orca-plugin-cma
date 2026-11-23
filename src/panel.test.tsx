@@ -280,3 +280,62 @@ test('filters the sessions by title, id or agent, and says so when nothing match
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
+
+const TWO_WORKSPACES = (activeLocalId: string) => ({
+  hasKey: true,
+  keyRejected: false,
+  workspaceId: activeLocalId === 'ws_1' ? 'wrkspc_x' : 'wrkspc_y',
+  organizationName: null,
+  workspaces: [
+    { localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: activeLocalId === 'ws_1' },
+    { localId: 'ws_2', name: 'Other', workspaceId: 'wrkspc_y', active: activeLocalId === 'ws_2' }
+  ]
+})
+
+test('a workspace switched from another panel brings this one back home on the new workspace', async () => {
+  let reads = 0
+  const host = mockHost({
+    requests: {
+      'workspace.info': TWO_WORKSPACES('ws_1'),
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'configs.list': { ok: true, value: [] },
+      'sessions.list': () => {
+        reads += 1
+        return { ok: true, value: [sessionRow({ id: reads === 1 ? 'sesn_a' : 'sesn_b', title: reads === 1 ? 'Of workspace one' : 'Of workspace two' })] }
+      }
+    }
+  })
+  const view = await mount(panel, { host, persisted: { plugin: { nav: [{ view: 'home' }, { view: 'newSession' }] } } })
+  assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'newSession' }])
+  const before = reads
+  await view.post('workspace.changed', TWO_WORKSPACES('ws_2'))
+  assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }])
+  // Les listes sont relues pour le nouvel actif.
+  assert.ok(reads > before)
+  assert.ok(view.find({ text: /Of workspace two/ }))
+  assert.equal(view.find({ text: /Of workspace one/ }), null)
+  assert.equal(view.findAll({ type: 'Badge', text: 'Active' }).length, 1)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('a workspace.changed that keeps the same active workspace leaves the view alone', async () => {
+  let reads = 0
+  const host = mockHost({
+    requests: {
+      'workspace.info': TWO_WORKSPACES('ws_1'),
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'configs.list': { ok: true, value: [] },
+      'sessions.list': () => {
+        reads += 1
+        return { ok: true, value: [] }
+      }
+    }
+  })
+  const view = await mount(panel, { host, persisted: { plugin: { nav: [{ view: 'home' }, { view: 'newSession' }] } } })
+  const before = reads
+  await view.post('workspace.changed', TWO_WORKSPACES('ws_1'))
+  assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'newSession' }])
+  assert.equal(reads, before)
+  await view.unmount()
+})

@@ -12,6 +12,7 @@ import { MemoryStoreFormView } from './panel/memory-forms'
 import { NewSessionView, restoreNewSession } from './panel/new-session'
 import { restoreOpenSession, SessionView, sessionSubscriptions } from './panel/session-view'
 import { CredentialFormView, VaultFormView } from './panel/vault-forms'
+import { adopt } from './panel/workspaces'
 import { clipBytes } from './shared/text'
 import {
   ERROR_TEXT_LIMIT_BYTES,
@@ -37,6 +38,10 @@ export function setup(ctx: PanelContext): void {
       if (rows.length === 0 && info?.hasKey && !info.keyRejected) {
         run(loadWorkspace)
       }
+    }),
+    // Un autre panneau a changé l'actif : celui-ci revient à l'accueil du nouveau, sans attendre son prochain relevé.
+    plugin.on('workspace.changed', (info) => {
+      run(() => adopt(info))
     }),
     ...sessionSubscriptions()
   )

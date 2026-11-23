@@ -8,6 +8,8 @@ function setup(probe: Probe = async () => ({ workspaceId: 'wrkspc_a' })) {
   const map = new Map<string, string>()
   const probed: string[] = []
   const logs: string[] = []
+  // Quand vrai, `delete` lève (l'hôte refuse l'effacement) ; le secret reste en place.
+  const fail = { delete: false }
   let counter = 0
   const workspaces = createWorkspaces({
     secrets: {
@@ -16,6 +18,9 @@ function setup(probe: Probe = async () => ({ workspaceId: 'wrkspc_a' })) {
         map.set(name, value)
       },
       delete: async (name: string) => {
+        if (fail.delete) {
+          throw new Error(`host refused to delete ${name} (${map.get(name)})`)
+        }
         map.delete(name)
       }
     } as never,
@@ -26,7 +31,7 @@ function setup(probe: Probe = async () => ({ workspaceId: 'wrkspc_a' })) {
     newId: () => `ws_${++counter}`,
     log: (message) => logs.push(message)
   })
-  return { map, workspaces, probed, logs }
+  return { map, workspaces, probed, logs, fail }
 }
 
 // Un probe qui rend le workspace propre à chaque clé de test.
@@ -76,6 +81,33 @@ test('migrate is a no-op once an index exists', async () => {
   expect(probed).toEqual([])
   expect(map.get(LEGACY_SECRET)).toBe(KEY_A)
   expect((await workspaces.index()).entries).toEqual([])
+})
+
+test('a legacy secret that cannot be deleted does not fail the migration, and is deleted at the next start', async () => {
+  const { map, workspaces, fail, logs } = setup(async () => ({ workspaceId: 'wrkspc_a' }))
+  map.set(LEGACY_SECRET, KEY_A)
+  fail.delete = true
+  await workspaces.migrate()
+  const index = await workspaces.index()
+  expect(index.entries.map((entry) => entry.name)).toEqual(['Default'])
+  expect(map.get(LEGACY_SECRET)).toBe(KEY_A)
+  expect(logs.some((line) => line.includes('migration failed'))).toBe(false)
+  expect(logs.some((line) => line.includes('legacy key secret could not be deleted'))).toBe(true)
+  // Aucune clé dans le journal, même celle que le message de l'hôte reprendrait.
+  expect(logs.join('\n').includes(KEY_A)).toBe(false)
+  // Le démarrage suivant : l'index existe, l'ancien secret est encore là, l'effacement est retenté.
+  fail.delete = false
+  await workspaces.migrate()
+  expect(map.get(LEGACY_SECRET)).toBe(undefined)
+  expect((await workspaces.index()).entries.length).toBe(1)
+})
+
+test('a leftover legacy secret is kept when the index is unreadable or holds no migrated entry', async () => {
+  const { map, workspaces } = setup()
+  map.set(LEGACY_SECRET, KEY_A)
+  map.set(INDEX_SECRET, 'not json')
+  await workspaces.migrate()
+  expect(map.get(LEGACY_SECRET)).toBe(KEY_A)
 })
 
 test('migrate does nothing without a legacy key', async () => {
@@ -235,6 +267,21 @@ test('removing the active entry activates the first remaining one and deletes it
   expect(index.entries.map((entry) => entry.localId)).toEqual(['ws_2'])
   expect(map.get(keySecret('ws_1'))).toBe(undefined)
   expect(map.get(keySecret('ws_2'))).toBe(KEY_B)
+})
+
+test('a key secret that cannot be deleted does not fail the removal: the index is already updated, the failure is logged without the key', async () => {
+  const { map, workspaces, fail, logs } = setup(byKey({ [KEY_A]: 'wrkspc_a', [KEY_B]: 'wrkspc_b' }))
+  await workspaces.add('First', KEY_A)
+  await workspaces.add('Second', KEY_B)
+  fail.delete = true
+  expect(await workspaces.remove('ws_1')).toEqual({ ok: true, value: { activeChanged: true } })
+  const index = await workspaces.index()
+  expect(index.activeLocalId).toBe('ws_2')
+  expect(index.entries.map((entry) => entry.localId)).toEqual(['ws_2'])
+  expect(logs.some((line) => line.includes('could not be deleted'))).toBe(true)
+  expect(logs.join('\n').includes(KEY_A)).toBe(false)
+  // Un secret inerte reste : jamais une entrée sans clé.
+  expect(map.get(keySecret('ws_1'))).toBe(KEY_A)
 })
 
 test('removing an inactive entry leaves the active one alone', async () => {

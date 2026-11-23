@@ -8,6 +8,7 @@ import type { IconAction } from '../blocks/icon-action'
 import { ItemRow } from '../blocks/item-row'
 import type { ApiResult, WorkspaceInfo, WorkspaceRow } from '../protocol'
 import { clipBytes } from '../shared/text'
+import { resetAgentForms } from './agent-form'
 import { loadConfigTab, resetConfigs } from './config-state'
 import { restoreConfigView } from './config-views'
 import { clearDraftState } from './drafts'
@@ -85,6 +86,7 @@ export async function resetForWorkspace(): Promise<void> {
   resetConfigs()
   set(homeFilter, '')
   clearAllForms()
+  resetAgentForms()
   clearDraftState()
   set(editing, null)
   resetEditFields()
@@ -100,8 +102,12 @@ async function reloadActive(): Promise<void> {
   await Promise.all([restoreOpenSession(), restoreNewSession(), restoreConfigView(), loadConfigTab()])
 }
 
-/** Prend la réponse du worker (toujours l'identité fraîche) et relit ce que le changement rend caduc. */
-async function adopt(info: WorkspaceInfo): Promise<void> {
+/**
+ * Prend l'identité fraîche du worker (sa réponse, ou `workspace.changed` quand un autre panneau a basculé) et relit ce
+ * que le changement rend caduc. Sans changement d'actif, rien ne bouge : le même état arrive deux fois pour le panneau
+ * qui a fait la demande.
+ */
+export async function adopt(info: WorkspaceInfo): Promise<void> {
   const previous = read(workspace)
   set(workspace, info)
   if (activeLocalIdOf(info) !== activeLocalIdOf(previous)) {
