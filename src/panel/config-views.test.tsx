@@ -156,6 +156,31 @@ test('filters the agent list', async () => {
   await view.unmount()
 })
 
+test('each home tab has its own filter and gets its text back when you return to it', async () => {
+  const host = mockHost({ requests: requests() })
+  const view = await mount(panel, { host, persisted: AGENTS_TAB })
+  await view.type({ label: 'Filter' }, 'inci')
+  assert.equal(view.findAll({ type: 'ListItem' }).length, 1)
+  // Un autre onglet ne reprend pas le texte : ses deux lignes restent visibles.
+  await view.press({ role: 'button', text: 'Vaults' })
+  const vaultFilter = view.find({ label: 'Filter' })
+  assert.ok(vaultFilter)
+  assert.equal(view.valueOf(vaultFilter), '')
+  assert.equal(view.findAll({ type: 'ListItem' }).length, 2)
+  await view.type({ label: 'Filter' }, 'slack')
+  assert.equal(view.findAll({ type: 'ListItem' }).length, 1)
+  // Les Agents retrouvent leur texte, les Vaults le leur.
+  await view.press({ role: 'button', text: 'Agents' })
+  assert.equal(view.valueOf(view.find({ label: 'Filter' })!), 'inci')
+  assert.ok(view.find({ type: 'ListItem', label: 'Incident commander' }))
+  assert.equal(view.findAll({ type: 'ListItem' }).length, 1)
+  await view.press({ role: 'button', text: 'Vaults' })
+  assert.equal(view.valueOf(view.find({ label: 'Filter' })!), 'slack')
+  assert.deepEqual(view.persisted.plugin['home.filters'], { agent: 'inci', vault: 'slack' })
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
 test('shows an empty state when a tab has nothing', async () => {
   const host = mockHost({ requests: requests({ 'configs.list': { ok: true, value: [] } }) })
   const view = await mount(panel, { host, persisted: AGENTS_TAB })

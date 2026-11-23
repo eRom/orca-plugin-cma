@@ -55,7 +55,14 @@ export function popIfTop(matches: (entry: NavEntry) => boolean): boolean {
   return true
 }
 export const homeTab = atom<HomeTab>('home.tab', 'sessions', { persist: 'plugin' })
-export const homeFilter = atom('home.filter', '', { persist: 'plugin' })
+/** Le texte du filtre de chaque onglet de l'accueil : un onglet sans entrée a un filtre vide. */
+export const homeFilters = atom<Partial<Record<HomeTab, string>>>('home.filters', {}, { persist: 'plugin' })
+
+export const filterOf = (tab: HomeTab): string => read(homeFilters)[tab] ?? ''
+
+export function setFilterOf(tab: HomeTab, value: string): void {
+  set(homeFilters, { ...read(homeFilters), [tab]: value })
+}
 /** Identité du workspace ; null tant que le worker n'a pas répondu. */
 export const workspace = atom<WorkspaceInfo | null>(null)
 

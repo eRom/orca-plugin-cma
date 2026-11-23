@@ -27,7 +27,7 @@ import { filterRows } from './config-views'
 import { openNewConfig } from './environment-form'
 import { openNewSession } from './new-session'
 import { openSession } from './session-view'
-import { ERROR_TEXT_LIMIT_BYTES, homeFilter, homeTab, loadSessions, run, sessionRows, workspace, type HomeTab } from './state'
+import { ERROR_TEXT_LIMIT_BYTES, filterOf, homeTab, loadSessions, run, sessionRows, setFilterOf, workspace, type HomeTab } from './state'
 import { WorkspacesSection } from './workspaces'
 
 
@@ -64,7 +64,7 @@ function openNew(kind: ConfigKind): void {
  * Le filtre de l'onglet et, à sa droite, le bouton « + » de création. Composé en natif : `SearchBar` du kit
  * dessine ses actions en `ghost sm`, trop discrètes pour la seule action de création de l'onglet.
  */
-function FilterRow({ noun, newLabel, onNew }: { noun: string; newLabel: string; onNew: () => void }) {
+function FilterRow({ tab, noun, newLabel, onNew }: { tab: HomeTab; noun: string; newLabel: string; onNew: () => void }) {
   return (
     <Row gap="sm" align="center">
       {[
@@ -75,8 +75,8 @@ function FilterRow({ noun, newLabel, onNew }: { noun: string; newLabel: string; 
             labelHidden
             type="search"
             placeholder={`Filter ${noun}`}
-            value={read(homeFilter)}
-            onChange={(value) => set(homeFilter, value)}
+            value={filterOf(tab)}
+            onChange={(value) => setFilterOf(tab, value)}
           />
         </Box>,
         <Box key="new" shrink={false}>
@@ -90,11 +90,11 @@ function FilterRow({ noun, newLabel, onNew }: { noun: string; newLabel: string; 
 function ConfigList({ tab }: { tab: (typeof CONFIG_TABS)[number] }) {
   const rows = read(configRows)[tab.value]
   const failure = read(configErrors)[tab.value] ?? null
-  const query = read(homeFilter)
+  const query = filterOf(tab.value)
   const shown = rows ? filterRows(rows, query) : []
   return (
     <Stack gap="sm">
-      <FilterRow noun={tab.filter} newLabel={NEW_LABELS[tab.value]} onNew={() => openNew(tab.value)} />
+      <FilterRow tab={tab.value} noun={tab.filter} newLabel={NEW_LABELS[tab.value]} onNew={() => openNew(tab.value)} />
       {failure ? (
         <Callout tone="danger" title="Could not load the list">
           <Stack gap="sm">
@@ -148,10 +148,10 @@ export function filterSessions(rows: readonly SessionRow[], query: string): Sess
 
 function SessionsList() {
   const loaded = read(sessionRows)
-  const rows = filterSessions(sortSessions(loaded ?? []), read(homeFilter))
+  const rows = filterSessions(sortSessions(loaded ?? []), filterOf('sessions'))
   return (
     <Stack gap="sm">
-      <FilterRow noun="sessions" newLabel="New session" onNew={openNewSession} />
+      <FilterRow tab="sessions" noun="sessions" newLabel="New session" onNew={openNewSession} />
       {loaded === null ? (
         <Spinner label="Loading sessions" />
       ) : loaded.length === 0 ? (

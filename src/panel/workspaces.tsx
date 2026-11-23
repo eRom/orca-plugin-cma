@@ -16,7 +16,7 @@ import { restoreNewSession } from './new-session'
 import { restoreOpenSession } from './session-view'
 import {
   ERROR_TEXT_LIMIT_BYTES,
-  homeFilter,
+  homeFilters,
   loadSessions,
   nav,
   notice,
@@ -76,14 +76,14 @@ function resetEditFields(): void {
 
 /**
  * Le workspace actif a changé : tout ce que le panneau montre venait de l'ancien. Retour à l'accueil (l'onglet
- * courant est gardé), listes relues, filtre et saisies gardées oubliés (elles visent des objets de l'ancien workspace).
+ * courant est gardé), listes relues, filtres et saisies gardées oubliés (elles visent des objets de l'ancien workspace).
  */
 export async function resetForWorkspace(): Promise<void> {
   set(nav, [{ view: 'home' }])
   resetSessionView(null)
   set(sessionRows, null)
   resetConfigs()
-  set(homeFilter, '')
+  set(homeFilters, {})
   clearAllForms()
   resetAgentForms()
   clearDraftState()

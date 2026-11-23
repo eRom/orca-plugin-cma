@@ -98,7 +98,7 @@ test('Use this workspace switches and goes back home', async () => {
     persisted: {
       plugin: {
         nav: [{ view: 'home' }, { view: 'config', kind: 'agent', id: 'agent_a' }],
-        'home.filter': 'old filter',
+        'home.filters': { agent: 'old filter', sessions: 'old session filter' },
         'home.tab': 'agent',
         // Une saisie gardée d'un formulaire de l'ancien workspace.
         'forms.drafts': { 'environment:env_a': { form: { name: 'typed' }, base: { name: 'old' }, baseStamp: null } }
@@ -112,7 +112,7 @@ test('Use this workspace switches and goes back home', async () => {
   // Les saisies gardées visaient des objets de l'ancien workspace : elles sont oubliées.
   assert.deepEqual(view.persisted.plugin['forms.drafts'], {})
   assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }])
-  assert.equal(view.persisted.plugin['home.filter'], '')
+  assert.deepEqual(view.persisted.plugin['home.filters'], {})
   // L'onglet courant est gardé, et ses listes relues pour le nouveau workspace.
   assert.equal(view.persisted.plugin['home.tab'], 'agent')
   assert.ok(sessionReads > before)
@@ -147,10 +147,10 @@ test('a refused switch keeps the panel as it was and says why', async () => {
       'workspaces.activate': { ok: false, code: 'not_found', error: 'This workspace is not in the list.' }
     })
   })
-  const view = await mount(panel, { host, persisted: { plugin: { 'home.filter': 'keep me' } } })
+  const view = await mount(panel, { host, persisted: { plugin: { 'home.filters': { sessions: 'keep me' } } } })
   await view.press({ type: 'IconButton', label: 'Use this workspace' })
   assert.ok(view.find({ type: 'Callout', text: /This workspace is not in the list\./ }))
-  assert.equal(view.persisted.plugin['home.filter'], 'keep me')
+  assert.deepEqual(view.persisted.plugin['home.filters'], { sessions: 'keep me' })
   await view.unmount()
 })
 
@@ -424,11 +424,11 @@ test('removing the active workspace goes back home on the new active one', async
       'workspaces.remove': { ok: true, value: { ...info('ws_2'), workspaces: [{ ...OTHER_ROW, active: true }] } }
     })
   })
-  const view = await mount(panel, { host, persisted: { plugin: { 'home.filter': 'old' } } })
+  const view = await mount(panel, { host, persisted: { plugin: { 'home.filters': { sessions: 'old' } } } })
   await view.press({ type: 'IconButton', label: 'Edit Default' })
   await view.press({ role: 'button', text: 'Remove' })
   await view.press({ role: 'button', text: 'Remove' })
-  assert.equal(view.persisted.plugin['home.filter'], '')
+  assert.deepEqual(view.persisted.plugin['home.filters'], {})
   assert.equal(view.find({ text: 'Default' }), null)
   assert.ok(view.find({ type: 'Badge', text: 'Active' }))
   await view.unmount()
