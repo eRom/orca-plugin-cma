@@ -318,7 +318,13 @@ export type DraftRef =
   /** `memoryId` null : nouvelle mémoire à `path`. */
   | { kind: 'memory'; memoryStoreId: string; memoryId: string | null; path: string }
 
-export type DraftsStatus = { folder: string; ready: boolean }
+/** Un fichier choisi dans la boîte de dialogue du système : chemin absolu et nom de base. */
+export type PickedFile = { file: string; name: string }
+
+/** Une ligne d'envoi : `path` est le chemin de la mémoire, `memoryId` non nul pour remplacer une mémoire existante. */
+export type UploadItem = { path: string; file: string; memoryId: string | null }
+
+export type DraftsStatus ={ folder: string; ready: boolean }
 
 export type DraftInfo = {
   ref: DraftRef
@@ -379,6 +385,9 @@ declare module 'orca' {
     'draft.discard': { input: DraftRef; output: ApiResult<DraftInfo> }
     'draft.state': { input: DraftRef; output: ApiResult<DraftInfo | null> }
     'draft.prepare': { input: DraftRef; output: ApiResult<PreparedWrite> }
+    /** `null` : la boîte de dialogue a été annulée. */
+    'file.pick': { output: ApiResult<PickedFile | null> }
+    'memory.stageUploads': { input: { memoryStoreId: string; items: UploadItem[] }; output: ApiResult<PreparedWrite> }
     'workspace.back': { input: { workspaceId: string }; output: ApiResult<null> }
     'diagnostics.testSpend': { output: ApiResult<{ sessions: number; total: Money | null }> }
   }

@@ -17,7 +17,7 @@ const definedKeys = (value: Plain): string[] => Object.keys(value).filter((key) 
 const render = (value: unknown): string => (typeof value === 'string' ? value : (JSON.stringify(value) ?? 'null'))
 
 /** Abrège à `VALUE_MAX_BYTES` octets au plus, sur une frontière de caractère, avec un `…` quand ça coupe. */
-function abbreviate(text: string): string {
+export function abbreviate(text: string): string {
   const clipped = clipBytes(text, VALUE_MAX_BYTES - Buffer.byteLength(ELLIPSIS))
   return clipped.truncated ? `${clipped.text}${ELLIPSIS}` : text
 }

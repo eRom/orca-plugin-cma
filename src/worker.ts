@@ -7,6 +7,7 @@ import { createConfigHandlers } from './worker/configs'
 import { DRAFTS_FOLDER, createDrafts, type Drafts } from './worker/drafts'
 import { createEditorHost } from './worker/editor-host'
 import { createMemoryAdapter, createMemoryRename, releaseDeletedDrafts } from './worker/memory-drafts'
+import { createFilePicker, createMemoryUploads, runOsascript } from './worker/memory-uploads'
 import { createPendingWrites } from './worker/pending-writes'
 import { createSessionHandlers } from './worker/session-actions'
 import { createPoller, sdkPollSource } from './worker/session-poll'
@@ -192,7 +193,10 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     now: () => new Date(),
     log: (message) => orca.log(message)
   })
-  orca.panels.handle('memory.rename', createMemoryRename(store, () => drafts, (message) => orca.log(message)))
+  // Le choix d'un fichier et l'envoi groupé de mémoires : le contenu des fichiers reste dans le worker.
+  orca.panels.handle('file.pick', createFilePicker({ platform: process.platform, run: runOsascript }))
+  orca.panels.handle('memory.stageUploads', createMemoryUploads(store, pendingWrites, (message) => orca.log(message)))
+  orca.panels.handle('memory.rename',createMemoryRename(store, () => drafts, (message) => orca.log(message)))
   // Une mémoire ou une banque supprimée n'a plus de brouillon propre à garder : son fichier et son nom se libèrent.
   const removeThenRelease = thenRefreshSessions(writes.remove)
   orca.panels.handle('resource.delete', async (ref) => {
