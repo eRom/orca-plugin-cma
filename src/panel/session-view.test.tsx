@@ -598,3 +598,167 @@ test('windows 400 small rows to at most 100 and offers Load earlier', async () =
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
+
+// --- Archiver et supprimer ---
+
+type ManageCalls = { archives: unknown[]; deletes: unknown[]; leaves: unknown[]; lists: number }
+type View = Awaited<ReturnType<typeof mount>>
+
+/** Les demandes de la vue d'une session, avec archivage et suppression comptés ; `refusal` fait refuser les deux. */
+function manageRequests(calls: ManageCalls, refusal: string | null = null, row: SessionRow = sessionRow()) {
+  const answer = () => (refusal === null ? { ok: true, value: null } : { ok: false, code: 'other', error: refusal })
+  return requests([message('m1')], {
+    'sessions.list': () => {
+      calls.lists += 1
+      return { ok: true, value: [row] }
+    },
+    'session.detail': { ok: true, value: sessionDetail(row) },
+    'session.leave': (input: unknown) => {
+      calls.leaves.push(input)
+      return null
+    },
+    'resource.archive': (input: unknown) => {
+      calls.archives.push(input)
+      return answer()
+    },
+    'resource.delete': (input: unknown) => {
+      calls.deletes.push(input)
+      return answer()
+    }
+  })
+}
+
+function newManageCalls(): ManageCalls {
+  return { archives: [], deletes: [], leaves: [], lists: 0 }
+}
+
+/** Monte la vue et la démonte quoi qu'il arrive : un test en échec qui garde sa vue montée bloquerait tout le lanceur. */
+async function withView(
+  calls: ManageCalls,
+  options: { refusal?: string | null; row?: SessionRow; nav?: unknown[] },
+  body: (view: View) => Promise<void>
+): Promise<void> {
+  const host = mockHost({ requests: manageRequests(calls, options.refusal ?? null, options.row) as never })
+  const persisted = options.nav ? { plugin: { nav: options.nav } } : OPEN_S1
+  const view = await mount(panel, { host, persisted })
+  try {
+    await body(view)
+  } finally {
+    await view.unmount()
+  }
+}
+
+async function openManage(view: View) {
+  await view.toggle({ type: 'Collapsible', text: /Manage session/ })
+}
+
+/** Appuie le dernier bouton de ce texte : celui de l'encart de confirmation, posé après le bouton du geste. */
+async function pressConfirm(view: View, text: string) {
+  const buttons = view.findAll({ role: 'button', text })
+  const last = buttons[buttons.length - 1]
+  assert.ok(last)
+  await view.press(last)
+}
+
+test('Manage session is closed by default and keeps Archive and Delete out of the header', async () => {
+  await withView(newManageCalls(), {}, async (view) => {
+    const section = view.find({ type: 'Collapsible', text: /Manage session/ })
+    assert.ok(section)
+    assert.equal(section.props.open, false)
+    assert.equal(view.find({ role: 'button', text: 'Archive' }), null)
+    assert.equal(view.find({ role: 'button', text: 'Delete' }), null)
+    await openManage(view)
+    assert.equal(view.find({ role: 'button', text: 'Archive' })?.props.variant, 'outline')
+    assert.equal(view.find({ role: 'button', text: 'Delete' })?.props.tone, 'danger')
+    assert.deepEqual(view.errors, [])
+  })
+})
+
+test('Archive asks with the session title, Cancel closes it without a call', async () => {
+  const calls = newManageCalls()
+  await withView(calls, {}, async (view) => {
+    await openManage(view)
+    await view.press({ role: 'button', text: 'Archive' })
+    assert.ok(view.find({ type: 'Callout', text: /Archive Triage run\? This can't be undone\./ }))
+    await view.press({ role: 'button', text: 'Cancel' })
+    assert.equal(view.find({ type: 'Callout', text: /Archive Triage run\?/ }), null)
+    assert.deepEqual(calls.archives, [])
+    assert.deepEqual(calls.deletes, [])
+  })
+})
+
+test('Delete asks with the session id when the title is empty', async () => {
+  const calls = newManageCalls()
+  await withView(calls, { row: sessionRow({ title: null }) }, async (view) => {
+    await openManage(view)
+    await view.press({ role: 'button', text: 'Delete' })
+    assert.ok(view.find({ type: 'Callout', text: /Delete s1 for good\? This can't be undone\./ }))
+    assert.deepEqual(calls.deletes, [])
+  })
+})
+
+test('an oversized title keeps the confirmation within Orca label limits', async () => {
+  await withView(newManageCalls(), { row: sessionRow({ title: 'T'.repeat(5_000) }) }, async (view) => {
+    await openManage(view)
+    await view.press({ role: 'button', text: 'Archive' })
+    assert.ok(view.find({ type: 'Callout', text: /Archive TTT/ }))
+    assert.deepEqual(view.refusals, [])
+    assert.deepEqual(view.errors, [])
+  })
+})
+
+test('Archive then Confirm archives the session, leaves it, returns home and rereads the list', async () => {
+  const calls = newManageCalls()
+  await withView(calls, {}, async (view) => {
+    await openManage(view)
+    await view.press({ role: 'button', text: 'Archive' })
+    const listsBefore = calls.lists
+    await pressConfirm(view, 'Archive')
+    assert.deepEqual(calls.archives, [{ kind: 'session', id: 's1' }])
+    assert.deepEqual(calls.deletes, [])
+    assert.deepEqual(calls.leaves, [{ sessionId: 's1' }])
+    assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }])
+    assert.ok(calls.lists > listsBefore)
+    assert.deepEqual(view.errors, [])
+  })
+})
+
+test('Delete then Confirm deletes the session, leaves it and returns home', async () => {
+  const calls = newManageCalls()
+  await withView(calls, {}, async (view) => {
+    await openManage(view)
+    await view.press({ role: 'button', text: 'Delete' })
+    await pressConfirm(view, 'Delete')
+    assert.deepEqual(calls.deletes, [{ kind: 'session', id: 's1' }])
+    assert.deepEqual(calls.archives, [])
+    assert.deepEqual(calls.leaves, [{ sessionId: 's1' }])
+    assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }])
+  })
+})
+
+test('an API refusal shows in the session notice and the view stays open', async () => {
+  const calls = newManageCalls()
+  const row = sessionRow({ status: 'running', badge: 'running' })
+  await withView(calls, { refusal: 'Cannot archive a running session.', row }, async (view) => {
+    await openManage(view)
+    await view.press({ role: 'button', text: 'Archive' })
+    await pressConfirm(view, 'Archive')
+    assert.deepEqual(calls.archives, [{ kind: 'session', id: 's1' }])
+    assert.deepEqual(calls.leaves, [])
+    assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'session', sessionId: 's1' }])
+    assert.ok(view.find({ type: 'Callout', text: /Cannot archive a running session\./ }))
+    assert.ok(view.find({ text: 'Triage run' }))
+    assert.deepEqual(view.errors, [])
+  })
+})
+
+test('leaving after a removal pops only the session view', async () => {
+  const calls = newManageCalls()
+  const nav = [{ view: 'home' }, { view: 'config', kind: 'agent', id: 'agent_x' }, { view: 'session', sessionId: 's1' }]
+  await withView(calls, { nav }, async (view) => {
+    await openManage(view)
+    await view.press({ role: 'button', text: 'Archive' })
+    await pressConfirm(view, 'Archive')
+    assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'config', kind: 'agent', id: 'agent_x' }])
+  })
+})

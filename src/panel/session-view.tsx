@@ -24,11 +24,13 @@ import {
   update,
   type Disposable
 } from 'orca'
+import { SectionCollapsible } from '../blocks/section-collapsible'
 import type { ApiResult, ThreadRow, ToolState } from '../protocol'
 import { dollarsToMinor, formatMoney } from '../shared/money'
 import { badgeLabel, badgeTone } from '../shared/sessions'
 import { clipBytes } from '../shared/text'
 import { pageWindow } from '../shared/thread-window'
+import { archiveQuestion, askConfirmation, ConfirmPanel, deleteQuestion } from './confirm'
 import {
   confirming,
   denyDraft,
@@ -36,9 +38,12 @@ import {
   draft,
   hasEarlier,
   loadingEarlier,
+  loadSessions,
+  manageOpen,
   mergeRows,
   nav,
   pageEnd,
+  popIfTop,
   popView,
   prependRows,
   previews,
@@ -135,6 +140,30 @@ function goBack(sessionId: string): void {
     // Une autre vue de session peut se retrouver au sommet : on la recharge.
     await restoreOpenSession()
   })
+}
+
+/**
+ * Archive ou supprime la session, la quitte, revient à la vue d'en dessous et relit la liste. Un refus de l'API
+ * (une session `running`, par exemple) devient l'avis de la session : la vue reste ouverte.
+ * Après les attentes, on ne dépile que si la vue d'origine est encore au sommet : un Back entre-temps a déjà dépilé.
+ */
+async function removeSession(sessionId: string, mode: 'archive' | 'delete'): Promise<void> {
+  set(sessionNotice, null)
+  const result = await plugin.request(mode === 'archive' ? 'resource.archive' : 'resource.delete', { kind: 'session', id: sessionId })
+  if (!result.ok) {
+    set(sessionNotice, result.error)
+    return
+  }
+  let popped = false
+  try {
+    await plugin.request('session.leave', { sessionId })
+  } finally {
+    if (read(viewedSession) === sessionId) resetSessionView(null)
+    popped = popIfTop((entry) => entry.view === 'session' && entry.sessionId === sessionId)
+  }
+  // Une autre vue de session peut se retrouver au sommet : on la recharge.
+  if (popped) await restoreOpenSession()
+  await loadSessions()
 }
 
 /** Abonnements du panneau aux poussées du worker ; ils ignorent toute autre session que la vue ouverte. */
@@ -296,6 +325,38 @@ function Header({ sessionId }: { sessionId: string }) {
         ) : null}
       </Stack>
     </Stack>
+  )
+}
+
+/** Archiver ou supprimer : une section fermée, pour ne pas charger l'en-tête de deux boutons. Chaque geste ouvre sa question. */
+function ManageSession({ sessionId }: { sessionId: string }) {
+  const row = read(sessionRows)?.find((candidate) => candidate.id === sessionId) ?? null
+  const name = row?.title || read(sessionDetail)?.title || sessionId
+  return (
+    <SectionCollapsible title="Manage session" open={read(manageOpen)} onChange={(next) => set(manageOpen, next)}>
+      <Stack gap="sm">
+        <Row gap="sm" wrap>
+          <Button variant="outline" size="sm" onPress={() => askConfirmation(`session:${sessionId}:archive`)}>
+            Archive
+          </Button>
+          <Button variant="outline" tone="danger" size="sm" onPress={() => askConfirmation(`session:${sessionId}:delete`)}>
+            Delete
+          </Button>
+        </Row>
+        <ConfirmPanel
+          actionKey={`session:${sessionId}:archive`}
+          question={archiveQuestion(name)}
+          confirmLabel="Archive"
+          onConfirm={() => removeSession(sessionId, 'archive')}
+        />
+        <ConfirmPanel
+          actionKey={`session:${sessionId}:delete`}
+          question={deleteQuestion(name)}
+          confirmLabel="Delete"
+          onConfirm={() => removeSession(sessionId, 'delete')}
+        />
+      </Stack>
+    </SectionCollapsible>
   )
 }
 
@@ -606,6 +667,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         </Callout>
       ) : null}
       <Details sessionId={sessionId} budgetReached={budgetReached} />
+      <ManageSession sessionId={sessionId} />
       <StreamLine />
       <Separator />
       <Thread sessionId={sessionId} />

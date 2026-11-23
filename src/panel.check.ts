@@ -223,6 +223,11 @@ export default defineCheck({
     row: sessionRow({ badge: 'idle', status: 'idle' }),
     rows: Array.from({ length: 400 }, (_, index) => text(`l${index}`, index % 2 === 0 ? 'user_message' : 'agent_message', `Line ${index}`))
   }),
+  // Le haut d'une vue de session : l'en-tête reste sobre, `Details` puis `Manage session` (fermée, l'état n'est pas semable).
+  'session header actions': sessionScenario({
+    row: sessionRow({ badge: 'idle', status: 'idle' }),
+    rows: [text('u1', 'user_message', 'Triage INC-42'), text('a1', 'agent_message', 'On it.')]
+  }),
   'terminated session': sessionScenario({
     row: sessionRow({ badge: 'terminated', status: 'terminated' }),
     rows: [

@@ -143,6 +143,8 @@ export const raiseDraft = atom('')
 export const raiseNotice = atom<string | null>(null)
 /** Erreur d'une action de la session, affichée près du composeur. */
 export const sessionNotice = atom<string | null>(null)
+/** Section « Manage session » (archiver, supprimer) : fermée à chaque nouvelle session. */
+export const manageOpen = atom(false)
 
 /**
  * Remet la vue à zéro pour une session (ou aucune). Rouvrir la session déjà affichée (worker redémarré,
@@ -164,6 +166,7 @@ export function resetSessionView(sessionId: string | null): void {
   if (reopening) return
   set(raiseNotice, null)
   set(sessionNotice, null)
+  set(manageOpen, false)
   set(sending, false)
   set(draft, '')
   set(denyDraft, {})
