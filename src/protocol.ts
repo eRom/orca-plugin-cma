@@ -324,7 +324,7 @@ export type PickedFile = { file: string; name: string }
 /** Une ligne d'envoi : `path` est le chemin de la mémoire, `memoryId` non nul pour remplacer une mémoire existante. */
 export type UploadItem = { path: string; file: string; memoryId: string | null }
 
-export type DraftsStatus ={ folder: string; ready: boolean }
+export type DraftsStatus = { folder: string; ready: boolean }
 
 export type DraftInfo = {
   ref: DraftRef

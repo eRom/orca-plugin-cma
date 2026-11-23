@@ -196,7 +196,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   // Le choix d'un fichier et l'envoi groupé de mémoires : le contenu des fichiers reste dans le worker.
   orca.panels.handle('file.pick', createFilePicker({ platform: process.platform, run: runOsascript }))
   orca.panels.handle('memory.stageUploads', createMemoryUploads(store, pendingWrites, (message) => orca.log(message)))
-  orca.panels.handle('memory.rename',createMemoryRename(store, () => drafts, (message) => orca.log(message)))
+  orca.panels.handle('memory.rename', createMemoryRename(store, () => drafts, (message) => orca.log(message)))
   // Une mémoire ou une banque supprimée n'a plus de brouillon propre à garder : son fichier et son nom se libèrent.
   const removeThenRelease = thenRefreshSessions(writes.remove)
   orca.panels.handle('resource.delete', async (ref) => {

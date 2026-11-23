@@ -350,3 +350,40 @@ test('file.pick fails readably on another error, and off macOS never runs anythi
   expect(await linux()).toEqual({ ok: false, code: 'other', error: 'File picking works on macOS only.' })
   expect(ran).toBe(0)
 })
+
+test('overlapping paths are refused before any request, between rows and against the store, in both directions', async () => {
+  const { stageUploads, file, api, only } = setup()
+  const path = file('x.md', 'x\n')
+  const taken = 'A memory already has this path.'
+  const cases: { name: string; items: UploadItem[] }[] = [
+    { name: 'row ancestor then descendant', items: [item('/docs', path), item('/docs/todo.md', path)] },
+    { name: 'row descendant then ancestor', items: [item('/docs/todo.md', path), item('/docs', path)] },
+    { name: 'row case-insensitive overlap', items: [item('/Docs', path), item('/docs/todo.md', path)] },
+    { name: 'row ancestor of a store memory', items: [item('/notes', path)] },
+    { name: 'row descendant of a store memory', items: [item('/notes/a.md/deeper.md', path)] },
+    { name: 'store overlap, case-insensitive', items: [item('/NOTES', path)] }
+  ]
+  for (const entry of cases) {
+    const result = await stageUploads({ memoryStoreId: 'memstore_1', items: entry.items })
+    expect({ name: entry.name, result }).toEqual({ name: entry.name, result: { ok: false, code: 'invalid', error: taken } })
+  }
+  // Aucune écriture ; seule la relecture de la banque a eu lieu (les cas en ligne n'envoient rien).
+  expect(only('memories.create')).toEqual([])
+  expect(api.calls.every((call) => call.method === 'memories.list')).toBe(true)
+  cleanup()
+})
+
+test('a sibling that only shares a name prefix does not overlap, and a replacement ignores its own memory', async () => {
+  const { stageUploads, file } = setup()
+  const path = file('x.md', 'x\n')
+  expect((await stageUploads({ memoryStoreId: 'memstore_1', items: [item('/doc', path), item('/docs.md', path), item('/notes/a.md.bak', path)] })).ok).toBe(true)
+  expect((await stageUploads({ memoryStoreId: 'memstore_1', items: [item('/notes/a.md', path, 'mem_1')] })).ok).toBe(true)
+  cleanup()
+})
+
+test('file.pick keeps trailing spaces of a file name and drops only the line ending', async () => {
+  const pick = createFilePicker({ platform: 'darwin', run: async () => '/Users/test/notes .md \n' })
+  expect(await pick()).toEqual({ ok: true, value: { file: '/Users/test/notes .md ', name: 'notes .md ' } })
+  const crlf = createFilePicker({ platform: 'darwin', run: async () => '/Users/test/a.md\r\n' })
+  expect(await crlf()).toEqual({ ok: true, value: { file: '/Users/test/a.md', name: 'a.md' } })
+})

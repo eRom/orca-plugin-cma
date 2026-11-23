@@ -38,7 +38,7 @@ export function createFilePicker(deps: FilePickerDeps): () => Promise<ApiResult<
     }
     try {
       const output = await deps.run(['-e', `POSIX path of (choose file with prompt "${PICK_PROMPT}")`])
-      const file = output.trim()
+      const file = output.replace(/\r?\n$/, '')
       return { ok: true, value: file === '' ? null : { file, name: basename(file) } }
     } catch (error) {
       if (error instanceof Error && error.message.includes('-128')) {
@@ -83,7 +83,17 @@ async function collect<T>(items: AsyncIterable<T>): Promise<T[]> {
 
 const isMemory = (item: BetaManagedAgentsMemoryListItem): item is BetaManagedAgentsMemory => item.type === 'memory'
 
-const memoriesCount = (count: number): string => (count === 1 ? 'Uploaded 1 memory' : `Uploaded ${count} memories`)
+/**
+ * Deux chemins se recouvrent quand ils sont égaux ou que l'un est l'ancêtre de l'autre (`/notes` et
+ * `/notes/todo.md`) : l'API refuse alors le second (409 `memory_path_conflict_error`). Insensible à la casse.
+ */
+function overlaps(first: string, second: string): boolean {
+  const p = first.toLowerCase()
+  const q = second.toLowerCase()
+  return p === q || p.startsWith(`${q}/`) || q.startsWith(`${p}/`)
+}
+
+const memoriesCount =(count: number): string => (count === 1 ? 'Uploaded 1 memory' : `Uploaded ${count} memories`)
 
 /** Un remplacement retenu : la mémoire en ligne, dont l'empreinte devient la précondition. */
 type Send = { line: Line; memoryId: string | null; precondition: string | null }
@@ -101,16 +111,15 @@ export function createMemoryUploads(
     if (items.length === 0) {
       return invalid('Nothing to upload.')
     }
-    const seen = new Set<string>()
+    const seen: string[] = []
     for (const { path } of items) {
       if (!isSafeMemoryPath(path)) {
         return invalid(INVALID_MEMORY_PATH)
       }
-      const key = path.toLowerCase()
-      if (seen.has(key)) {
+      if (seen.some((earlier) => overlaps(earlier, path))) {
         return invalid(TAKEN_PATH_MESSAGE)
       }
-      seen.add(key)
+      seen.push(path)
     }
     const lines: Line[] = []
     for (const { path, file, memoryId } of items) {
@@ -124,7 +133,7 @@ export function createMemoryUploads(
     const prepared = await attempt(store, async (client): Promise<{ refused: string } | { sends: Send[]; changes: FieldChange[] }> => {
       const listed = (await collect(client.beta.memoryStores.memories.list(memoryStoreId))).filter(isMemory)
       for (const line of lines) {
-        const taken = listed.some((memory) => memory.path.toLowerCase() === line.path.toLowerCase() && memory.id !== line.memoryId)
+        const taken = listed.some((memory) => memory.id !== line.memoryId && overlaps(memory.path, line.path))
         if (taken) {
           return { refused: TAKEN_PATH_MESSAGE }
         }
