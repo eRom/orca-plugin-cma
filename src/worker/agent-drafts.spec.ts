@@ -76,6 +76,8 @@ function fakeApi() {
   const calls: Call[] = []
   const state = {
     agents: new Map<string, AgentRecord>(),
+    /** Les versions passées (`<id>@<version>`), que `retrieve(id, { version })` relit ; vide : la rétention les a perdues. */
+    history: new Map<string, AgentRecord>(),
     updateError: null as Error | null,
     /** Un geste de Romain pendant que l'envoi est en vol. */
     duringSend: null as (() => void) | null,
@@ -88,10 +90,15 @@ function fakeApi() {
     return { speed: 'standard', ...config }
   }
   const agents = {
-    retrieve: async (id: string) => {
-      calls.push({ method: 'agents.retrieve', args: [id] })
+    retrieve: async (id: string, params?: { version?: number }) => {
+      calls.push({ method: 'agents.retrieve', args: [id, params] })
       const agent = state.agents.get(id)
       if (!agent) throw notFound(id)
+      if (params?.version !== undefined && params.version !== agent.version) {
+        const past = state.history.get(`${id}@${params.version}`)
+        if (!past) throw notFound(`${id}@${params.version}`)
+        return structuredClone(past)
+      }
       return structuredClone(agent)
     },
     create: async (params: Record<string, unknown>) => {
@@ -135,6 +142,7 @@ function fakeApi() {
         }
         next.metadata = merged
       }
+      state.history.set(`${id}@${agent.version}`, structuredClone(agent))
       state.agents.set(id, next)
       return structuredClone(next)
     }
@@ -176,7 +184,13 @@ function setup() {
     expect(text.includes(from)).toBe(true)
     writeFileSync(join(folder, file), text.replace(from, to))
   }
-  return { folder, fake, api, pending, logs, drafts, apply, registry, read, edit }
+  /** Un autre éditeur (la console) modifie l'agent : une mise à jour sans garde, qui monte la version. */
+  const elsewhere = async (patch: Record<string, unknown>): Promise<void> => {
+    const client = (await api.store.get()) as unknown as { beta: { agents: { update: (id: string, params: unknown) => Promise<unknown> } } }
+    await client.beta.agents.update('agent_1', patch)
+    api.calls.pop()
+  }
+  return { folder, fake, api, pending, logs, drafts, apply, registry, read, edit, elsewhere }
 }
 
 const only = (calls: Call[], method: string): Call[] => calls.filter((call) => call.method === method)
@@ -261,6 +275,85 @@ test('a forced update sends no version at all', async () => {
   cleanup()
 })
 
+test('AC-6: a key changed elsewhere and untouched in the file is neither previewed nor sent, guarded or forced', async () => {
+  const { drafts, pending, edit, elsewhere, api } = setup()
+  await drafts.open(EXISTING)
+  edit(EXISTING_FILE, 'Be decisive.', 'Be calm.')
+  // La console change `description` : v5 -> v6, alors que le fichier a été lu en v5.
+  await elsewhere({ description: 'Changed in the console' })
+  const prepared = await drafts.prepare(EXISTING)
+  if (!prepared.ok) throw new Error('prepare failed')
+  // L'aperçu compare le fichier à ce que Romain a ouvert (v5) : seul `system` y figure.
+  expect(prepared.value.changes.map((change) => change.path)).toEqual(['system'])
+  expect(prepared.value.totalChanges).toBe(1)
+  expect(only(api.calls, 'agents.retrieve').some((call) => (call.args[1] as { version?: number } | undefined)?.version === 5)).toBe(true)
+
+  // Le refus de version nomme les deux versions, le fichier et le jeton restent.
+  const refused = await pending.commit(prepared.value.token, false)
+  expect(refused).toEqual({ ok: false, code: 'conflict', error: 'Changed elsewhere since you opened it (v5 → v6).' })
+  expect(Object.keys(only(api.calls, 'agents.update')[0]?.args[1] as object).sort()).toEqual(['system', 'version'])
+
+  // « Apply anyway » : seul `system` part, `description` de la console reste.
+  const forced = await pending.commit(prepared.value.token, true)
+  expect(forced.ok).toBe(true)
+  const params = only(api.calls, 'agents.update')[1]?.args[1] as Record<string, unknown>
+  expect(Object.keys(params)).toEqual(['system'])
+  expect((api.state.agents.get('agent_1') as AgentRecord).description).toBe('Changed in the console')
+  expect(String((api.state.agents.get('agent_1') as AgentRecord).system).includes('Be calm.')).toBe(true)
+  cleanup()
+})
+
+test('a key changed in the file and elsewhere is sent with the file value when forced', async () => {
+  const { drafts, pending, edit, elsewhere, api } = setup()
+  await drafts.open(EXISTING)
+  edit(EXISTING_FILE, 'description: Triages incident ticket', 'description: Mine')
+  await elsewhere({ description: 'Theirs' })
+  const prepared = await drafts.prepare(EXISTING)
+  if (!prepared.ok) throw new Error('prepare failed')
+  expect(prepared.value.changes.map((change) => change.path)).toEqual(['description'])
+  expect((await pending.commit(prepared.value.token, true)).ok).toBe(true)
+  expect((api.state.agents.get('agent_1') as AgentRecord).description).toBe('Mine')
+  cleanup()
+})
+
+test('when the opened version cannot be read back (404), the preview falls back to the live version and says so in the log', async () => {
+  const { drafts, pending, edit, elsewhere, api, logs } = setup()
+  await drafts.open(EXISTING)
+  edit(EXISTING_FILE, 'Be decisive.', 'Be calm.')
+  await elsewhere({ description: 'Changed in the console' })
+  api.state.history.clear()
+  const prepared = await drafts.prepare(EXISTING)
+  if (!prepared.ok) throw new Error('prepare failed')
+  // Repli : la version vivante sert de référence, la différence de `description` réapparaît.
+  expect(prepared.value.changes.map((change) => change.path).sort()).toEqual(['description', 'system'])
+  expect(logs.some((line) => line.includes('v5') && line.includes('live'))).toBe(true)
+  // Le refus de version nomme toujours les deux versions.
+  expect(await pending.commit(prepared.value.token, false)).toEqual({
+    ok: false,
+    code: 'conflict',
+    error: 'Changed elsewhere since you opened it (v5 → v6).'
+  })
+  cleanup()
+})
+
+test('when the live version is the one that was opened, no second read is made', async () => {
+  const { drafts, apply, edit, api } = setup()
+  await drafts.open(EXISTING)
+  edit(EXISTING_FILE, 'Be decisive.', 'Be calm.')
+  expect((await apply(EXISTING)).ok).toBe(true)
+  expect(only(api.calls, 'agents.retrieve').filter((call) => call.args[1] !== undefined)).toEqual([])
+  cleanup()
+})
+
+test('a file that matches the version you opened has nothing to apply even when the agent moved on', async () => {
+  const { drafts, apply, read, elsewhere, folder } = setup()
+  await drafts.open(EXISTING)
+  writeFileSync(join(folder, EXISTING_FILE), `# a note of mine\n${read(EXISTING_FILE)}`)
+  await elsewhere({ description: 'Changed in the console' })
+  expect(await apply(EXISTING)).toEqual({ ok: false, code: 'nothing_to_apply', error: 'Nothing to apply: the file matches the version you opened.' })
+  cleanup()
+})
+
 test('after an update the file is rewritten from the response, with the new version as header and base', async () => {
   const { drafts, apply, edit, read, registry, api } = setup()
   await drafts.open(EXISTING)
@@ -331,7 +424,7 @@ test('a saved file that matches the live version has nothing to apply', async ()
   await drafts.open(EXISTING)
   // Un commentaire de plus : le fichier a changé, l'agent pas.
   writeFileSync(join(folder, EXISTING_FILE), `# a note of mine\n${read(EXISTING_FILE)}`)
-  expect(await apply(EXISTING)).toEqual({ ok: false, code: 'nothing_to_apply', error: 'Nothing to apply: the file matches the live version.' })
+  expect(await apply(EXISTING)).toEqual({ ok: false, code: 'nothing_to_apply', error: 'Nothing to apply: the file matches the version you opened.' })
   expect(only(api.calls, 'agents.update')).toEqual([])
   cleanup()
 })

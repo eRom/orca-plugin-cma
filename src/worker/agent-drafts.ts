@@ -113,6 +113,25 @@ export function createAgentAdapter(
     }
   }
 
+  /**
+   * Le document que Romain a ouvert, base du différentiel : seules les clés qu'il a touchées partent, jamais celles
+   * qu'un autre éditeur a changées depuis (même forcé). C'est l'agent vivant quand sa version est celle de la base ;
+   * sinon la version ouverte, relue par `retrieve(id, { version })`. Si cette relecture échoue (404, rétention), la
+   * version vivante sert de repli : le différentiel montre alors aussi les changements d'ailleurs.
+   */
+  async function openedDocument(agentId: string, base: number): Promise<AgentDocument> {
+    const live = await retrieve(agentId)
+    if (live.version === base) {
+      return agentToDocument(live)
+    }
+    try {
+      return agentToDocument(await (await store.get()).beta.agents.retrieve(agentId, { version: base }))
+    } catch (error) {
+      log(`agent ${agentId} v${base} could not be read back (${messageOf(error)}); comparing with the live v${live.version}`)
+      return agentToDocument(live)
+    }
+  }
+
   /** Le refus de version : l'agent a changé ailleurs, la version actuelle est relue pour le dire. */
   async function conflictOf(agentId: string, base: number): Promise<{ ok: false; error: string; code: 'conflict' }> {
     const current = await retrieve(agentId).then(
@@ -159,11 +178,11 @@ export function createAgentAdapter(
           return { ok: false, code: 'other', error: 'The draft file is gone: open it again.' }
         }
         version = base.version
-        before = agentToDocument(await retrieve(ref.agentId))
+        before = await openedDocument(ref.agentId, base.version)
       }
       const changes = diffDocuments(before, after)
       if (changes.length === 0) {
-        return { ok: false, code: 'nothing_to_apply', error: 'Nothing to apply: the file matches the live version.' }
+        return { ok: false, code: 'nothing_to_apply', error: 'Nothing to apply: the file matches the version you opened.' }
       }
       const commit = async (force: boolean): Promise<ApiResult<Committed>> => {
         try {
