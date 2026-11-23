@@ -84,13 +84,18 @@ test('Use this workspace switches and goes back home', async () => {
       plugin: {
         nav: [{ view: 'home' }, { view: 'config', kind: 'agent', id: 'agent_a' }],
         'home.filter': 'old filter',
-        'home.tab': 'agent'
+        'home.tab': 'agent',
+        // Une saisie gardée d'un formulaire de l'ancien workspace.
+        'forms.drafts': { 'environment:env_a': { form: { name: 'typed' }, base: { name: 'old' }, baseStamp: null } }
       }
     }
   })
   const before = sessionReads
+  assert.deepEqual(Object.keys(view.persisted.plugin['forms.drafts'] as object), ['environment:env_a'])
   await view.press({ type: 'IconButton', label: 'Use this workspace' })
   assert.deepEqual(activated, [{ localId: 'ws_2' }])
+  // Les saisies gardées visaient des objets de l'ancien workspace : elles sont oubliées.
+  assert.deepEqual(view.persisted.plugin['forms.drafts'], {})
   assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }])
   assert.equal(view.persisted.plugin['home.filter'], '')
   // L'onglet courant est gardé, et ses listes relues pour le nouveau workspace.
@@ -407,16 +412,69 @@ test('the first key form keeps its input when the API refuses the key', async ()
   await view.unmount()
 })
 
-test('a persisted open detail and add form come back after a restart, without any typed value', async () => {
-  const host = mockHost({ requests: requests(info('ws_1')) })
-  const view = await mount(panel, {
-    host,
-    persisted: { plugin: { 'workspaces.addOpen': true, 'workspaces.editing': { localId: 'ws_2' } } }
+/** Ce qu'il faut au formulaire de création d'agent et à son parcours « New agent from YAML » (brouillon, revue, Confirm). */
+function draftRequests(start: WorkspaceInfo, stateAnswer: () => unknown, over: Record<string, unknown> = {}) {
+  return requests(start, {
+    'agent.formOptions': { ok: true, value: { models: ['claude-sonnet-5'] } },
+    'drafts.status': { folder: '/Users/someone/.config/agent-claude-managed/managed-agents', ready: true },
+    'draft.state': stateAnswer,
+    'draft.open': {
+      ok: true,
+      value: {
+        ref: { kind: 'agent', agentId: null },
+        file: 'new-agent.yaml',
+        unapplied: false,
+        writtenAt: '2026-11-22T10:00:00Z',
+        savedAt: '2026-11-22T10:00:00Z',
+        returnTo: null
+      }
+    },
+    'draft.prepare': {
+      ok: true,
+      value: { token: 'plugin-test-token-QUOKKA-xyz', changes: [{ path: 'name', before: null, after: 'x', lines: null }], totalChanges: 1, creates: true }
+    },
+    ...over
   })
-  // Un champ Name au formulaire d'ajout, un au détail ; tous deux vides de toute saisie.
-  assert.equal(view.findAll({ label: 'Name' }).length, 2)
-  assert.ok(view.find({ label: 'Replace key' }))
-  assert.equal(view.findAll({ label: 'API key' }).length, 1)
+}
+
+test('a switch forgets the draft flows: the new agent form of the next workspace shows no stale review', async () => {
+  let afterSwitch = false
+  const host = mockHost({
+    requests: draftRequests(
+      info('ws_1'),
+      () => {
+        // Avant la bascule le brouillon existe ; après, la relecture échoue : seul l'oubli du panneau le fait disparaître.
+        if (afterSwitch) throw new Error('draft.state unavailable')
+        return {
+          ok: true,
+          value: { ref: { kind: 'agent', agentId: null }, file: 'new-agent.yaml', unapplied: true, writtenAt: '2026-11-22T10:00:00Z', savedAt: '2026-11-22T10:00:00Z', returnTo: null }
+        }
+      },
+      {
+        'workspaces.activate': () => {
+          afterSwitch = true
+          return { ok: true, value: info('ws_2') }
+        }
+      }
+    )
+  })
+  const view = await mount(panel, { host, persisted: { plugin: { 'home.tab': 'agent' } } })
+  await view.press({ type: 'IconButton', label: 'New agent' })
+  await view.press({ role: 'button', text: 'New agent from YAML' })
+  await view.press({ role: 'button', text: 'Apply' })
+  // Le parcours est à la revue : Confirm attend.
+  assert.ok(view.find({ role: 'button', text: 'Confirm' }))
+  // Retour à l'accueil : le parcours du brouillon survit au retour, c'est ce que la bascule doit effacer.
+  await view.press({ role: 'button', text: /Back/ })
+  await view.press({ type: 'IconButton', label: 'New agent' })
+  assert.ok(view.find({ role: 'button', text: 'Confirm' }))
+  await view.press({ role: 'button', text: /Back/ })
+  await view.press({ type: 'IconButton', label: 'Use this workspace' })
+  await view.press({ type: 'IconButton', label: 'New agent' })
+  assert.equal(view.find({ role: 'button', text: 'Confirm' }), null)
+  assert.equal(view.find({ role: 'button', text: 'Apply' }), null)
+  assert.equal(view.find({ text: /Unapplied draft|Draft open in the editor/ }), null)
+  assert.ok(view.find({ role: 'button', text: 'New agent from YAML' }))
   assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
   await view.unmount()
 })

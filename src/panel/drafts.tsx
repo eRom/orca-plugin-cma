@@ -75,9 +75,14 @@ function setInfo(key: string, info: DraftInfo | null): void {
   update(draftInfos, (infos) => ({ ...infos, [key]: info }))
 }
 
-/** Oublie ce que le panneau sait des brouillons : ils viennent du workspace qu'on quitte et se relisent à l'ouverture d'une vue. */
-export function resetDraftInfos(): void {
+/**
+ * Oublie ce que le panneau sait des brouillons : infos, parcours en cours (revue, conflit, succès) et ouvertures. Ils viennent
+ * du workspace qu'on quitte, et la clé `agent:new` du modèle de création serait la même dans le suivant.
+ */
+export function clearDraftState(): void {
   set(draftInfos, {})
+  set(draftFlows, {})
+  set(draftOpened, {})
 }
 
 function setOpened(key: string, opened: boolean): void {

@@ -40,9 +40,8 @@ const WORKSPACES_INFO = {
   ]
 }
 
-function workspacesScenario(persisted?: { plugin: Record<string, unknown> }) {
+function workspacesScenario() {
   return {
-    ...(persisted ? { persisted } : {}),
     requests: {
       'workspace.info': WORKSPACES_INFO,
       'sessions.visibility': { bootId: 'boot-1', watching: null },
@@ -134,10 +133,6 @@ export default defineCheck({
   },
   // La section des workspaces : deux lignes, le badge Active sur la première, ✓ et ✎ sur la seconde.
   workspaces: workspacesScenario(),
-  // Le formulaire d'ajout ouvert sous le groupe (Name, API key, Add, Cancel).
-  'add workspace': workspacesScenario({ plugin: { 'workspaces.addOpen': true } }),
-  // Le détail ✎ d'une ligne inactive : nom, remplacement de clé, Console, Remove.
-  'edit workspace': workspacesScenario({ plugin: { 'workspaces.editing': { localId: 'ws_2' } } }),
   // La clé de l'actif a disparu du Mac : badge Key missing, détail ouvert d'office sur Replace key, onglets absents.
   'key missing': {
     requests: { 'workspace.info': { ...WORKSPACES_INFO, hasKey: false, workspaceId: null } }

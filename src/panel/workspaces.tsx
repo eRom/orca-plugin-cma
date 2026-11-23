@@ -1,6 +1,6 @@
 // Section « Anthropic workspace » de l'accueil : la liste des workspaces associés (un actif, un badge), l'ajout,
-// la modification d'une ligne (nom, clé, console, retrait) et la bascule. Seuls l'ouverture du formulaire d'ajout et la
-// ligne ouverte sont persistés (un drapeau, un identifiant) : une clé saisie reste en mémoire, dans son champ, nulle part ailleurs.
+// la modification d'une ligne (nom, clé, console, retrait) et la bascule. Aucun atome de ce fichier n'est persisté :
+// une clé saisie reste en mémoire, dans son champ, nulle part ailleurs.
 import { atom, Box, Button, Callout, IconButton, Input, Link, plugin, read, set, Stack, Text } from 'orca'
 import { ConfirmInline } from '../blocks/confirm-inline'
 import { GroupCard } from '../blocks/group-card'
@@ -10,7 +10,7 @@ import type { ApiResult, WorkspaceInfo, WorkspaceRow } from '../protocol'
 import { clipBytes } from '../shared/text'
 import { loadConfigTab, resetConfigs } from './config-state'
 import { restoreConfigView } from './config-views'
-import { resetDraftInfos } from './drafts'
+import { clearDraftState } from './drafts'
 import { clearAllForms } from './form-state'
 import { restoreNewSession } from './new-session'
 import { restoreOpenSession } from './session-view'
@@ -35,7 +35,7 @@ const DEFAULT_NAME = 'Default'
 /** Vrai pendant un appel au worker : un second appui ne part pas (un ajout doublé serait refusé en doublon). */
 const busy = atom(false)
 
-const addOpen = atom('workspaces.addOpen', false, { persist: 'plugin' })
+const addOpen = atom(false)
 const addName = atom('')
 const addKey = atom('')
 const addError = atom<string | null>(null)
@@ -46,7 +46,7 @@ const firstKey = atom('')
 const firstError = atom<string | null>(null)
 
 /** Le ✎ ouvert : `null` = le choix par défaut (la ligne active s'ouvre seule quand sa clé manque ou est refusée) ; `localId: null` = tout fermé. */
-const editing = atom<{ localId: string | null } | null>('workspaces.editing', null, { persist: 'plugin' })
+const editing = atom<{ localId: string | null } | null>(null)
 /** Nom en cours de saisie ; `null` tant qu'on n'y a pas touché (la ligne donne le nom). */
 const editName = atom<string | null>(null)
 const editKey = atom('')
@@ -85,7 +85,7 @@ export async function resetForWorkspace(): Promise<void> {
   resetConfigs()
   set(homeFilter, '')
   clearAllForms()
-  resetDraftInfos()
+  clearDraftState()
   set(editing, null)
   resetEditFields()
   await Promise.all([loadSessions(), loadConfigTab()])
