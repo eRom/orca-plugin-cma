@@ -232,7 +232,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   orca.panels.handle('files.list', resources.listFiles)
   orca.panels.handle('files.upload', resources.uploadFile)
   orca.panels.handle('files.delete', resources.deleteFile)
-  orca.panels.handle('memory.stageUploads',createMemoryUploads(store, pendingWrites, (message) => orca.log(message)))
+  orca.panels.handle('memory.stageUploads', createMemoryUploads(store, pendingWrites, (message) => orca.log(message)))
   orca.panels.handle('memory.rename', createMemoryRename(store, () => drafts, (message) => orca.log(message)))
   // Un agent archivé n'a plus de brouillon propre à garder : son fichier et son nom se libèrent.
   const archiveThenRelease = thenRefreshSessions(writes.archive)
