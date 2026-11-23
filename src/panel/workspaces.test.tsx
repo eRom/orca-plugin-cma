@@ -63,6 +63,21 @@ test('says Workspace unknown for an entry whose id could not be read', async () 
   await view.unmount()
 })
 
+test('clips a workspace id of 2000 characters instead of letting Orca refuse the render', async () => {
+  const longId = `wrkspc_${'Q'.repeat(1993)}`
+  const start = info('ws_1')
+  const host = mockHost({
+    requests: requests({ ...start, workspaces: start.workspaces.map((row) => (row.localId === 'ws_2' ? { ...row, workspaceId: longId } : row)) })
+  })
+  const view = await mount(panel, { host })
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
+  // L'identifiant est coupé à 200 octets et la ligne reste affichée.
+  assert.ok(view.find({ text: longId.slice(0, 200) }))
+  assert.equal(view.find({ text: longId }), null)
+  assert.ok(view.find({ text: 'Orca-claude' }))
+  await view.unmount()
+})
+
 test('Use this workspace switches and goes back home', async () => {
   const activated: unknown[] = []
   let sessionReads = 0

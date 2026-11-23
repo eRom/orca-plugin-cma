@@ -453,7 +453,7 @@ function WorkspaceLine({ row, info }: { row: WorkspaceRow; info: WorkspaceInfo }
             ) : null,
             <Box key="id" grow minWidth={0}>
               <Text muted size="xs" truncate>
-                {row.workspaceId ?? 'Workspace unknown'}
+                {row.workspaceId === null ? 'Workspace unknown' : clipName(row.workspaceId)}
               </Text>
             </Box>
           ]}
