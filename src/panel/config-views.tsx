@@ -8,6 +8,7 @@ import {
   Card,
   Code,
   CodeView,
+  IconButton,
   KeyValue,
   Markdown,
   read,
@@ -22,8 +23,11 @@ import {
 } from 'orca'
 import type { AgentDetail, ConfigDetail, ConfigKind, ConfigRow, ToolPolicy, ToolsetView } from '../protocol'
 import { clipBytes } from '../shared/text'
+import { BackHeader } from '../blocks/back-header'
+import { ErrorRetry } from '../blocks/error-retry'
+import { LoadingState } from '../blocks/loading-state'
 import { EnvironmentFormView } from './environment-form'
-import { MemoryActions, MemoryStoreFormView } from './memory-forms'
+import { MemoryActions, MemoryStoreFormView, refreshStore } from './memory-forms'
 import { VaultFormView } from './vault-forms'
 import { configDetail, configDetailError, configRows, loadDetail, loadMemory, memoryContent, memoryError, RENDER_ROW_CAP } from './config-state'
 import { ERROR_TEXT_LIMIT_BYTES, nav, popView, run, workspace } from './state'
@@ -225,6 +229,11 @@ function AgentBody({ agent }: { agent: AgentDetail }) {
   )
 }
 
+/** Le lien vers la console, en icône : un geste d'en-tête, pas une action de la page. */
+function ConsoleButton({ url }: { url: string | null }) {
+  return url ? <IconButton icon="open-external" label="Open in Console" variant="ghost" size="sm" onPress={() => openInConsole(url)} /> : null
+}
+
 // --- Mémoire ---
 
 export function MemoryView({ memoryStoreId, memoryId }: { memoryStoreId: string; memoryId: string }) {
@@ -236,28 +245,35 @@ export function MemoryView({ memoryStoreId, memoryId }: { memoryStoreId: string;
   return (
     <Stack gap="md">
       {/* Aucune page console n'est vérifiée pour une mémoire seule : le lien mène à sa banque. */}
-      <DetailHeader name={loaded?.path ?? memoryId} id={memoryId} url={consoleUrl(workspaceId, 'memory_store', memoryStoreId)} />
+      <BackHeader
+        title={clipTitle(loaded?.path ?? memoryId)}
+        subtitle={clipTitle(memoryId)}
+        onBack={goBack}
+        trailing={<ConsoleButton url={consoleUrl(workspaceId, 'memory_store', memoryStoreId)} />}
+      />
       {failure ? (
-        <LoadFailure title="Could not load the memory" message={failure} />
+        <ErrorRetry title="Could not load the memory" message={clipBytes(failure, ERROR_TEXT_LIMIT_BYTES).text} onRetry={() => run(() => loadMemory(memoryStoreId, memoryId))} />
       ) : loaded === null ? (
-        <Spinner label="Loading memory" />
+        <LoadingState kind="operation" label="Loading memory" />
       ) : (
-        <Stack gap="sm">
-          {Number.isNaN(at) ? null : (
-            <Text muted size="sm">
-              Updated <RelativeTime at={at} format="long" />
-            </Text>
-          )}
+        <Stack gap="md">
           {/* Les actions passent avant le contenu : un contenu de 60 Ko les repousserait hors de portée. */}
           <MemoryActions memory={loaded} />
-          {loaded.content.text ? (
-            <Markdown content={loaded.content.text} />
-          ) : (
-            <Text muted size="sm">
-              This memory is empty.
-            </Text>
-          )}
-          {loaded.content.truncated ? <Truncated /> : null}
+          <Stack gap="sm">
+            {Number.isNaN(at) ? null : (
+              <Text muted size="sm">
+                Updated <RelativeTime at={at} format="long" />
+              </Text>
+            )}
+            {loaded.content.text ? (
+              <Markdown content={loaded.content.text} />
+            ) : (
+              <Text muted size="sm">
+                This memory is empty.
+              </Text>
+            )}
+            {loaded.content.truncated ? <Truncated /> : null}
+          </Stack>
         </Stack>
       )}
     </Stack>
@@ -285,13 +301,29 @@ export function ConfigDetailView({ kind, id }: { kind: ConfigKind; id: string })
   const failure = read(configDetailError)
   const listedName = read(configRows)[kind]?.find((row) => row.id === id)?.name
   const workspaceId = read(workspace)?.workspaceId ?? null
+  const name = loaded?.name ?? listedName ?? id
+  const url = consoleUrl(workspaceId, kind, id)
   return (
     <Stack gap="md">
-      <DetailHeader name={loaded?.name ?? listedName ?? id} id={id} url={consoleUrl(workspaceId, kind, id)} />
+      {kind === 'memory_store' ? (
+        <BackHeader
+          title={clipTitle(name)}
+          subtitle={clipTitle(id)}
+          onBack={goBack}
+          trailing={
+            <Row gap="xs" align="center">
+              <IconButton icon="refresh" label="Refresh" variant="ghost" size="sm" onPress={() => run(() => refreshStore(id))} />
+              <ConsoleButton url={url} />
+            </Row>
+          }
+        />
+      ) : (
+        <DetailHeader name={name} id={id} url={url} />
+      )}
       {failure ? (
-        <LoadFailure title="Could not load the details" message={failure} />
+        <ErrorRetry title="Could not load the details" message={clipBytes(failure, ERROR_TEXT_LIMIT_BYTES).text} onRetry={() => run(() => loadDetail(kind, id))} />
       ) : loaded === null ? (
-        <Spinner label="Loading details" />
+        <LoadingState kind="operation" label="Loading details" />
       ) : (
         <DetailBody detail={loaded} />
       )}

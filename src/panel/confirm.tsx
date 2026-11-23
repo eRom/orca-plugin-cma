@@ -1,5 +1,6 @@
 // Confirmation en deux temps : un premier appui ouvre la question, le second exécute l'action.
 import { atom, Button, Callout, read, Row, set, Stack, Text, update } from 'orca'
+import { ConfirmInline } from '../blocks/confirm-inline'
 import { clipBytes } from '../shared/text'
 import { run } from './state'
 
@@ -76,5 +77,35 @@ export function ConfirmAction({ actionKey, label, question, confirmLabel, onConf
         </Row>
       </Stack>
     </Callout>
+  )
+}
+
+/** Ouvre la question de `actionKey` : le geste (un bouton d'une rangée d'actions) ne dessine pas lui-même sa confirmation. */
+export function askConfirmation(actionKey: string): void {
+  set(pendingConfirmation, actionKey)
+}
+
+/** Vrai tant que la question de `actionKey` est ouverte. */
+export function isConfirming(actionKey: string): boolean {
+  return read(pendingConfirmation) === actionKey
+}
+
+/**
+ * La confirmation d'un geste lancé ailleurs (`askConfirmation`) : le bloc `ConfirmInline`, avec la même logique que
+ * `ConfirmAction` (une seule question à la fois, bouton grisé en route, refus de l'API remonté, question laissée ouverte).
+ */
+export function ConfirmPanel({ actionKey, question, confirmLabel, onConfirm, disabled }: Omit<ConfirmActionProps, 'label'>) {
+  if (read(pendingConfirmation) !== actionKey) return null
+  const running = read(runningConfirmations).includes(actionKey)
+  return (
+    <ConfirmInline
+      question={question}
+      confirmLabel={confirmLabel}
+      onCancel={() => set(pendingConfirmation, null)}
+      onConfirm={() => {
+        if (disabled || running) return
+        run(() => confirmAction(actionKey, onConfirm))
+      }}
+    />
   )
 }

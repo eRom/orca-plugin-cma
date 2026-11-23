@@ -32,6 +32,18 @@ const session = {
   pendingApprovals: 0
 }
 
+const CHECK_MEMORIES = [
+  { id: 'mem_a', path: '/runbooks/deploy.md', sizeBytes: 2048, updatedAt: '2026-11-20T10:00:00Z' },
+  { id: 'mem_b', path: '/runbooks/rollback.md', sizeBytes: 300, updatedAt: '2026-11-21T10:00:00Z' },
+  { id: 'mem_c', path: '/SOUL.md', sizeBytes: 14, updatedAt: '2026-11-21T11:00:00Z' }
+]
+
+/** Le dossier de brouillons est prêt et aucune mémoire n'a de brouillon : l'écran d'une banque n'en dit rien. */
+const NO_DRAFTS = {
+  'drafts.status': { folder: '/Users/someone/.config/agent-claude-managed/managed-agents', ready: true },
+  'draft.state': { ok: true as const, value: null }
+}
+
 export default defineCheck({
   'no key': {
     requests: { 'workspace.info': { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null } }
@@ -116,18 +128,16 @@ export default defineCheck({
     skills: ['skill_triage'],
     multiagent: 'Multiagent: advisor claude-opus-5'
   }),
-  'memory store': configScenario('memory_store', {
-    kind: 'memory_store',
-    id: 'memstore_check',
-    name: 'Notes',
-    description: 'Runbooks of the team.',
-    updatedAt: '2026-11-21T10:00:00Z',
-    form: { name: 'Notes', description: 'Runbooks of the team.' },
-    memories: [
-      { id: 'mem_a', path: 'runbooks/deploy.md', sizeBytes: 2048, updatedAt: '2026-11-20T10:00:00Z' },
-      { id: 'mem_b', path: 'runbooks/rollback.md', sizeBytes: 300, updatedAt: '2026-11-21T10:00:00Z' }
-    ]
-  }),
+  // L'écran d'une banque : sans mémoire, avec trois mémoires, avec des lignes à envoyer (une en défaut), et le détail d'une mémoire.
+  'memory store empty': memoryStoreScenario([]),
+  'memory store filled': memoryStoreScenario(CHECK_MEMORIES),
+  'memory store uploads': memoryStoreScenario(CHECK_MEMORIES, [
+    { id: 'row_a', path: '/notes/today.md', file: '/Users/someone/notes/today.md', name: 'today.md', memoryId: null },
+    // Un chemin déjà pris (la casse ne compte pas) : son message s'affiche sous la ligne et Apply est grisé.
+    { id: 'row_b', path: '/Runbooks/Deploy.md', file: '/Users/someone/drafts/a-very-long-file-name-for-the-deploy-runbook.md', name: 'a-very-long-file-name-for-the-deploy-runbook.md', memoryId: null },
+    { id: 'row_c', path: '', file: '', name: '', memoryId: null }
+  ]),
+  'memory detail': memoryDraftScenario({ ready: true, info: null }),
   // Le formulaire d'une banque dont la saisie gardée date d'une version plus ancienne : « Unsaved changes », l'avis de conflit, la liste des mémoires.
   'memory store form': memoryStoreFormScenario(),
   'new memory store form': {
@@ -145,7 +155,7 @@ export default defineCheck({
   'drafts kept draft': memoryDraftScenario({
     ready: true,
     info: {
-      ref: { kind: 'memory', memoryStoreId: 'memstore_check', memoryId: 'mem_a', path: 'runbooks/deploy.md' },
+      ref: { kind: 'memory', memoryStoreId: 'memstore_check', memoryId: 'mem_a', path: '/runbooks/deploy.md' },
       file: 'memories/notes--memstore_check/runbooks/deploy.md',
       unapplied: true,
       writtenAt: '2026-11-22T10:00:00Z',
@@ -347,6 +357,31 @@ function environmentDraftScenario() {
   }
 }
 
+/** L'écran d'une banque : ses mémoires, et les lignes à envoyer que le panneau a gardées (atome persisté `memory.uploads`). */
+function memoryStoreScenario(memories: MemoryStoreDetail['memories'], uploads: unknown[] = []) {
+  const detail: MemoryStoreDetail = {
+    kind: 'memory_store',
+    id: 'memstore_check',
+    name: 'Notes',
+    description: 'Runbooks of the team.',
+    updatedAt: '2026-11-21T10:00:00Z',
+    form: { name: 'Notes', description: 'Runbooks of the team.' },
+    memories
+  }
+  const scenario = configScenario('memory_store', detail)
+  return {
+    ...scenario,
+    persisted: {
+      plugin: {
+        ...scenario.persisted.plugin,
+        ...(uploads.length > 0 && { 'memory.uploads': { memstore_check: uploads } })
+      }
+    },
+    requests: { ...scenario.requests, ...NO_DRAFTS }
+  }
+}
+
+
 /** Une banque, avec une saisie gardée sur une version plus ancienne que le détail. */
 function memoryStoreFormScenario() {
   const detail: MemoryStoreDetail = {
@@ -375,7 +410,8 @@ function memoryStoreFormScenario() {
           }
         }
       }
-    }
+    },
+    requests: { ...scenario.requests, ...NO_DRAFTS }
   }
 }
 
@@ -449,7 +485,7 @@ function memoryDraftScenario(drafts: { ready: boolean; info: DraftInfo | null })
         value: {
           id: 'mem_a',
           memoryStoreId: 'memstore_check',
-          path: 'runbooks/deploy.md',
+          path: '/runbooks/deploy.md',
           updatedAt: '2026-11-20T10:00:00Z',
           sha256: 'sha-check',
           content: { text: '# Deploy\n\nRun the script.', truncated: false }

@@ -1,55 +1,34 @@
-// Banques de mémoire et mémoires : le formulaire d'une banque (création, modification, archivage,
-// suppression), sa liste de mémoires avec « New memory », et les actions d'une mémoire ouverte
-// (contenu par brouillon, renommage, suppression). La saisie d'une banque est gardée par `form-state` ;
-// le reste de l'état (chemin à renommer, nouvelle mémoire en cours) est éphémère.
-import {
-  atom,
-  Button,
-  Callout,
-  Code,
-  Input,
-  List,
-  ListItem,
-  plugin,
-  read,
-  RelativeTime,
-  Row,
-  set,
-  Spinner,
-  Stack,
-  Text,
-  update,
-  type OrcaNode
-} from 'orca'
-import type { ApiResult, MemoryContent, MemoryStoreDetail, MemoryStoreForm } from '../protocol'
+// Banques de mémoire et mémoires : l'écran d'une banque (formulaire, mémoires, lignes à envoyer, archivage et
+// suppression) et les actions d'une mémoire ouverte (brouillon, remplacement, renommage, suppression).
+// La saisie d'une banque est gardée par `form-state` ; le reste de l'état est éphémère, hors les lignes à envoyer
+// (`memory-uploads`). Les blocs du kit (`src/blocks/`) sont copiés tels quels : tout s'adapte par leurs props.
+import { atom, Box, Button, Callout, IconButton, Input, plugin, read, Row, set, Stack, Text, update, type OrcaNode } from 'orca'
+import { ActionRow } from '../blocks/action-row'
+import { BackHeader } from '../blocks/back-header'
+import { clipLabel } from '../blocks/clip-label'
+import { EmptyView } from '../blocks/empty-view'
+import { FormSection } from '../blocks/form-section'
+import { GroupCard } from '../blocks/group-card'
+import { ItemRow } from '../blocks/item-row'
+import { LoadingState } from '../blocks/loading-state'
+import type { ApiResult, MemoryContent, MemoryRow, MemoryStoreDetail, MemoryStoreForm } from '../protocol'
 import { INVALID_MEMORY_PATH, isSafeMemoryPath } from '../shared/memory-path'
 import { clipBytes } from '../shared/text'
-import { archiveQuestion, ConfirmAction, deleteQuestion } from './confirm'
-import {
-  configDetail,
-  loadConfigs,
-  loadDetail,
-  loadMemory,
-  memoryDraft,
-  newMemories,
-  newMemoryRef,
-  openConfig,
-  openMemory,
-  RENDER_ROW_CAP,
-  setNewMemory
-} from './config-state'
-import { DraftControls, draftHasFlow, draftIsUnapplied, loadDraftControls } from './drafts'
+import { archiveQuestion, askConfirmation, ConfirmPanel, deleteQuestion } from './confirm'
+import { configDetail, loadConfigs, loadDetail, loadMemory, memoryDraft, openConfig, openMemory, RENDER_ROW_CAP } from './config-state'
+import { DraftControls, draftIsBusy, draftIsUnapplied, startDraft } from './drafts'
 import { clearForm, editForm, formConflict, formKey, isTouched, readForm, touchField } from './form-state'
+import { addReplaceRow, dropStoreUploads, UploadsSection } from './memory-uploads'
 import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, nav, popIfTop, popView, run } from './state'
 
 /** Titre de l'avis d'un conflit : le même texte que celui du worker. */
 const CONFLICT_TITLE = 'Changed elsewhere since you opened it.'
 /** Plafond d'un nom ou d'un chemin repris dans un libellé : un libellé de plus de 1 Kio fait refuser le rendu. */
 const TITLE_LIMIT_BYTES = 200
-const PATH_HELP = 'Starts with /, for example /notes/today.md'
-const PATH_TAKEN = 'A memory already has this path.'
 /** Ajouté à la question d'une suppression quand un brouillon non appliqué existe : le worker le garde, comme une nouvelle mémoire. */
 const KEPT_DRAFT_NOTE = ' Your unapplied draft stays as a new memory at this path.'
+/** Largeur minimale d'un champ qui partage sa ligne avec un bouton : en dessous, le bouton passe dessous. */
+const FIELD_MIN_WIDTH = 140
 
 const clipTitle = (text: string): string => clipBytes(text, TITLE_LIMIT_BYTES).text
 
@@ -64,8 +43,10 @@ const saving = atom(false)
 /** Refus de l'enregistrement d'une banque (hors conflit), avec le formulaire concerné. */
 const saveFailure = atom<{ key: string; message: string } | null>(null)
 
-/** Chemins tapés dans le champ « Path » d'une mémoire ouverte, par identifiant de mémoire ; absent : le chemin actuel. */
+/** Chemins tapés dans le champ d'un renommage, par identifiant de mémoire ; absent : le chemin actuel. */
 const renamePaths = atom<Record<string, string>>({})
+/** La mémoire dont le champ de renommage est ouvert. */
+const renameOpen = atom<string | null>(null)
 /** Vrai pendant un renommage. */
 const renaming = atom(false)
 /** Refus d'un renommage, avec la mémoire concernée. */
@@ -134,19 +115,20 @@ async function reloadForm(key: string, id: string): Promise<void> {
   await loadDetail('memory_store', id)
 }
 
-/** Archive ou supprime la banque, puis revient à l'accueil et relit la liste. Un refus de l'API remonte à `ConfirmAction`. */
+/** Relit la liste puis le détail de la banque : le geste de « refresh » de l'en-tête, et la suite d'un brouillon appliqué. */
+export async function refreshStore(storeId: string): Promise<void> {
+  await loadConfigs('memory_store')
+  await loadDetail('memory_store', storeId)
+}
+
+/** Archive ou supprime la banque, puis revient à l'accueil et relit la liste. Un refus de l'API remonte à `ConfirmPanel`. */
 async function removeStore(key: string, id: string, call: () => Promise<ApiResult<null>>): Promise<void> {
   const result = await call()
   if (!result.ok) throw new Error(result.error)
   discardForm(key)
+  dropStoreUploads(id)
   popIfTop((entry) => entry.view === 'config' && entry.kind === 'memory_store' && entry.id === id)
   await loadConfigs('memory_store')
-}
-
-/** Relit la liste puis le détail de la banque : après l'application d'une nouvelle mémoire. */
-async function reloadStore(storeId: string): Promise<void> {
-  await loadConfigs('memory_store')
-  await loadDetail('memory_store', storeId)
 }
 
 /**
@@ -179,6 +161,7 @@ async function renameMemory(memory: MemoryContent, path: string): Promise<void> 
       return
     }
     setRenamePath(memory.id, null)
+    set(renameOpen, null)
     await afterMemoryWrite(memory.memoryStoreId, memory.id)
   } finally {
     set(renaming, false)
@@ -192,7 +175,7 @@ async function reloadMemory(memory: MemoryContent): Promise<void> {
   await loadMemory(memory.memoryStoreId, memory.id, true)
 }
 
-/** Supprime la mémoire, puis revient au détail de sa banque relu. Un refus de l'API remonte à `ConfirmAction`. */
+/** Supprime la mémoire, puis revient au détail de sa banque relu. Un refus de l'API remonte à `ConfirmPanel`. */
 async function deleteMemory(memory: MemoryContent): Promise<void> {
   const result = await plugin.request('resource.delete', { kind: 'memory', memoryStoreId: memory.memoryStoreId, id: memory.id })
   if (!result.ok) throw new Error(result.error)
@@ -204,15 +187,23 @@ async function deleteMemory(memory: MemoryContent): Promise<void> {
   await loadDetail('memory_store', memory.memoryStoreId)
 }
 
+/** « Replace… » : ajoute la ligne à la banque, puis y revient (relue si elle a été déclarée périmée par une écriture). */
+function replaceMemory(memory: MemoryContent): void {
+  addReplaceRow(memory.memoryStoreId, memory.id, memory.path)
+  update(nav, popView)
+  if (read(configDetail)?.id !== memory.memoryStoreId) run(() => loadDetail('memory_store', memory.memoryStoreId))
+}
+
 function goBack(): void {
   update(nav, popView)
 }
 
 // --- Banque : rendu ---
 
-type BodyProps = { id: string | null; base: MemoryStoreForm; baseUpdatedAt: string | null; name: string }
+type BodyProps = { id: string | null; base: MemoryStoreForm; baseUpdatedAt: string | null }
 
-function MemoryStoreFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
+/** Name et Description sous leur Save ; `Discard` n'apparaît que sur une saisie modifiée. */
+function MemoryStoreFormBody({ id, base, baseUpdatedAt }: BodyProps) {
   const key = formKey('memory_store', id)
   const { form, dirty, stale } = readForm(key, base, baseUpdatedAt)
   const latest = (): MemoryStoreForm => readForm(key, base, baseUpdatedAt).form
@@ -226,74 +217,52 @@ function MemoryStoreFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
   // L'erreur du nom attend que la personne l'ait modifié une fois : un formulaire neuf ne s'ouvre pas en rouge.
   const nameInvalid = nameMissing && isTouched(key, 'name')
   return (
-    <Stack gap="md">
-      {dirty ? (
-        <Callout tone="accent">
-          <Row gap="sm" align="center" justify="between" wrap>
-            <Text size="sm">Unsaved changes</Text>
-            <Button variant="ghost" size="sm" onPress={() => discardForm(key)}>
-              Discard
-            </Button>
-          </Row>
-        </Callout>
-      ) : null}
-      {conflict && id !== null ? (
-        <Callout tone="warning" title={CONFLICT_TITLE}>
-          <Stack gap="sm">
-            <Text size="sm">Reload drops your changes. Save anyway overwrites what changed.</Text>
-            <Row gap="sm" wrap>
-              <Button variant="outline" size="sm" disabled={busy} onPress={() => run(() => reloadForm(key, id))}>
-                Reload
-              </Button>
-              <Button variant="solid" size="sm" disabled={busy || nameMissing} onPress={() => run(() => saveForm(target, true))}>
-                Save anyway
-              </Button>
-            </Row>
-          </Stack>
-        </Callout>
-      ) : null}
-      {failed?.key === key ? (
-        <Callout tone="danger" title="Could not save">
-          <Text size="sm">{clipBytes(failed.message, ERROR_TEXT_LIMIT_BYTES).text}</Text>
-        </Callout>
-      ) : null}
-      <Input
-        label="Name"
-        disabled={busy}
-        value={form.name}
-        invalid={nameInvalid}
-        onChange={(value) => {
-          touchField(key, 'name')
-          change({ name: value })
-        }}
-      />
-      <Input label="Description" disabled={busy} placeholder="Optional" value={form.description} onChange={(value) => change({ description: value })} />
-      <Row gap="sm" align="center" wrap>
-        <Button disabled={busy || nameMissing || (id !== null && !dirty)} onPress={() => run(() => saveForm(target, false))}>
-          {id === null ? 'Create' : 'Save'}
-        </Button>
-        {id !== null ? (
-          <>
-            <ConfirmAction
-              actionKey={`memory_store:${id}:archive`}
-              label="Archive"
-              question={archiveQuestion(name)}
-              confirmLabel="Archive"
-              disabled={busy}
-              onConfirm={() => removeStore(key, id, () => plugin.request('resource.archive', { kind: 'memory_store', id }))}
-            />
-            <ConfirmAction
-              actionKey={`memory_store:${id}:delete`}
-              label="Delete"
-              question={deleteQuestion(name)}
-              confirmLabel="Delete"
-              disabled={busy}
-              onConfirm={() => removeStore(key, id, () => plugin.request('resource.delete', { kind: 'memory_store', id }))}
-            />
-          </>
-        ) : null}
-      </Row>
-    </Stack>
+    <FormSection
+      title={id === null ? undefined : 'Details'}
+      saveLabel={id === null ? 'Create' : 'Save'}
+      // `busy` grise Save : il dit aussi « rien à enregistrer » (saisie intacte) et « nom manquant ».
+      busy={busy || nameMissing || (id !== null && !dirty)}
+      error={failed?.key === key ? clipBytes(failed.message, ERROR_TEXT_LIMIT_BYTES).text : undefined}
+      errorTitle="Could not save"
+      onSave={() => run(() => saveForm(target, false))}
+      cancelLabel="Discard"
+      onCancel={dirty ? () => discardForm(key) : undefined}
+    >
+      {[
+        conflict && id !== null ? (
+          <Callout key="conflict" tone="warning" title={CONFLICT_TITLE}>
+            <Stack gap="sm">
+              <Text size="sm">Reload drops your changes. Save anyway overwrites what changed.</Text>
+              <Row gap="sm" wrap>
+                <Button variant="outline" size="sm" disabled={busy} onPress={() => run(() => reloadForm(key, id))}>
+                  Reload
+                </Button>
+                <Button variant="solid" size="sm" disabled={busy || nameMissing} onPress={() => run(() => saveForm(target, true))}>
+                  Save anyway
+                </Button>
+              </Row>
+            </Stack>
+          </Callout>
+        ) : null,
+        <Input
+          key="name"
+          label="Name"
+          disabled={busy}
+          value={form.name}
+          invalid={nameInvalid}
+          onChange={(value) => {
+            touchField(key, 'name')
+            change({ name: value })
+          }}
+        />,
+        <Input key="description" label="Description" disabled={busy} placeholder="Optional" value={form.description} onChange={(value) => change({ description: value })} />,
+        dirty ? (
+          <Text key="dirty" muted size="xs">
+            Unsaved changes
+          </Text>
+        ) : null
+      ]}
+    </FormSection>
   )
 }
 
@@ -303,113 +272,36 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-/** « New memory » : demande le chemin, puis rend les contrôles du brouillon d'une mémoire pas encore créée. */
-function NewMemory({ store }: { store: MemoryStoreDetail }) {
-  const entry = read(newMemories)[store.id]
-  const fieldKey = `memory:new:${store.id}`
-  if (entry === undefined || (entry.phase === 'applied' && !draftHasFlow(newMemoryRef(store.id, entry.path)))) {
-    return (
-      <Row>
-        <Button icon="add" onPress={() => setNewMemory(store.id, { phase: 'asking', path: '' })}>
-          New memory
-        </Button>
-      </Row>
-    )
-  }
-  if (entry.phase === 'asking') {
-    const invalid = entry.path !== '' && !isSafeMemoryPath(entry.path)
-    // macOS plie la casse des noms de fichier : `/A.md` et `/a.md` sont le même brouillon.
-    const lowered = entry.path.toLowerCase()
-    const taken = !invalid && store.memories.some((memory) => memory.path.toLowerCase() === lowered)
-    const proceed = (): void => {
-      if (entry.path === '' || invalid || taken) return
-      setNewMemory(store.id, { phase: 'editing', path: entry.path })
-      run(() => loadDraftControls(newMemoryRef(store.id, entry.path)))
-    }
-    return (
-      <Stack gap="sm">
-        <Input
-          label="Path"
-          value={entry.path}
-          invalid={invalid && isTouched(fieldKey, 'path')}
-          onChange={(value) => {
-            touchField(fieldKey, 'path')
-            setNewMemory(store.id, { phase: 'asking', path: value })
-          }}
-          onSubmit={proceed}
-        />
-        {invalid && isTouched(fieldKey, 'path') ? (
-          <Text tone="danger" size="sm">
-            {INVALID_MEMORY_PATH}
-          </Text>
-        ) : taken ? (
-          <Text tone="danger" size="sm">
-            {PATH_TAKEN}
-          </Text>
-        ) : (
-          <Text muted size="xs">
-            {PATH_HELP}
-          </Text>
-        )}
-        <Row gap="sm" wrap>
-          <Button disabled={entry.path === '' || invalid || taken} onPress={proceed}>
-            Continue
-          </Button>
-          <Button variant="ghost" size="sm" onPress={() => setNewMemory(store.id, null)}>
-            Cancel
-          </Button>
-        </Row>
-      </Stack>
-    )
-  }
-  const ref = newMemoryRef(store.id, entry.path)
+/** Une mémoire de la banque : sa ligne (✎ ouvre l'éditeur, ⋯ ouvre son détail) et, dessous, ce que dit son brouillon. */
+function MemoryLine({ store, memory }: { store: MemoryStoreDetail; memory: MemoryRow }) {
+  const draftRef = memoryDraft(store.id, memory.id, memory.path)
+  const reread = (): void => run(() => refreshStore(store.id))
   return (
-    <Stack gap="sm">
-      <Row gap="sm" align="center" wrap>
-        <Code>{clipTitle(entry.path)}</Code>
-        {/* Tant que le brouillon est non appliqué, Close le ferait oublier du panneau : Discard reste la sortie. */}
-        {draftIsUnapplied(ref) ? null : (
-          <Button variant="ghost" size="sm" onPress={() => setNewMemory(store.id, null)}>
-            Close
-          </Button>
-        )}
-      </Row>
-      <DraftControls
-        draftRef={ref}
-        label="Edit content"
-        onApplied={() => {
-          setNewMemory(store.id, { phase: 'applied', path: entry.path })
-          run(() => reloadStore(store.id))
-        }}
-        onDiscarded={() => setNewMemory(store.id, null)}
+    <Stack gap="xs">
+      <ItemRow
+        title={clipTitle(memory.path)}
+        subtitle={formatSize(memory.sizeBytes)}
+        actions={[
+          { key: 'edit', icon: 'edit', label: `Edit ${clipLabel(memory.path, 200)} in editor`, disabled: draftIsBusy(draftRef), onPress: () => startDraft(draftRef) },
+          { key: 'open', icon: 'more', label: `Open ${clipLabel(memory.path, 200)}`, onPress: () => openMemory(store.id, memory.id) }
+        ]}
       />
+      <DraftControls draftRef={draftRef} label="Edit in editor" showOpen={false} onApplied={reread} onDiscarded={reread} />
     </Stack>
   )
 }
 
 function MemoriesSection({ store }: { store: MemoryStoreDetail }) {
   return (
-    <Stack gap="sm">
-      <Text size="sm" weight="medium">
-        Memories
-      </Text>
-      <NewMemory store={store} />
-      {store.memories.length === 0 ? (
-        <Text muted size="sm">
-          No memories yet.
-        </Text>
-      ) : (
-        <List label="Memories">
-          {store.memories.slice(0, RENDER_ROW_CAP).map((memory) => {
-            const at = Date.parse(memory.updatedAt)
-            return (
-              <ListItem key={memory.id} title={clipTitle(memory.path)} description={formatSize(memory.sizeBytes)} onPress={() => openMemory(store.id, memory.id)}>
-                {Number.isNaN(at) ? null : <RelativeTime at={at} format="short" muted />}
-              </ListItem>
-            )
-          })}
-        </List>
-      )}
+    <Stack gap="xs">
+      <GroupCard
+        title="Memories"
+        rows={
+          store.memories.length === 0
+            ? [<EmptyView kind="list" text="No memories yet." />]
+            : store.memories.slice(0, RENDER_ROW_CAP).map((memory) => ({ key: memory.id, row: <MemoryLine store={store} memory={memory} /> }))
+        }
+      />
       {store.memories.length > RENDER_ROW_CAP ? (
         <Text muted size="xs">
           {`Showing the first ${RENDER_ROW_CAP} of ${store.memories.length}. Open in Console for the rest.`}
@@ -419,35 +311,64 @@ function MemoriesSection({ store }: { store: MemoryStoreDetail }) {
   )
 }
 
-/** `id` null : la création ; sinon la banque chargée dans le détail ouvert. */
+/** Archiver et supprimer la banque : en bas de l'écran, une rangée à part avec sa confirmation. */
+function StoreActions({ id, name }: { id: string; name: string }) {
+  const key = formKey('memory_store', id)
+  const busy = read(saving)
+  const archiveKey = `memory_store:${id}:archive`
+  const deleteKey = `memory_store:${id}:delete`
+  return (
+    <Stack gap="sm">
+      <ActionRow
+        actions={[
+          { key: 'archive', label: 'Archive', disabled: busy, onPress: () => askConfirmation(archiveKey) },
+          { key: 'delete', label: 'Delete', tone: 'danger', disabled: busy, onPress: () => askConfirmation(deleteKey) }
+        ]}
+      />
+      <ConfirmPanel
+        actionKey={archiveKey}
+        question={archiveQuestion(name)}
+        confirmLabel="Archive"
+        disabled={busy}
+        onConfirm={() => removeStore(key, id, () => plugin.request('resource.archive', { kind: 'memory_store', id }))}
+      />
+      <ConfirmPanel
+        actionKey={deleteKey}
+        question={deleteQuestion(name)}
+        confirmLabel="Delete"
+        disabled={busy}
+        onConfirm={() => removeStore(key, id, () => plugin.request('resource.delete', { kind: 'memory_store', id }))}
+      />
+    </Stack>
+  )
+}
+
+/** `id` null : la création ; sinon la banque chargée dans le détail ouvert (son en-tête est celui de `ConfigDetailView`). */
 export function MemoryStoreFormView({ id }: { id: string | null }): OrcaNode {
   if (id === null) {
     return (
       <Stack gap="md">
-        <Row gap="sm" align="center" justify="between" wrap>
-          <Button variant="ghost" size="sm" onPress={goBack}>
-            ‹ Back
-          </Button>
-        </Row>
-        <Text weight="semibold">New memory store</Text>
-        <MemoryStoreFormBody id={null} base={emptyForm()} baseUpdatedAt={null} name="" />
+        <BackHeader title="New memory store" onBack={goBack} />
+        <MemoryStoreFormBody id={null} base={emptyForm()} baseUpdatedAt={null} />
       </Stack>
     )
   }
   const detail = read(configDetail)
-  if (detail?.kind !== 'memory_store' || detail.id !== id) return <Spinner label="Loading details" />
+  if (detail?.kind !== 'memory_store' || detail.id !== id) return <LoadingState kind="operation" label="Loading details" />
   return (
     <Stack gap="lg">
-      <MemoryStoreFormBody id={id} base={detail.form} baseUpdatedAt={detail.updatedAt} name={clipTitle(detail.name)} />
+      <MemoryStoreFormBody id={id} base={detail.form} baseUpdatedAt={detail.updatedAt} />
       <MemoriesSection store={detail} />
+      <UploadsSection store={detail} />
+      <StoreActions id={id} name={clipTitle(detail.name)} />
     </Stack>
   )
 }
 
 // --- Mémoire : rendu ---
 
-/** Les actions d'une mémoire ouverte : contenu (brouillon), chemin (renommage), suppression. */
-export function MemoryActions({ memory }: { memory: MemoryContent }): OrcaNode {
+/** Le champ du nouveau chemin d'une mémoire, avec son enregistrement et ses refus. */
+function RenameForm({ memory }: { memory: MemoryContent }) {
   const typed = read(renamePaths)[memory.id]
   const path = typed ?? memory.path
   const changed = path !== memory.path
@@ -455,49 +376,83 @@ export function MemoryActions({ memory }: { memory: MemoryContent }): OrcaNode {
   const busy = read(renaming)
   const failure = read(renameFailure)
   const refused = failure?.memoryId === memory.id ? failure : null
+  return (
+    <Stack gap="sm">
+      <Row gap="sm" align="center" wrap>
+        <Box grow minWidth={FIELD_MIN_WIDTH}>
+          <Input label="Path" labelHidden disabled={busy} value={path} invalid={invalid} onChange={(value) => setRenamePath(memory.id, value)} />
+        </Box>
+        <Button variant="outline" size="sm" disabled={busy || !changed || invalid} onPress={() => run(() => renameMemory(memory, path))}>
+          Save path
+        </Button>
+        <IconButton
+          icon="close"
+          label="Cancel rename"
+          variant="ghost"
+          size="sm"
+          onPress={() => {
+            setRenamePath(memory.id, null)
+            set(renameFailure, null)
+            set(renameOpen, null)
+          }}
+        />
+      </Row>
+      {invalid ? (
+        <Text tone="danger" size="xs">
+          {INVALID_MEMORY_PATH}
+        </Text>
+      ) : null}
+      {refused !== null && refused.code === 'conflict' ? (
+        <Callout tone="warning" title={CONFLICT_TITLE}>
+          <Stack gap="sm">
+            <Text size="sm">The content changed since you opened it. Reload drops the path you typed.</Text>
+            <Row>
+              <Button variant="outline" size="sm" disabled={busy} onPress={() => run(() => reloadMemory(memory))}>
+                Reload
+              </Button>
+            </Row>
+          </Stack>
+        </Callout>
+      ) : null}
+      {refused !== null && refused.code !== 'conflict' ? (
+        <Callout tone="danger" title="Could not rename">
+          <Text size="sm">{clipBytes(refused.message, ERROR_TEXT_LIMIT_BYTES).text}</Text>
+        </Callout>
+      ) : null}
+    </Stack>
+  )
+}
+
+/**
+ * Les actions d'une mémoire ouverte, en une seule rangée : éditeur (✎, cycle de brouillon), remplacement par un fichier,
+ * renommage (son champ s'ouvre dessous) et suppression (sa question s'ouvre dessous).
+ */
+export function MemoryActions({ memory }: { memory: MemoryContent }): OrcaNode {
   const draftRef = memoryDraft(memory.memoryStoreId, memory.id, memory.path)
   const reread = (): void => run(() => afterMemoryWrite(memory.memoryStoreId, memory.id))
+  const deleteKey = `memory:${memory.id}:delete`
   return (
-    <Stack gap="md">
-      <DraftControls draftRef={draftRef} label="Edit content" onApplied={reread} onDiscarded={reread} />
-      <Stack gap="sm">
-        <Input label="Path" disabled={busy} value={path} invalid={invalid} onChange={(value) => setRenamePath(memory.id, value)} />
-        {invalid ? (
-          <Text tone="danger" size="sm">
-            {INVALID_MEMORY_PATH}
-          </Text>
-        ) : null}
-        {refused !== null && refused.code === 'conflict' ? (
-          <Callout tone="warning" title={CONFLICT_TITLE}>
-            <Stack gap="sm">
-              <Text size="sm">The content changed since you opened it. Reload drops the path you typed.</Text>
-              <Row>
-                <Button variant="outline" size="sm" disabled={busy} onPress={() => run(() => reloadMemory(memory))}>
-                  Reload
-                </Button>
-              </Row>
-            </Stack>
-          </Callout>
-        ) : null}
-        {refused !== null && refused.code !== 'conflict' ? (
-          <Callout tone="danger" title="Could not rename">
-            <Text size="sm">{clipBytes(refused.message, ERROR_TEXT_LIMIT_BYTES).text}</Text>
-          </Callout>
-        ) : null}
-        <Row gap="sm" align="center" wrap>
-          <Button variant="outline" size="sm" disabled={busy || !changed || invalid} onPress={() => run(() => renameMemory(memory, path))}>
-            Rename
-          </Button>
-          <ConfirmAction
-            actionKey={`memory:${memory.id}:delete`}
-            label="Delete"
-            question={`${deleteQuestion(memory.path)}${draftIsUnapplied(draftRef) ? KEPT_DRAFT_NOTE : ''}`}
-            confirmLabel="Delete"
-            disabled={busy}
-            onConfirm={() => deleteMemory(memory)}
-          />
-        </Row>
-      </Stack>
+    <Stack gap="sm">
+      <ActionRow
+        actions={[
+          { key: 'edit', icon: 'edit', label: 'Edit in editor', disabled: draftIsBusy(draftRef), onPress: () => startDraft(draftRef) },
+          { key: 'replace', label: 'Replace…', onPress: () => replaceMemory(memory) },
+          {
+            key: 'rename',
+            label: 'Rename',
+            onPress: () => set(renameOpen, read(renameOpen) === memory.id ? null : memory.id)
+          },
+          { key: 'delete', label: 'Delete', tone: 'danger', onPress: () => askConfirmation(deleteKey) }
+        ]}
+      />
+      <DraftControls draftRef={draftRef} label="Edit in editor" showOpen={false} onApplied={reread} onDiscarded={reread} />
+      {read(renameOpen) === memory.id ? <RenameForm memory={memory} /> : null}
+      <ConfirmPanel
+        actionKey={deleteKey}
+        question={`${deleteQuestion(memory.path)}${draftIsUnapplied(draftRef) ? KEPT_DRAFT_NOTE : ''}`}
+        confirmLabel="Delete"
+        onConfirm={() => deleteMemory(memory)}
+      />
     </Stack>
   )
 }

@@ -1,5 +1,5 @@
 import { read, update } from 'orca'
-import { assert, mockHost, mount, test } from 'orca/testing'
+import { assert, hostError, mockHost, mount, test } from 'orca/testing'
 import type {
   ConfigKind,
   ConfigRow,
@@ -9,7 +9,8 @@ import type {
   MemoryRenameInput,
   MemoryStoreDetail,
   MemoryStoreForm,
-  SaveInput
+  SaveInput,
+  UploadItem
 } from '../protocol'
 import * as panel from '../panel'
 import { INVALID_MEMORY_PATH } from '../shared/memory-path'
@@ -82,10 +83,12 @@ type Calls = {
   deletes: unknown[]
   states: DraftRef[]
   commits: unknown[]
+  stages: { memoryStoreId: string; items: UploadItem[] }[]
+  opens: DraftRef[]
 }
 
 function newCalls(): Calls {
-  return { saves: [], lists: [], details: [], reads: [], renames: [], archives: [], deletes: [], states: [], commits: [] }
+  return { saves: [], lists: [], details: [], reads: [], renames: [], archives: [], deletes: [], states: [], commits: [], stages: [], opens: [] }
 }
 
 /** L'état de l'API que le faux worker rejoue : une écriture le change, la relecture suivante le montre. */
@@ -149,11 +152,32 @@ function requests(calls: Calls, world: World, over: Record<string, unknown> = {}
       calls.commits.push(input)
       return { ok: true, value: { label: 'Applied' } }
     },
+    'file.pick': { ok: true, value: null },
+    'memory.stageUploads': (input: { memoryStoreId: string; items: UploadItem[] }) => {
+      calls.stages.push(input)
+      return { ok: true, value: { ...PREPARED, creates: true } }
+    },
+    'draft.open': (input: DraftRef) => {
+      calls.opens.push(input)
+      return { ok: true, value: { ...info, ref: input } }
+    },
     ...over
   } as never
 }
 
 type View = Awaited<ReturnType<typeof mount>>
+
+/** Presse le dernier bouton de ce texte : la question de confirmation s'ouvre après le bouton du geste. */
+async function pressConfirm(view: View, text: string): Promise<void> {
+  const last = view.findAll({ role: 'button', text }).at(-1)
+  assert.ok(last, `no ${text} button`)
+  await view.press(last)
+}
+
+/** Vrai quand la banque montre la ligne de cette mémoire (son bouton « Open »). */
+function hasMemory(view: View, path: string): boolean {
+  return view.find({ role: 'button', label: `Open ${path}` }) !== null
+}
 
 // --- Banque : formulaire ---
 
@@ -298,7 +322,7 @@ test('a refused save shows the reason and keeps the input', async () => {
   await view.type({ label: 'Name' }, 'Renamed', { replace: true })
   await view.press({ role: 'button', text: 'Save' })
   assert.ok(view.find({ type: 'Callout', text: /Could not save/ }))
-  assert.ok(view.find({ text: 'The name is too long.' }))
+  assert.ok(view.find({ type: 'Callout', text: /The name is too long\./ }))
   assert.equal(view.valueOf({ label: 'Name' }), 'Renamed')
   await view.unmount()
 })
@@ -353,7 +377,7 @@ test('Archive asks first, then archives and returns home with the list reread', 
   assert.ok(view.find({ type: 'Callout', text: /Archive Notes\? This can't be undone\./ }))
   assert.deepEqual(calls.archives, [])
   const listsBefore = calls.lists.length
-  await view.press({ role: 'button', text: 'Archive' })
+  await pressConfirm(view, 'Archive')
   assert.deepEqual(calls.archives, [{ kind: 'memory_store', id: 'memstore_a' }])
   assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }])
   assert.ok(calls.lists.length > listsBefore)
@@ -367,7 +391,7 @@ test('Delete asks first, then deletes the store and returns home', async () => {
   await view.press({ role: 'button', text: 'Delete' })
   assert.ok(view.find({ type: 'Callout', text: /Delete Notes for good\? This can't be undone\./ }))
   assert.deepEqual(calls.deletes, [])
-  await view.press({ role: 'button', text: 'Delete' })
+  await pressConfirm(view, 'Delete')
   assert.deepEqual(calls.deletes, [{ kind: 'memory_store', id: 'memstore_a' }])
   assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }])
   await view.unmount()
@@ -380,7 +404,7 @@ test('a delete refused by the API shows its text and keeps the store open', asyn
   })
   const view = await mount(panel, { host, persisted: OPEN_STORE })
   await view.press({ role: 'button', text: 'Delete' })
-  await view.press({ role: 'button', text: 'Delete' })
+  await pressConfirm(view, 'Delete')
   assert.equal(read(notice), 'The store is in use.')
   assert.deepEqual(view.persisted.plugin.nav, OPEN_STORE.plugin.nav)
   await view.unmount()
@@ -393,177 +417,6 @@ test('the home Memory tab offers New memory store, which opens the creation form
   await view.press({ role: 'button', text: 'New memory store' })
   assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'newConfig', kind: 'memory_store' }])
   assert.ok(view.find({ role: 'button', text: 'Create' }))
-  await view.unmount()
-})
-
-// --- Banque : nouvelle mémoire ---
-
-test('New memory asks for a path and shows the help text', async () => {
-  const calls = newCalls()
-  const host = mockHost({ requests: requests(calls, newWorld()) })
-  const view = await mount(panel, { host, persisted: OPEN_STORE })
-  await view.press({ role: 'button', text: 'New memory' })
-  assert.ok(view.find({ text: 'Starts with /, for example /notes/today.md' }))
-  assert.ok(view.find({ label: 'Path' }))
-  assert.equal(view.find({ role: 'button', text: 'Edit content' }), null)
-  await view.unmount()
-})
-
-test('a path refused by the memory path rule shows the rule and sends nothing', async () => {
-  const calls = newCalls()
-  const host = mockHost({ requests: requests(calls, newWorld()) })
-  const view = await mount(panel, { host, persisted: OPEN_STORE })
-  await view.press({ role: 'button', text: 'New memory' })
-  const statesBefore = calls.states.length
-  await view.type({ label: 'Path' }, '/notes/../today.md')
-  assert.ok(view.find({ text: INVALID_MEMORY_PATH }))
-  assert.equal(view.find({ role: 'button', text: 'Continue' })?.disabled, true)
-  assert.equal(view.find({ role: 'button', text: 'Edit content' }), null)
-  assert.equal(calls.states.length, statesBefore)
-  await view.unmount()
-})
-
-test('a valid path renders the draft controls for a new memory and loads their state', async () => {
-  const calls = newCalls()
-  const host = mockHost({ requests: requests(calls, newWorld()) })
-  const view = await mount(panel, { host, persisted: OPEN_STORE })
-  await view.press({ role: 'button', text: 'New memory' })
-  await view.type({ label: 'Path' }, '/notes/today.md')
-  assert.equal(view.find({ text: INVALID_MEMORY_PATH }), null)
-  await view.press({ role: 'button', text: 'Continue' })
-  assert.ok(view.find({ role: 'button', text: 'Edit content' }))
-  assert.deepEqual(calls.states.at(-1), { kind: 'memory', memoryStoreId: 'memstore_a', memoryId: null, path: '/notes/today.md' })
-  assert.deepEqual(view.errors, [])
-  await view.unmount()
-})
-
-test('Apply on a new memory rereads the store, so the memory appears in its list', async () => {
-  const calls = newCalls()
-  const world = newWorld()
-  const info: DraftInfo = {
-    ref: { kind: 'memory', memoryStoreId: 'memstore_a', memoryId: null, path: '/notes/today.md' },
-    file: 'memories/notes--memstore_a/notes/today.md',
-    unapplied: true,
-    writtenAt: '2026-11-22T10:00:00Z',
-    savedAt: '2026-11-22T10:42:00Z',
-    returnTo: null
-  }
-  const host = mockHost({
-    requests: requests(calls, world, {
-      'draft.state': { ok: true, value: info },
-      'draft.prepare': { ok: true, value: { ...PREPARED, creates: true } },
-      'write.commit': (input: unknown) => {
-        calls.commits.push(input)
-        world.store = { ...STORE, memories: [...STORE.memories, { id: 'mem_new', path: '/notes/today.md', sizeBytes: 12, updatedAt: '2026-11-22T11:00:00Z' }] }
-        return { ok: true, value: { label: 'Applied' } }
-      }
-    })
-  })
-  const view = await mount(panel, { host, persisted: OPEN_STORE })
-  await view.press({ role: 'button', text: 'New memory' })
-  await view.type({ label: 'Path' }, '/notes/today.md')
-  await view.press({ role: 'button', text: 'Continue' })
-  assert.equal(view.find({ type: 'ListItem', label: '/notes/today.md' }), null)
-  await view.press({ role: 'button', text: 'Apply' })
-  await view.press({ role: 'button', text: 'Confirm' })
-  assert.equal(calls.commits.length, 1)
-  assert.ok(view.find({ type: 'Callout', text: /Applied/ }))
-  assert.ok(view.find({ type: 'ListItem', label: '/notes/today.md' }))
-  assert.deepEqual(calls.details, ['memstore_a', 'memstore_a'])
-  // « Done » ferme le succès ; la nouvelle mémoire est dans la liste, le bloc de saisie s'efface.
-  await view.press({ role: 'button', text: 'Done' })
-  assert.equal(view.find({ role: 'button', text: 'Edit content' }), null)
-  assert.ok(view.find({ type: 'ListItem', label: '/notes/today.md' }))
-  assert.deepEqual(view.errors, [])
-  await view.unmount()
-})
-
-const NEW_INFO: DraftInfo = {
-  ref: { kind: 'memory', memoryStoreId: 'memstore_a', memoryId: null, path: '/notes/today.md' },
-  file: 'memories/notes--memstore_a/notes/today.md',
-  unapplied: true,
-  writtenAt: '2026-11-22T10:00:00Z',
-  savedAt: '2026-11-22T10:42:00Z',
-  returnTo: null
-}
-
-/** The fake worker knows an unapplied draft of the new memory `/notes/today.md`. */
-function withNewDraft(calls: Calls, world: World, over: Record<string, unknown> = {}) {
-  return requests(calls, world, {
-    'draft.state': (input: DraftRef) => {
-      calls.states.push(input)
-      return { ok: true, value: input.kind === 'memory' && input.memoryId === null && input.path === '/notes/today.md' ? NEW_INFO : null }
-    },
-    ...over
-  })
-}
-
-test('a new memory in progress survives a panel restart: the store shows its path with the draft controls', async () => {
-  const calls = newCalls()
-  const world = newWorld()
-  const first = await mount(panel, { host: mockHost({ requests: withNewDraft(calls, world) }), persisted: OPEN_STORE })
-  await first.press({ role: 'button', text: 'New memory' })
-  await first.type({ label: 'Path' }, '/notes/today.md')
-  await first.press({ role: 'button', text: 'Continue' })
-  assert.ok(first.find({ role: 'button', text: 'Edit content' }))
-  const kept = first.persisted.plugin
-  await first.unmount()
-
-  const again = newCalls()
-  const second = await mount(panel, { host: mockHost({ requests: withNewDraft(again, world) }), persisted: { plugin: kept } })
-  assert.ok(second.find({ type: 'Code', text: '/notes/today.md' }))
-  assert.ok(second.find({ role: 'button', text: 'Edit content' }))
-  // Les contrôles du brouillon ont lu leur état à l'ouverture : l'écriture non appliquée est proposée.
-  assert.deepEqual(again.states.at(-1), { kind: 'memory', memoryStoreId: 'memstore_a', memoryId: null, path: '/notes/today.md' })
-  assert.ok(second.find({ text: /Unapplied draft from/ }))
-  assert.ok(second.find({ role: 'button', text: 'Apply' }))
-  assert.deepEqual(second.errors, [])
-  await second.unmount()
-})
-
-test('Discard on the draft of a new memory clears the pending entry, here and after a restart', async () => {
-  const calls = newCalls()
-  const world = newWorld()
-  const view = await mount(panel, { host: mockHost({ requests: withNewDraft(calls, world) }), persisted: OPEN_STORE })
-  await view.press({ role: 'button', text: 'New memory' })
-  await view.type({ label: 'Path' }, '/notes/today.md')
-  await view.press({ role: 'button', text: 'Continue' })
-  await view.press({ role: 'button', text: 'Discard' })
-  await view.press({ role: 'button', text: 'Discard' })
-  assert.equal(view.find({ type: 'Code', text: '/notes/today.md' }), null)
-  assert.ok(view.find({ role: 'button', text: 'New memory' }))
-  assert.deepEqual(view.persisted.plugin['memory.new'], {})
-  assert.deepEqual(view.errors, [])
-  await view.unmount()
-})
-
-test('a pending entry whose memory now exists is dropped when the store opens', async () => {
-  const world = newWorld()
-  world.store = { ...STORE, memories: [...STORE.memories, { id: 'mem_new', path: '/notes/today.md', sizeBytes: 12, updatedAt: '2026-11-22T11:00:00Z' }] }
-  const persisted = { plugin: { ...OPEN_STORE.plugin, 'memory.new': { memstore_a: { phase: 'editing', path: '/notes/today.md' } } } }
-  const view = await mount(panel, { host: mockHost({ requests: requests(newCalls(), world) }), persisted })
-  assert.ok(view.find({ type: 'ListItem', label: '/notes/today.md' }))
-  assert.equal(view.find({ role: 'button', text: 'Edit content' }), null)
-  assert.deepEqual(view.persisted.plugin['memory.new'], {})
-  await view.unmount()
-})
-
-test('a path already used in the store is refused with its message, whatever the case, and sends nothing', async () => {
-  const calls = newCalls()
-  const view = await mount(panel, { host: mockHost({ requests: requests(calls, newWorld()) }), persisted: OPEN_STORE })
-  await view.press({ role: 'button', text: 'New memory' })
-  const statesBefore = calls.states.length
-  await view.type({ label: 'Path' }, '/Runbooks/Deploy.md')
-  assert.ok(view.find({ text: 'A memory already has this path.' }))
-  assert.equal(view.find({ role: 'button', text: 'Continue' })?.disabled, true)
-  await view.type({ label: 'Path' }, '/runbooks/deploy.md', { replace: true })
-  assert.ok(view.find({ text: 'A memory already has this path.' }))
-  assert.equal(view.find({ role: 'button', text: 'Edit content' }), null)
-  assert.equal(calls.states.length, statesBefore)
-  // Un autre chemin lève l'avis.
-  await view.type({ label: 'Path' }, '/runbooks/other.md', { replace: true })
-  assert.equal(view.find({ text: 'A memory already has this path.' }), null)
-  assert.equal(view.find({ role: 'button', text: 'Continue' })?.disabled, false)
   await view.unmount()
 })
 
@@ -585,24 +438,29 @@ test('a memory deleted while Back is pressed does not stay in the store list', a
     })
   })
   const view = await mount(panel, { host, persisted: OPEN_STORE })
-  await view.press({ type: 'ListItem', label: '/runbooks/deploy.md' })
+  await view.press({ role: 'button', label: 'Open /runbooks/deploy.md' })
   await view.press({ role: 'button', text: 'Delete' })
-  await view.press({ role: 'button', text: 'Delete' })
+  await pressConfirm(view, 'Delete')
   assert.deepEqual(view.persisted.plugin.nav, OPEN_STORE.plugin.nav)
-  assert.equal(view.find({ type: 'ListItem', label: '/runbooks/deploy.md' }), null)
-  assert.ok(view.find({ type: 'ListItem', label: '/runbooks/rollback.md' }))
+  assert.equal(hasMemory(view, '/runbooks/deploy.md'), false)
+  assert.ok(hasMemory(view, '/runbooks/rollback.md'))
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
 
-test('a memory offers Edit content once, a Path field with Rename, and Delete', async () => {
+test('a memory offers one row of four actions, and Rename opens its Path field below', async () => {
   const calls = newCalls()
   const host = mockHost({ requests: requests(calls, newWorld()) })
   const view = await mount(panel, { host, persisted: OPEN_MEMORY })
-  assert.equal(view.findAll({ role: 'button', text: 'Edit content' }).length, 1)
+  for (const text of ['Edit in editor', 'Replace…', 'Rename', 'Delete']) {
+    assert.equal(view.findAll({ role: 'button', text }).length, 1, text)
+  }
+  // Rien d'autre qu'un bouton d'action : ni champ ni bouton de renommage tant que Rename n'est pas pressé.
+  assert.equal(view.find({ label: 'Path' }), null)
+  assert.equal(view.find({ role: 'button', text: 'Save path' }), null)
+  await view.press({ role: 'button', text: 'Rename' })
   assert.equal(view.valueOf({ label: 'Path' }), '/runbooks/deploy.md')
-  assert.equal(view.find({ role: 'button', text: 'Rename' })?.disabled, true)
-  assert.ok(view.find({ role: 'button', text: 'Delete' }))
+  assert.equal(view.find({ role: 'button', text: 'Save path' })?.disabled, true)
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
@@ -612,14 +470,15 @@ test('Rename sends the new path with the sha256 the panel read, then shows the n
   const world = newWorld()
   const host = mockHost({ requests: requests(calls, world) })
   const view = await mount(panel, { host, persisted: OPEN_MEMORY })
-  await view.type({ label: 'Path' }, '/runbooks/ship.md', { replace: true })
-  assert.equal(view.find({ role: 'button', text: 'Rename' })?.disabled, false)
   await view.press({ role: 'button', text: 'Rename' })
+  await view.type({ label: 'Path' }, '/runbooks/ship.md', { replace: true })
+  assert.equal(view.find({ role: 'button', text: 'Save path' })?.disabled, false)
+  await view.press({ role: 'button', text: 'Save path' })
   assert.deepEqual(calls.renames, [{ memoryStoreId: 'memstore_a', memoryId: 'mem_a', path: '/runbooks/ship.md', baseSha256: 'sha-one' }])
-  // La mémoire est relue : le nouveau chemin et le nouveau sha256 remplacent les anciens.
+  // La mémoire est relue : le nouveau chemin et le nouveau sha256 remplacent les anciens, le champ se referme.
   assert.equal(calls.reads.length, 2)
-  assert.equal(view.valueOf({ label: 'Path' }), '/runbooks/ship.md')
-  assert.equal(view.find({ role: 'button', text: 'Rename' })?.disabled, true)
+  assert.equal(view.find({ label: 'Path' }), null)
+  assert.ok(view.find({ text: '/runbooks/ship.md' }))
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
@@ -639,13 +498,14 @@ test('after a rename, going back shows the store reread with its new list', asyn
   })
   // La banque est chargée d'abord : sa liste en mémoire doit être déclarée périmée par le renommage.
   const view = await mount(panel, { host, persisted: OPEN_STORE })
-  await view.press({ type: 'ListItem', label: '/runbooks/deploy.md' })
-  await view.type({ label: 'Path' }, '/runbooks/ship.md', { replace: true })
+  await view.press({ role: 'button', label: 'Open /runbooks/deploy.md' })
   await view.press({ role: 'button', text: 'Rename' })
+  await view.type({ label: 'Path' }, '/runbooks/ship.md', { replace: true })
+  await view.press({ role: 'button', text: 'Save path' })
   await view.press({ role: 'button', text: /Back/ })
   assert.deepEqual(calls.details, ['memstore_a', 'memstore_a'])
-  assert.ok(view.find({ type: 'ListItem', label: '/runbooks/ship.md' }))
-  assert.equal(view.find({ type: 'ListItem', label: '/runbooks/deploy.md' }), null)
+  assert.ok(hasMemory(view, '/runbooks/ship.md'))
+  assert.equal(hasMemory(view, '/runbooks/deploy.md'), false)
   await view.unmount()
 })
 
@@ -653,9 +513,10 @@ test('a path refused by the memory path rule shows the rule and keeps Rename dis
   const calls = newCalls()
   const host = mockHost({ requests: requests(calls, newWorld()) })
   const view = await mount(panel, { host, persisted: OPEN_MEMORY })
+  await view.press({ role: 'button', text: 'Rename' })
   await view.type({ label: 'Path' }, 'runbooks/ship.md', { replace: true })
   assert.ok(view.find({ text: INVALID_MEMORY_PATH }))
-  assert.equal(view.find({ role: 'button', text: 'Rename' })?.disabled, true)
+  assert.equal(view.find({ role: 'button', text: 'Save path' })?.disabled, true)
   assert.deepEqual(calls.renames, [])
   await view.unmount()
 })
@@ -665,8 +526,9 @@ test('a rename refused because of an open draft shows the reason and keeps the t
   const reason = 'Apply or discard the open draft of this memory first.'
   const host = mockHost({ requests: requests(calls, newWorld(), { 'memory.rename': { ok: false, code: 'other', error: reason } }) })
   const view = await mount(panel, { host, persisted: OPEN_MEMORY })
-  await view.type({ label: 'Path' }, '/runbooks/ship.md', { replace: true })
   await view.press({ role: 'button', text: 'Rename' })
+  await view.type({ label: 'Path' }, '/runbooks/ship.md', { replace: true })
+  await view.press({ role: 'button', text: 'Save path' })
   assert.ok(view.find({ type: 'Callout', text: /Could not rename/ }))
   assert.ok(view.find({ text: reason }))
   assert.equal(view.valueOf({ label: 'Path' }), '/runbooks/ship.md')
@@ -677,8 +539,9 @@ test('a rename on changed content offers Reload, which rereads the memory and dr
   const calls = newCalls()
   const host = mockHost({ requests: requests(calls, newWorld(), { 'memory.rename': CONFLICT }) })
   const view = await mount(panel, { host, persisted: OPEN_MEMORY })
-  await view.type({ label: 'Path' }, '/runbooks/ship.md', { replace: true })
   await view.press({ role: 'button', text: 'Rename' })
+  await view.type({ label: 'Path' }, '/runbooks/ship.md', { replace: true })
+  await view.press({ role: 'button', text: 'Save path' })
   assert.ok(view.find({ type: 'Callout', text: /Changed elsewhere since you opened it\./ }))
   await view.press({ role: 'button', text: 'Reload' })
   assert.equal(calls.reads.length, 2)
@@ -704,13 +567,13 @@ test('Delete asks first, then deletes the memory and returns to the store reread
   assert.ok(view.find({ type: 'Callout', text: /Delete \/runbooks\/deploy\.md for good\? This can't be undone\./ }))
   assert.deepEqual(calls.deletes, [])
   const listsBefore = calls.lists.length
-  await view.press({ role: 'button', text: 'Delete' })
+  await pressConfirm(view, 'Delete')
   assert.deepEqual(calls.deletes, [{ kind: 'memory', memoryStoreId: 'memstore_a', id: 'mem_a' }])
   assert.deepEqual(view.persisted.plugin.nav, OPEN_STORE.plugin.nav)
   assert.ok(calls.lists.length > listsBefore)
   assert.deepEqual(calls.details, ['memstore_a'])
-  assert.ok(view.find({ type: 'ListItem', label: '/runbooks/rollback.md' }))
-  assert.equal(view.find({ type: 'ListItem', label: '/runbooks/deploy.md' }), null)
+  assert.ok(hasMemory(view, '/runbooks/rollback.md'))
+  assert.equal(hasMemory(view, '/runbooks/deploy.md'), false)
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
@@ -728,7 +591,7 @@ test('Apply on an existing memory rereads it, and the view shows the new content
     })
   })
   const view = await mount(panel, { host, persisted: OPEN_STORE })
-  await view.press({ type: 'ListItem', label: '/runbooks/deploy.md' })
+  await view.press({ role: 'button', label: 'Open /runbooks/deploy.md' })
   assert.equal(view.find({ type: 'Markdown' })?.props.content, '# Deploy\n\nRun the script.')
   assert.equal(calls.reads.length, 1)
   await view.press({ role: 'button', text: 'Apply' })
@@ -750,35 +613,11 @@ test('the actions of a memory are drawn above its content, so a long content nev
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls, newWorld()) }), persisted: OPEN_MEMORY })
   const drawn = JSON.stringify(view.tree())
-  const actions = drawn.indexOf('Edit content')
+  const actions = drawn.indexOf('Edit in editor')
   const content = drawn.indexOf('Run the script.')
   assert.ok(actions >= 0 && content >= 0)
   assert.ok(actions < content)
   await view.unmount()
-})
-
-test('Close of a new memory is hidden while its draft is unapplied, and shown once it is not', async () => {
-  const calls = newCalls()
-  const world = newWorld()
-  const view = await mount(panel, { host: mockHost({ requests: withNewDraft(calls, world) }), persisted: OPEN_STORE })
-  await view.press({ role: 'button', text: 'New memory' })
-  await view.type({ label: 'Path' }, '/notes/today.md')
-  await view.press({ role: 'button', text: 'Continue' })
-  assert.ok(view.find({ text: /Unapplied draft from/ }))
-  assert.equal(view.find({ role: 'button', text: 'Close' }), null)
-  // Discard reste la sortie.
-  assert.ok(view.find({ role: 'button', text: 'Discard' }))
-  await view.unmount()
-
-  const clean = await mount(panel, {
-    host: mockHost({ requests: withNewDraft(newCalls(), world, { 'draft.state': { ok: true, value: { ...NEW_INFO, unapplied: false } } }) }),
-    persisted: OPEN_STORE
-  })
-  await clean.press({ role: 'button', text: 'New memory' })
-  await clean.type({ label: 'Path' }, '/notes/today.md')
-  await clean.press({ role: 'button', text: 'Continue' })
-  assert.ok(clean.find({ role: 'button', text: 'Close' }))
-  await clean.unmount()
 })
 
 test('Delete of a memory with an unapplied draft says the draft stays as a new memory at that path', async () => {
@@ -825,5 +664,501 @@ test('Reload after a conflict on an existing memory rereads the memory', async (
   assert.equal(calls.reads.length, 2)
   assert.equal(view.find({ type: 'Markdown' })?.props.content, '# Deploy\n\nChanged elsewhere.')
   assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+// --- Envoi de fichiers ---
+
+const TODAY = { file: '/Users/someone/notes/today.md', name: 'today.md' }
+const TODO = { file: '/Users/someone/notes/todo.md', name: 'todo.md' }
+/** Aucun brouillon connu : l'écran de la banque ne montre que ses lignes d'envoi. */
+const NO_DRAFT = { 'draft.state': { ok: true, value: null } }
+const PATH_TAKEN = 'A memory already has this path.'
+const NOT_TEXT = 'This file is not text: memories hold UTF-8 text.'
+
+/** Un faux `file.pick` qui rend ces fichiers dans l'ordre, puis `null` (boîte annulée). */
+function picks(files: { file: string; name: string }[]) {
+  let next = 0
+  return () => ({ ok: true, value: files[next++] ?? null })
+}
+
+const pathFields = (view: View) => view.findAll({ label: 'Memory path' })
+const fileButtons = (view: View) => view.findAll({ role: 'button' }).filter((button) => button.props.icon === 'file')
+
+async function addRows(view: View, count: number): Promise<void> {
+  for (let index = 0; index < count; index += 1) await view.press({ role: 'button', text: 'Add' })
+}
+
+/** Remplit la ligne `index` : son chemin, puis le fichier que le faux `file.pick` rend. */
+async function fillRow(view: View, index: number, path: string, pick = true): Promise<void> {
+  const field = pathFields(view)[index]
+  assert.ok(field, `no row ${index}`)
+  await view.type(field, path)
+  if (pick) {
+    const button = fileButtons(view)[index]
+    assert.ok(button, `no file button ${index}`)
+    await view.press(button)
+  }
+}
+
+const SAVED_ROW = { id: 'r1', path: '/notes/today.md', file: TODAY.file, name: TODAY.name, memoryId: null }
+const withRows = (rows: unknown[]) => ({ plugin: { ...OPEN_STORE.plugin, 'memory.uploads': { memstore_a: rows } } })
+
+test('two rows with a chosen file are staged in one call, previewed, confirmed, then removed and the store reread', async () => {
+  const calls = newCalls()
+  const world = newWorld()
+  const host = mockHost({
+    requests: requests(calls, world, {
+      ...NO_DRAFT,
+      'file.pick': picks([TODAY, TODO]),
+      'memory.stageUploads': (input: { memoryStoreId: string; items: UploadItem[] }) => {
+        calls.stages.push(input)
+        const changes = input.items.map((item) => ({ path: item.path, before: null, after: 'x', lines: { added: 1, removed: 0 } }))
+        return { ok: true, value: { ...PREPARED, creates: true, changes, totalChanges: 2 } }
+      },
+      'write.commit': (input: unknown) => {
+        calls.commits.push(input)
+        world.store = {
+          ...STORE,
+          memories: [
+            ...STORE.memories,
+            { id: 'mem_c', path: '/notes/today.md', sizeBytes: 12, updatedAt: '2026-11-22T11:00:00Z' },
+            { id: 'mem_d', path: '/notes/todo.md', sizeBytes: 9, updatedAt: '2026-11-22T11:00:00Z' }
+          ]
+        }
+        return { ok: true, value: { label: 'Uploaded 2 memories' } }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN_STORE })
+  await addRows(view, 2)
+  assert.equal(view.find({ role: 'button', text: 'Apply (0)' })?.disabled, true)
+  await fillRow(view, 0, '/notes/today.md')
+  await fillRow(view, 1, '/notes/todo.md')
+  assert.equal(fileButtons(view)[0]?.text, 'today.md')
+  assert.equal(view.find({ role: 'button', text: 'Apply (2)' })?.disabled, false)
+  assert.deepEqual(calls.stages, [])
+  await view.press({ role: 'button', text: 'Apply (2)' })
+  assert.deepEqual(calls.stages, [
+    {
+      memoryStoreId: 'memstore_a',
+      items: [
+        { path: '/notes/today.md', file: TODAY.file, memoryId: null },
+        { path: '/notes/todo.md', file: TODO.file, memoryId: null }
+      ]
+    }
+  ])
+  // Pendant le récapitulatif, Apply laisse la place à Confirm et Cancel ; les lignes ne bougent plus.
+  assert.ok(view.find({ text: 'Review changes' }))
+  assert.equal(view.find({ role: 'button', text: 'Apply (2)' }), null)
+  assert.equal(pathFields(view)[0]?.disabled, true)
+  assert.deepEqual(calls.commits, [])
+  const listsBefore = calls.lists.length
+  await view.press({ role: 'button', text: 'Confirm' })
+  assert.deepEqual(calls.commits, [{ token: PREPARED.token, force: false }])
+  assert.ok(view.find({ type: 'Callout', text: /Uploaded 2 memories/ }))
+  assert.deepEqual(view.persisted.plugin['memory.uploads'], {})
+  assert.equal(pathFields(view).length, 0)
+  assert.ok(calls.lists.length > listsBefore)
+  assert.deepEqual(calls.details, ['memstore_a', 'memstore_a'])
+  assert.ok(hasMemory(view, '/notes/today.md'))
+  assert.ok(hasMemory(view, '/notes/todo.md'))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('a file dialog that does not answer in time says so under its row, without a global notice', async () => {
+  const calls = newCalls()
+  const host = mockHost({
+    requests: requests(calls, newWorld(), {
+      ...NO_DRAFT,
+      'file.pick': () => {
+        throw hostError('timeout', 'The worker took too long')
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN_STORE })
+  await addRows(view, 1)
+  await view.press(fileButtons(view)[0]!)
+  assert.ok(view.find({ text: 'The file dialog took too long. Choose the file again.' }))
+  assert.equal(read(notice), null)
+  // La ligne reste utilisable : un nouvel essai est permis.
+  assert.equal(fileButtons(view)[0]?.disabled, false)
+  await view.unmount()
+})
+
+test('the file dialog waits as long as Orca allows, and a cancelled dialog changes nothing', async () => {
+  const calls = newCalls()
+  const host = mockHost({ requests: requests(calls, newWorld(), NO_DRAFT) })
+  const view = await mount(panel, { host, persisted: OPEN_STORE })
+  await addRows(view, 1)
+  await view.press(fileButtons(view)[0]!)
+  const pickCall = host.calls.find((call) => call.method === 'plugin.request' && (call.params as { name?: string }).name === 'file.pick')
+  assert.equal((pickCall?.params as { timeoutMs?: number }).timeoutMs, 120_000)
+  assert.equal(fileButtons(view)[0]?.text, 'Choose file…')
+  assert.equal(pathFields(view).length, 1)
+  assert.deepEqual((view.persisted.plugin['memory.uploads'] as Record<string, { file: string }[]>).memstore_a?.map((row) => row.file), [''])
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('a file picker refusal shows under its row and does not block the others', async () => {
+  const calls = newCalls()
+  const host = mockHost({
+    requests: requests(calls, newWorld(), { ...NO_DRAFT, 'file.pick': { ok: false, code: 'other', error: 'File picking works on macOS only.' } })
+  })
+  const view = await mount(panel, { host, persisted: OPEN_STORE })
+  await addRows(view, 1)
+  await view.press(fileButtons(view)[0]!)
+  assert.ok(view.find({ text: 'File picking works on macOS only.' }))
+  assert.equal(fileButtons(view)[0]?.text, 'Choose file…')
+  await view.unmount()
+})
+
+test('an invalid path, a path taken in the store whatever the case, and a repeated path show their message and block Apply', async () => {
+  const calls = newCalls()
+  const host = mockHost({ requests: requests(calls, newWorld(), { ...NO_DRAFT, 'file.pick': picks([TODAY, TODO, TODAY]) }) })
+  const view = await mount(panel, { host, persisted: OPEN_STORE })
+  await addRows(view, 3)
+  await fillRow(view, 0, 'runbooks/ship.md')
+  assert.ok(view.find({ text: INVALID_MEMORY_PATH }))
+  assert.equal(view.find({ role: 'button', text: 'Apply (0)' })?.disabled, true)
+  assert.equal(pathFields(view)[0]?.props.invalid, true)
+
+  await view.type(pathFields(view)[0]!, '/Runbooks/Deploy.md', { replace: true })
+  assert.equal(view.find({ text: INVALID_MEMORY_PATH }), null)
+  assert.ok(view.find({ text: PATH_TAKEN }))
+
+  await view.type(pathFields(view)[0]!, '/notes/a.md', { replace: true })
+  assert.equal(view.find({ text: PATH_TAKEN }), null)
+  await fillRow(view, 1, '/notes/A.md')
+  await fillRow(view, 2, '/notes/b.md')
+  // La deuxième ligne répète le chemin de la première (casse comprise) : seule elle porte l'avis.
+  assert.equal(view.findAll({ text: PATH_TAKEN }).length, 1)
+  assert.equal(view.find({ role: 'button', text: 'Apply (2)' })?.disabled, true)
+
+  await view.type(pathFields(view)[1]!, '/notes/c.md', { replace: true })
+  assert.equal(view.find({ text: PATH_TAKEN }), null)
+  assert.equal(view.find({ role: 'button', text: 'Apply (3)' })?.disabled, false)
+  assert.deepEqual(calls.stages, [])
+  await view.unmount()
+})
+
+test('a row without a file keeps Apply disabled', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, newWorld(), NO_DRAFT) }), persisted: OPEN_STORE })
+  await addRows(view, 1)
+  await fillRow(view, 0, '/notes/today.md', false)
+  assert.equal(view.find({ role: 'button', text: 'Apply (0)' })?.disabled, true)
+  assert.deepEqual(calls.stages, [])
+  await view.unmount()
+})
+
+test('a refused file is shown with the worker text, nothing is previewed and the rows stay', async () => {
+  const calls = newCalls()
+  const host = mockHost({
+    requests: requests(calls, newWorld(), { ...NO_DRAFT, 'memory.stageUploads': { ok: false, code: 'invalid', error: NOT_TEXT } })
+  })
+  const view = await mount(panel, { host, persisted: withRows([SAVED_ROW]) })
+  await view.press({ role: 'button', text: 'Apply (1)' })
+  assert.ok(view.find({ type: 'Callout', text: /Not uploaded/ }))
+  assert.ok(view.find({ text: NOT_TEXT }))
+  assert.equal(view.find({ text: 'Review changes' }), null)
+  assert.equal(pathFields(view).length, 1)
+  assert.equal(view.find({ role: 'button', text: 'Apply (1)' })?.disabled, false)
+  await view.unmount()
+})
+
+test('a refusal of another kind is a danger notice with its title', async () => {
+  const calls = newCalls()
+  const host = mockHost({
+    requests: requests(calls, newWorld(), { ...NO_DRAFT, 'memory.stageUploads': { ok: false, code: 'other', error: 'API error 500: boom' } })
+  })
+  const view = await mount(panel, { host, persisted: withRows([SAVED_ROW]) })
+  await view.press({ role: 'button', text: 'Apply (1)' })
+  assert.ok(view.find({ type: 'Callout', text: /Could not upload/ }))
+  assert.ok(view.find({ text: 'API error 500: boom' }))
+  await view.unmount()
+})
+
+test('the rows come back after a restart with their path and file, and no file content is ever persisted', async () => {
+  const calls = newCalls()
+  const secret = 'SENTINEL-FILE-CONTENT-quokka'
+  const host = () =>
+    mockHost({
+      requests: requests(calls, newWorld(), {
+        ...NO_DRAFT,
+        'file.pick': picks([TODAY]),
+        'memory.stageUploads': { ok: true, value: { ...PREPARED, creates: true, changes: [{ path: '/notes/today.md', before: null, after: secret, lines: null }] } }
+      })
+    })
+  const first = await mount(panel, { host: host(), persisted: OPEN_STORE })
+  await addRows(first, 1)
+  await fillRow(first, 0, '/notes/today.md')
+  // Le récapitulatif montre un contenu (le faux worker le met dans l'aperçu) : il ne doit pas sortir de la mémoire du panneau.
+  await first.press({ role: 'button', text: 'Apply (1)' })
+  assert.ok(first.find({ text: new RegExp(secret) }))
+  const kept = first.persisted.plugin
+  assert.equal(JSON.stringify(first.persisted).includes(secret), false)
+  const rows = (kept['memory.uploads'] as Record<string, { id: string }[]>).memstore_a
+  assert.equal(rows?.length, 1)
+  assert.deepEqual(Object.keys(rows?.[0] ?? {}).sort(), ['file', 'id', 'memoryId', 'name', 'path'])
+  await first.unmount()
+
+  const second = await mount(panel, { host: host(), persisted: { plugin: kept } })
+  assert.equal(second.valueOf(pathFields(second)[0]!), '/notes/today.md')
+  assert.equal(fileButtons(second)[0]?.text, 'today.md')
+  assert.equal(fileButtons(second)[0]?.props.tooltip, TODAY.file)
+  assert.equal(second.find({ role: 'button', text: 'Apply (1)' })?.disabled, false)
+  assert.equal(JSON.stringify(second.persisted).includes(secret), false)
+  await second.unmount()
+})
+
+test('a long file name is cut in the button and kept whole in its tooltip', async () => {
+  const calls = newCalls()
+  const name = `${'long-'.repeat(20)}name.md`
+  const row = { ...SAVED_ROW, file: `/Users/someone/${name}`, name }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, newWorld(), NO_DRAFT) }), persisted: withRows([row]) })
+  const button = fileButtons(view)[0]
+  assert.ok(button)
+  assert.ok(button.text.length < name.length)
+  assert.ok(button.text.endsWith('…'))
+  assert.equal(button.props.tooltip, row.file)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('Remove drops its row only', async () => {
+  const calls = newCalls()
+  const rows = [SAVED_ROW, { ...SAVED_ROW, id: 'r2', path: '/notes/todo.md', file: TODO.file, name: TODO.name }]
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, newWorld(), NO_DRAFT) }), persisted: withRows(rows) })
+  await view.press(view.findAll({ role: 'button', label: 'Remove' })[0]!)
+  assert.equal(pathFields(view).length, 1)
+  assert.equal(view.valueOf(pathFields(view)[0]!), '/notes/todo.md')
+  await view.press({ role: 'button', label: 'Remove' })
+  assert.deepEqual(view.persisted.plugin['memory.uploads'], {})
+  await view.unmount()
+})
+
+test('an empty store says so, offers no Apply, and an empty upload list says how to start', async () => {
+  const calls = newCalls()
+  const world = newWorld()
+  world.store = { ...STORE, memories: [] }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, world, NO_DRAFT) }), persisted: OPEN_STORE })
+  assert.ok(view.find({ text: 'No memories yet.' }))
+  assert.ok(view.find({ text: 'Add a row, give it a memory path and choose a file.' }))
+  assert.equal(view.findAll({ role: 'button', text: /^Apply/ }).length, 0)
+  await view.unmount()
+})
+
+// --- Remplacer une mémoire ---
+
+test('Replace… on a memory adds a row filled with its path and id, back on the store', async () => {
+  const calls = newCalls()
+  const host = mockHost({ requests: requests(calls, newWorld(), NO_DRAFT) })
+  const view = await mount(panel, { host, persisted: OPEN_MEMORY })
+  await view.press({ role: 'button', text: 'Replace…' })
+  assert.deepEqual(view.persisted.plugin.nav, OPEN_STORE.plugin.nav)
+  const saved = (view.persisted.plugin['memory.uploads'] as Record<string, { path: string; file: string; memoryId: string | null }[]>).memstore_a
+  assert.equal(saved?.length, 1)
+  assert.equal(saved?.[0]?.path, '/runbooks/deploy.md')
+  assert.equal(saved?.[0]?.memoryId, 'mem_a')
+  assert.equal(saved?.[0]?.file, '')
+  // Le chemin d'une mémoire remplacée ne se tape plus : la ligne ne peut pas la renommer.
+  assert.equal(pathFields(view)[0]?.props.value, '/runbooks/deploy.md')
+  assert.equal(pathFields(view)[0]?.disabled, true)
+  assert.ok(view.find({ text: 'Replaces the content of this memory.' }))
+  assert.equal(view.find({ role: 'button', text: 'Apply (0)' })?.disabled, true)
+  // Une seconde demande pour la même mémoire ne double pas la ligne.
+  await view.press({ role: 'button', label: 'Open /runbooks/deploy.md' })
+  await view.press({ role: 'button', text: 'Replace…' })
+  assert.equal(pathFields(view).length, 1)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+const REPLACE_ROW = { id: 'r1', path: '/runbooks/deploy.md', file: TODAY.file, name: TODAY.name, memoryId: 'mem_a' }
+
+test('a replacement refused as changed elsewhere offers Reload, which keeps the rows and rereads the store', async () => {
+  const calls = newCalls()
+  const host = mockHost({
+    requests: requests(calls, newWorld(), {
+      ...NO_DRAFT,
+      'memory.stageUploads': (input: { memoryStoreId: string; items: UploadItem[] }) => {
+        calls.stages.push(input)
+        return { ok: true, value: { ...PREPARED, creates: false } }
+      },
+      'write.commit': CONFLICT
+    })
+  })
+  const view = await mount(panel, { host, persisted: withRows([REPLACE_ROW]) })
+  await view.press({ role: 'button', text: 'Apply (1)' })
+  assert.deepEqual(calls.stages[0]?.items, [{ path: '/runbooks/deploy.md', file: TODAY.file, memoryId: 'mem_a' }])
+  await view.press({ role: 'button', text: 'Confirm' })
+  assert.ok(view.find({ type: 'Callout', text: /Changed elsewhere since you opened it\./ }))
+  assert.ok(view.find({ role: 'button', text: 'Apply anyway' }))
+  const detailsBefore = calls.details.length
+  await view.press({ role: 'button', text: 'Reload' })
+  assert.equal(calls.details.length, detailsBefore + 1)
+  assert.equal(view.find({ type: 'Callout', text: /Changed elsewhere since you opened it\./ }), null)
+  assert.equal(pathFields(view).length, 1)
+  assert.equal(view.find({ role: 'button', text: 'Apply (1)' })?.disabled, false)
+  await view.unmount()
+})
+
+test('Apply anyway sends the same token with force and then removes the row', async () => {
+  const calls = newCalls()
+  let answers = 0
+  const host = mockHost({
+    requests: requests(calls, newWorld(), {
+      ...NO_DRAFT,
+      'write.commit': (input: unknown) => {
+        calls.commits.push(input)
+        answers += 1
+        return answers === 1 ? CONFLICT : { ok: true, value: { label: 'Uploaded 1 memory' } }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: withRows([REPLACE_ROW]) })
+  await view.press({ role: 'button', text: 'Apply (1)' })
+  await view.press({ role: 'button', text: 'Confirm' })
+  await view.press({ role: 'button', text: 'Apply anyway' })
+  assert.deepEqual(calls.commits, [
+    { token: PREPARED.token, force: false },
+    { token: PREPARED.token, force: true }
+  ])
+  assert.ok(view.find({ type: 'Callout', text: /Uploaded 1 memory/ }))
+  assert.deepEqual(view.persisted.plugin['memory.uploads'], {})
+  await view.unmount()
+})
+
+// --- Envoi interrompu ---
+
+const NEW_A = { ...SAVED_ROW, id: 'r2', path: '/notes/a.md' }
+const NEW_B = { ...SAVED_ROW, id: 'r3', path: '/notes/b.md' }
+
+test('a partial failure rereads the store and drops the created rows, keeps the pending ones and the replacement', async () => {
+  const calls = newCalls()
+  const world = newWorld()
+  const host = mockHost({
+    requests: requests(calls, world, {
+      ...NO_DRAFT,
+      'write.commit': (input: unknown) => {
+        calls.commits.push(input)
+        // La première ligne (la création de /notes/A.md, casse différente) est passée avant l'échec.
+        world.store = { ...STORE, memories: [...STORE.memories, { id: 'mem_n', path: '/notes/A.md', sizeBytes: 3, updatedAt: '2026-11-22T11:00:00Z' }] }
+        return { ok: false, code: 'other', error: 'Uploaded 1 of 3. API error 500: boom' }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: withRows([REPLACE_ROW, NEW_A, NEW_B]) })
+  await view.press({ role: 'button', text: 'Apply (3)' })
+  const listsBefore = calls.lists.length
+  const detailsBefore = calls.details.length
+  await view.press({ role: 'button', text: 'Confirm' })
+  assert.ok(view.find({ type: 'Callout', text: /Could not upload/ }))
+  assert.ok(view.find({ text: 'Uploaded 1 of 3. API error 500: boom' }))
+  assert.ok(calls.lists.length > listsBefore)
+  assert.equal(calls.details.length, detailsBefore + 1)
+  const left = (view.persisted.plugin['memory.uploads'] as Record<string, { id: string; path: string; memoryId: string | null }[]>).memstore_a
+  assert.deepEqual(left?.map((row) => row.id), ['r1', 'r3'])
+  assert.ok(hasMemory(view, '/notes/A.md'))
+  // Le récapitulatif reste ouvert : un second Confirm reprend avec le même jeton.
+  assert.ok(view.find({ role: 'button', text: 'Confirm' }))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('a lost token rereads the store, drops the rows whose path now exists and keeps the replacement', async () => {
+  const calls = newCalls()
+  const world = newWorld()
+  const host = mockHost({
+    requests: requests(calls, world, {
+      ...NO_DRAFT,
+      'write.commit': (input: unknown) => {
+        calls.commits.push(input)
+        world.store = { ...STORE, memories: [...STORE.memories, { id: 'mem_n', path: '/notes/a.md', sizeBytes: 3, updatedAt: '2026-11-22T11:00:00Z' }] }
+        return { ok: false, code: 'expired', error: 'This preview expired. Prepare it again.' }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: withRows([REPLACE_ROW, NEW_A, NEW_B]) })
+  await view.press({ role: 'button', text: 'Apply (3)' })
+  await view.press({ role: 'button', text: 'Confirm' })
+  assert.ok(view.find({ type: 'Callout', text: /Not uploaded/ }))
+  assert.ok(view.find({ text: 'This preview expired. Prepare it again.' }))
+  const left = (view.persisted.plugin['memory.uploads'] as Record<string, { id: string }[]>).memstore_a
+  assert.deepEqual(left?.map((row) => row.id), ['r1', 'r3'])
+  assert.equal(view.find({ text: 'Review changes' }), null)
+  assert.equal(view.find({ role: 'button', text: 'Apply (2)' })?.disabled, false)
+  await view.unmount()
+})
+
+// --- Éditeur depuis la liste ---
+
+test('the edit icon of a row runs the draft cycle: open in the editor, Apply, preview, Confirm, reread', async () => {
+  const calls = newCalls()
+  const world = newWorld()
+  const host = mockHost({
+    requests: requests(calls, world, {
+      ...NO_DRAFT,
+      // Le worker vient d'écrire le fichier : il n'a pas encore été modifié, le brouillon n'est « ouvert » que depuis ce panneau.
+      'draft.open': (input: DraftRef) => {
+        calls.opens.push(input)
+        return {
+          ok: true,
+          value: { ref: input, file: 'memories/notes--memstore_a/runbooks/deploy.md', unapplied: false, writtenAt: '2026-11-22T10:00:00Z', savedAt: '2026-11-22T10:00:00Z', returnTo: null }
+        }
+      },
+      'write.commit': (input: unknown) => {
+        calls.commits.push(input)
+        world.store = { ...STORE, memories: [{ ...STORE.memories[0]!, sizeBytes: 4096 }, STORE.memories[1]!] }
+        return { ok: true, value: { label: 'Applied' } }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN_STORE })
+  assert.equal(view.find({ text: /Draft open in the editor/ }), null)
+  await view.press({ role: 'button', label: 'Edit /runbooks/deploy.md in editor' })
+  assert.deepEqual(calls.opens, [{ kind: 'memory', memoryStoreId: 'memstore_a', memoryId: 'mem_a', path: '/runbooks/deploy.md' }])
+  assert.ok(view.find({ text: 'Draft open in the editor. Save it, then press Apply.' }))
+  await view.press({ role: 'button', text: 'Apply' })
+  assert.ok(view.find({ text: 'Review changes' }))
+  await view.press({ role: 'button', text: 'Confirm' })
+  assert.equal(calls.commits.length, 1)
+  assert.ok(view.find({ type: 'Callout', text: /Applied/ }))
+  assert.deepEqual(calls.details, ['memstore_a', 'memstore_a'])
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('an unapplied draft is shown under its row when the store opens, and the other rows stay plain', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, newWorld()) }), persisted: OPEN_STORE })
+  assert.equal(view.findAll({ text: /Unapplied draft from/ }).length, 1)
+  assert.ok(calls.states.some((ref) => ref.kind === 'memory' && ref.memoryId === 'mem_b'))
+  await view.unmount()
+})
+
+test('the screen offers one solid action per zone: Save only when edited, Apply only with rows', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, newWorld(), NO_DRAFT) }), persisted: OPEN_STORE })
+  const solid = (): string[] => view.findAll({ role: 'button' }).filter((button) => button.props.variant === undefined || button.props.variant === 'solid').map((button) => button.text)
+  // Au repos : Save (grisé, rien à enregistrer) est le seul bouton plein de l'écran.
+  assert.deepEqual(solid(), ['Save'])
+  await addRows(view, 1)
+  assert.deepEqual(solid().sort(), ['Apply (0)', 'Save'])
+  await view.unmount()
+})
+
+test('archiving a store forgets its pending rows and keeps the other stores rows', async () => {
+  const calls = newCalls()
+  const other = { ...SAVED_ROW, id: 'r9' }
+  const persisted = { plugin: { ...OPEN_STORE.plugin, 'memory.uploads': { memstore_a: [SAVED_ROW], memstore_z: [other] } } }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, newWorld(), NO_DRAFT) }), persisted })
+  await view.press({ role: 'button', text: 'Archive' })
+  await pressConfirm(view, 'Archive')
+  assert.deepEqual(calls.archives, [{ kind: 'memory_store', id: 'memstore_a' }])
+  assert.deepEqual(view.persisted.plugin['memory.uploads'], { memstore_z: [other] })
   await view.unmount()
 })

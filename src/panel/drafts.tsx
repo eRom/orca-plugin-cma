@@ -400,16 +400,32 @@ export function draftIsUnapplied(ref: DraftRef): boolean {
   return read(draftInfos)[draftKey(ref)]?.unapplied === true
 }
 
+/** Ouvre le brouillon dans l'éditeur : le geste d'un bouton posé hors de `DraftControls` (une action ✎ d'une ligne). */
+export function startDraft(ref: DraftRef): void {
+  run(() => openDraft(ref))
+}
+
+/** Vrai tant qu'un appel est en vol pour ce brouillon (ouverture, préparation, envoi) : aucun second ne part. */
+export function draftIsBusy(ref: DraftRef): boolean {
+  return isBusy(read(draftFlows)[draftKey(ref)])
+}
+
 type DraftControlsProps = {
   draftRef: DraftRef
+  /** Libellé du bouton d'ouverture ; sans objet quand `showOpen` est faux. */
   label: string
+  /**
+   * Faux : l'ouverture est lancée ailleurs (`startDraft`), ces contrôles ne dessinent que ce qui suit (état du brouillon,
+   * Apply, Discard, récapitulatif, conflit, succès) et rien tant que le brouillon n'a rien à dire.
+   */
+  showOpen?: boolean
   /** Appelé dès que l'écriture est appliquée : la vue hôte relit l'objet écrit. */
   onApplied?: () => void
   /** Appelé dès que le brouillon est abandonné (Discard, ou Reload après un conflit) : la vue hôte oublie ce qu'elle gardait. */
   onDiscarded?: () => void
 }
 
-export function DraftControls({ draftRef, label, onApplied, onDiscarded }: DraftControlsProps): OrcaNode {
+export function DraftControls({ draftRef, label, showOpen = true, onApplied, onDiscarded }: DraftControlsProps): OrcaNode {
   const key = draftKey(draftRef)
   const status = read(draftsStatus)
   const info = read(draftInfos)[key] ?? null
@@ -422,11 +438,14 @@ export function DraftControls({ draftRef, label, onApplied, onDiscarded }: Draft
   const inFlow = flow?.step === 'review' || flow?.step === 'conflict' || flow?.step === 'applied'
   const savedAt = info?.unapplied ? clock(info.savedAt) : null
   const kept = info?.unapplied === true || opened
+  // Sans bouton d'ouverture, la carte d'installation n'apparaît que sous le refus qu'une ouverture vient de recevoir.
+  const showSetup = missing && (showOpen || flow?.step === 'notice')
+  if (!showOpen && !kept && flow === undefined) return null
   return (
     <Stack gap="sm">
-      {missing ? <SetupCard folder={status.folder} /> : null}
+      {showSetup ? <SetupCard folder={status.folder} /> : null}
       {flow !== undefined ? <FlowView draftRef={draftRef} flow={flow} onApplied={onApplied} onDiscarded={onDiscarded} /> : null}
-      {inFlow ? null : (
+      {inFlow || (!showOpen && !kept) ? null : (
         <Stack gap="sm">
           {kept ? (
             <Text size="sm">
@@ -434,9 +453,11 @@ export function DraftControls({ draftRef, label, onApplied, onDiscarded }: Draft
             </Text>
           ) : null}
           <Row gap="sm" align="center" wrap>
-            <Button variant="outline" size="sm" disabled={busy || missing} onPress={() => run(() => openDraft(draftRef))}>
-              {label}
-            </Button>
+            {showOpen ? (
+              <Button variant="outline" size="sm" disabled={busy || missing} onPress={() => run(() => openDraft(draftRef))}>
+                {label}
+              </Button>
+            ) : null}
             {kept ? (
               <>
                 <Button variant="solid" size="sm" disabled={busy} onPress={() => run(() => applyDraft(draftRef))}>
