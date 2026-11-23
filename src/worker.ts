@@ -99,6 +99,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     pendingWrites,
     poller,
     info: readableWorkspaceInfo,
+    log: (message) => orca.log(message),
     ready: migrated
   })
   orca.panels.handle('workspace.info', workspaceHandlers.info)

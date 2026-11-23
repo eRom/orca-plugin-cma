@@ -1,7 +1,6 @@
 // Les gestionnaires `workspaces.*` du worker et les effets d'un changement d'actif. Extraits de
 // `worker.ts` pour tenir sous `bun test` : la bascule doit arrêter le suivi et vider les écritures en attente.
 import type { ApiResult, WorkspaceInfo } from '../protocol'
-import { failure } from './client'
 import type { Workspaces } from './workspaces'
 
 export type WorkspaceHandlerDeps = {
@@ -12,6 +11,7 @@ export type WorkspaceHandlerDeps = {
   poller: { start(): void; stop(): void }
   /** L'état à rendre au panneau après un changement (`workspaceInfo` du magasin). */
   info: () => Promise<WorkspaceInfo>
+  log: (message: string) => void
   /** Résolue quand la migration de l'ancienne clé est faite : aucun gestionnaire ne lit l'index avant. */
   ready: Promise<void>
 }
@@ -36,16 +36,31 @@ export function createWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     }
   }
 
-  /** Une mutation réussie rend l'état frais du panneau ; une erreur de lecture se dit en `ApiResult`. */
-  async function infoAfter(result: ApiResult<unknown>): Promise<ApiResult<WorkspaceInfo>> {
-    if (!result.ok) {
-      return result
-    }
+  /**
+   * L'état à rendre après une mutation réussie. Si sa lecture échoue (réseau, 5xx), la mutation a quand même eu
+   * lieu (et la bascule aussi) : on rend un état dégradé tiré de l'index, jamais un échec que le panneau lirait
+   * comme « rien n'a changé ».
+   */
+  async function readInfo(): Promise<WorkspaceInfo> {
     try {
-      return { ok: true, value: await deps.info() }
+      return await deps.info()
     } catch (error) {
-      return failure(error)
+      deps.log(`workspace info unreadable after a change: ${error instanceof Error ? error.message : String(error)}`)
+      const index = await workspaces.index()
+      const active = index.entries.find((entry) => entry.localId === index.activeLocalId)
+      return {
+        hasKey: (await workspaces.activeKey()) !== null,
+        keyRejected: false,
+        workspaceId: active?.workspaceId ?? null,
+        organizationName: null,
+        workspaces: index.entries.map((entry) => ({ ...entry, active: entry.localId === index.activeLocalId }))
+      }
     }
+  }
+
+  /** Une mutation réussie rend l'état frais du panneau ; une mutation refusée rend son erreur. */
+  async function infoAfter(result: ApiResult<unknown>): Promise<ApiResult<WorkspaceInfo>> {
+    return result.ok ? { ok: true, value: await readInfo() } : result
   }
 
   async function add({ name, key }: { name: string; key: string }): Promise<ApiResult<WorkspaceInfo>> {
@@ -119,7 +134,7 @@ export function createWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           await switchWorkspace()
         }
       }
-      return deps.info()
+      return readInfo()
     }
   }
 }

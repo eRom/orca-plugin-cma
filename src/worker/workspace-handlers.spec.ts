@@ -9,7 +9,8 @@ const KEY_C = 'plugin-test-token-QUOKKA-c'
 
 const INFO: WorkspaceInfo = { hasKey: true, keyRejected: false, workspaceId: 'wrkspc_a', organizationName: null, workspaces: [] }
 
-function setup() {
+function setup(info: () => Promise<WorkspaceInfo> = async () => INFO) {
+  const logs: string[] = []
   const map = new Map<string, string>()
   const calls: string[] = []
   let counter = 0
@@ -34,10 +35,11 @@ function setup() {
     watcher: { stop: () => calls.push('watcher.stop') },
     pendingWrites: { clear: () => calls.push('pending.clear') },
     poller: { start: () => calls.push('poller.start'), stop: () => calls.push('poller.stop') },
-    info: async () => INFO,
+    info,
+    log: (message) => logs.push(message),
     ready: Promise.resolve()
   })
-  return { handlers, workspaces, calls, map }
+  return { handlers, workspaces, calls, map, logs }
 }
 
 const SWITCH = ['store.reset', 'watcher.stop', 'pending.clear', 'poller.start']
@@ -165,6 +167,7 @@ test('a handler waits for the migration before reading the index', async () => {
       infoCalls += 1
       return INFO
     },
+    log: () => {},
     ready
   })
   const pending = handlers.info()
@@ -173,4 +176,51 @@ test('a handler waits for the migration before reading the index', async () => {
   finishMigration()
   expect(await pending).toEqual(INFO)
   expect(infoCalls).toBe(1)
+})
+
+test('activate still succeeds with a degraded info when reading the info fails', async () => {
+  let failing = false
+  const { handlers, calls, logs } = setup(async () => {
+    if (failing) {
+      throw new Error('Could not reach api.anthropic.com.')
+    }
+    return INFO
+  })
+  await handlers.add({ name: 'First', key: KEY_A })
+  await handlers.add({ name: 'Second', key: KEY_B })
+  calls.length = 0
+  failing = true
+  const result = await handlers.activate({ localId: 'ws_2' })
+  expect(calls).toEqual(SWITCH)
+  expect(result).toEqual({
+    ok: true,
+    value: {
+      hasKey: true,
+      keyRejected: false,
+      workspaceId: 'wrkspc_b',
+      organizationName: null,
+      workspaces: [
+        { localId: 'ws_1', name: 'First', workspaceId: 'wrkspc_a', active: false },
+        { localId: 'ws_2', name: 'Second', workspaceId: 'wrkspc_b', active: true }
+      ]
+    }
+  })
+  expect(logs).toEqual(['workspace info unreadable after a change: Could not reach api.anthropic.com.'])
+})
+
+test('add with an unreadable info succeeds, so a retry is not answered as a duplicate', async () => {
+  const { handlers } = setup(async () => {
+    throw new Error('offline')
+  })
+  const result = await handlers.add({ name: 'First', key: KEY_A })
+  expect(result.ok).toBe(true)
+  expect(result.ok && result.value.workspaces.map((row) => row.name)).toEqual(['First'])
+})
+
+test('a refused mutation still returns its own error when info would fail', async () => {
+  const { handlers } = setup(async () => {
+    throw new Error('offline')
+  })
+  const result = await handlers.activate({ localId: 'ws_9' })
+  expect(!result.ok && result.code).toBe('other')
 })
