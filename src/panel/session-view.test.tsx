@@ -364,10 +364,10 @@ test('loads a restored session once a rejected key is replaced', async () => {
   })
   const view = await mount(panel, { host, persisted: OPEN_S1 })
   // Clé refusée : l'accueil montre le formulaire, aucune session n'est chargée.
-  assert.ok(view.find({ label: 'Replace key' }))
+  assert.ok(view.find({ label: 'New API key' }))
   assert.deepEqual(watched, [])
-  await view.type({ label: 'Replace key' }, 'sk-ant-fresh')
-  await view.press({ role: 'button', text: 'Save key' })
+  await view.type({ label: 'New API key' }, 'sk-ant-fresh')
+  await view.press({ role: 'button', text: 'Save' })
   assert.deepEqual(watched, [{ sessionId: 's1' }])
   assert.deepEqual(detailed, [{ sessionId: 's1' }])
   assert.ok(view.find({ text: /Back again/ }))

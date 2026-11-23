@@ -37,7 +37,7 @@ function requests(start: WorkspaceInfo, over: Record<string, unknown> = {}) {
 test('lists the workspaces with the Active badge and no fold', async () => {
   const host = mockHost({ requests: requests(info('ws_1')) })
   const view = await mount(panel, { host })
-  assert.ok(view.find({ text: 'Anthropic workspace' }))
+  assert.ok(view.find({ text: 'Workspaces' }))
   assert.ok(view.find({ text: 'Default' }))
   assert.ok(view.find({ text: 'wrkspc_default' }))
   assert.ok(view.find({ text: 'Orca-claude' }))
@@ -210,64 +210,173 @@ test('Cancel closes the add form without calling the worker', async () => {
   await view.unmount()
 })
 
-test('Edit opens rename, replace key, Console and Remove', async () => {
+test('Edit opens Name, New API key, one Save, Console and Remove', async () => {
   const calls: { name: string; input: unknown }[] = []
-  const answer = (name: string) => (input: unknown) => {
-    calls.push({ name, input })
-    return { ok: true, value: info('ws_1') }
-  }
+  const renamedInfo = (): WorkspaceInfo => ({
+    ...info('ws_1'),
+    workspaces: info('ws_1').workspaces.map((row) => (row.localId === 'ws_2' ? { ...row, name: 'Renamed' } : row))
+  })
   const host = mockHost({
     requests: requests(info('ws_1'), {
-      'workspaces.rename': answer('rename'),
-      'workspaces.replaceKey': answer('replaceKey'),
-      'workspaces.remove': answer('remove')
+      'workspaces.rename': (input: unknown) => {
+        calls.push({ name: 'rename', input })
+        return { ok: true, value: renamedInfo() }
+      },
+      'workspaces.replaceKey': (input: unknown) => {
+        calls.push({ name: 'replaceKey', input })
+        return { ok: true, value: renamedInfo() }
+      },
+      'workspaces.remove': (input: unknown) => {
+        calls.push({ name: 'remove', input })
+        return { ok: true, value: info('ws_1') }
+      }
     })
   })
   const view = await mount(panel, { host })
-  assert.equal(view.find({ label: 'Replace key' }), null)
+  assert.equal(view.find({ label: 'New API key' }), null)
   await view.press({ type: 'IconButton', label: 'Edit Orca-claude' })
   assert.equal(view.valueOf({ label: 'Name' }), 'Orca-claude')
-  assert.ok(view.find({ label: 'Replace key' }))
-  assert.ok(view.find({ type: 'Link', text: 'Console' }))
-  assert.equal(view.find({ type: 'Link', text: 'Console' })?.props.href, 'https://platform.claude.com/workspaces/wrkspc_orca/agents')
-  assert.ok(view.find({ role: 'button', text: 'Remove' }))
+  assert.ok(view.find({ label: 'New API key' }))
+  assert.ok(view.find({ text: 'Leave empty to keep the current key.' }))
+  // Plus de bouton « Save key » ni de champ « Replace key » : un seul Save.
+  assert.equal(view.find({ role: 'button', text: 'Save key' }), null)
+  assert.equal(view.findAll({ role: 'button', text: 'Save' }).length, 1)
+  const consoleButton = view.find({ role: 'button', text: 'Console' })
+  assert.ok(consoleButton)
+  assert.equal(consoleButton.props.icon, 'open-external')
+  assert.equal(consoleButton.props.variant, 'outline')
+  assert.equal(view.find({ type: 'Link', text: 'Console' }), null)
+  const remove = view.find({ role: 'button', text: 'Remove' })
+  assert.ok(remove)
+  assert.equal(remove.props.variant, 'outline')
+  assert.equal(remove.props.tone, 'danger')
+  await view.press({ role: 'button', text: 'Console' })
+  assert.deepEqual(host.callsOf('shell.openExternal'), [{ url: 'https://platform.claude.com/workspaces/wrkspc_orca/agents' }])
   // Un seul ✎ ouvert à la fois.
   await view.press({ type: 'IconButton', label: 'Edit Default' })
-  assert.equal(view.findAll({ label: 'Replace key' }).length, 1)
+  assert.equal(view.findAll({ label: 'New API key' }).length, 1)
   assert.equal(view.valueOf({ label: 'Name' }), 'Default')
   await view.press({ type: 'IconButton', label: 'Edit Orca-claude' })
-  // Save reste grisé tant que le nom n'a pas changé.
+  // Save reste grisé tant que ni le nom ni la clé n'ont changé.
   assert.equal(view.find({ role: 'button', text: 'Save' })?.props.disabled, true)
   await view.type({ label: 'Name' }, 'Renamed', { replace: true })
+  assert.notEqual(view.find({ role: 'button', text: 'Save' })?.props.disabled, true)
+  assert.equal(view.find({ role: 'button', text: 'Save' })?.props.variant, 'solid')
   await view.press({ role: 'button', text: 'Save' })
   assert.deepEqual(calls, [{ name: 'rename', input: { localId: 'ws_2', name: 'Renamed' } }])
-  assert.equal(view.find({ role: 'button', text: 'Save key' })?.props.disabled, true)
-  await view.type({ label: 'Replace key' }, TYPED_KEY)
+  // Le nom est pris en compte : Save est de nouveau grisé.
+  assert.equal(view.find({ role: 'button', text: 'Save' })?.props.disabled, true)
+  await view.type({ label: 'New API key' }, TYPED_KEY)
   assert.ok(!JSON.stringify(view.persisted).includes(TYPED_KEY))
-  await view.press({ role: 'button', text: 'Save key' })
+  await view.press({ role: 'button', text: 'Save' })
   assert.deepEqual(calls[1], { name: 'replaceKey', input: { localId: 'ws_2', key: TYPED_KEY } })
+  assert.equal(calls.length, 2)
   assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
   await view.unmount()
 })
 
-test('a refused rename or key replacement shows its error in the detail, input kept', async () => {
+test('one Save sends the rename then the new key, in that order', async () => {
+  const order: { name: string; input: unknown }[] = []
+  const renamed: WorkspaceInfo = {
+    ...info('ws_1'),
+    workspaces: info('ws_1').workspaces.map((row) => (row.localId === 'ws_2' ? { ...row, name: 'Both' } : row))
+  }
   const host = mockHost({
     requests: requests(info('ws_1'), {
-      'workspaces.rename': { ok: false, code: 'invalid', error: 'Name is required.' },
-      'workspaces.replaceKey': { ok: false, code: 'invalid', error: 'This key is for wrkspc_zzz, not wrkspc_orca.' }
+      'workspaces.rename': (input: unknown) => {
+        order.push({ name: 'rename', input })
+        return { ok: true, value: renamed }
+      },
+      'workspaces.replaceKey': (input: unknown) => {
+        order.push({ name: 'replaceKey', input })
+        return { ok: true, value: renamed }
+      }
+    })
+  })
+  const view = await mount(panel, { host })
+  await view.press({ type: 'IconButton', label: 'Edit Orca-claude' })
+  await view.type({ label: 'Name' }, 'Both', { replace: true })
+  await view.type({ label: 'New API key' }, TYPED_KEY)
+  await view.press({ role: 'button', text: 'Save' })
+  assert.deepEqual(order, [
+    { name: 'rename', input: { localId: 'ws_2', name: 'Both' } },
+    { name: 'replaceKey', input: { localId: 'ws_2', key: TYPED_KEY } }
+  ])
+  assert.ok(view.find({ text: 'Both' }))
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
+  await view.unmount()
+})
+
+test('a refused new key shows its error, keeps the key typed and the renamed workspace', async () => {
+  const renamed: WorkspaceInfo = {
+    ...info('ws_1'),
+    workspaces: info('ws_1').workspaces.map((row) => (row.localId === 'ws_2' ? { ...row, name: 'Kept name' } : row))
+  }
+  const sent: string[] = []
+  const host = mockHost({
+    requests: requests(info('ws_1'), {
+      'workspaces.rename': () => {
+        sent.push('rename')
+        return { ok: true, value: renamed }
+      },
+      'workspaces.replaceKey': () => {
+        sent.push('replaceKey')
+        return { ok: false, code: 'invalid', error: 'This key is for wrkspc_zzz, not wrkspc_orca.' }
+      }
+    })
+  })
+  const view = await mount(panel, { host })
+  await view.press({ type: 'IconButton', label: 'Edit Orca-claude' })
+  await view.type({ label: 'Name' }, 'Kept name', { replace: true })
+  await view.type({ label: 'New API key' }, TYPED_KEY)
+  await view.press({ role: 'button', text: 'Save' })
+  assert.deepEqual(sent, ['rename', 'replaceKey'])
+  assert.ok(view.find({ type: 'Callout', text: /This key is for wrkspc_zzz, not wrkspc_orca\./ }))
+  assert.equal(view.valueOf({ label: 'New API key' }), TYPED_KEY)
+  // Le renommage accepté reste : la ligne porte le nouveau nom et le champ aussi.
+  assert.equal(view.valueOf({ label: 'Name' }), 'Kept name')
+  assert.ok(view.find({ text: 'Kept name' }))
+  await view.unmount()
+})
+
+test('a refused rename shows its error, keeps the name typed and does not send the key', async () => {
+  const sent: string[] = []
+  const host = mockHost({
+    requests: requests(info('ws_1'), {
+      'workspaces.rename': () => {
+        sent.push('rename')
+        return { ok: false, code: 'invalid', error: 'Name is required.' }
+      },
+      'workspaces.replaceKey': () => {
+        sent.push('replaceKey')
+        return { ok: true, value: info('ws_1') }
+      }
     })
   })
   const view = await mount(panel, { host })
   await view.press({ type: 'IconButton', label: 'Edit Orca-claude' })
   await view.type({ label: 'Name' }, 'x', { replace: true })
+  await view.type({ label: 'New API key' }, TYPED_KEY)
   await view.press({ role: 'button', text: 'Save' })
+  assert.deepEqual(sent, ['rename'])
   assert.ok(view.find({ type: 'Callout', text: /Name is required\./ }))
-  await view.type({ label: 'Replace key' }, TYPED_KEY)
-  await view.press({ role: 'button', text: 'Save key' })
-  assert.ok(view.find({ type: 'Callout', text: /This key is for wrkspc_zzz, not wrkspc_orca\./ }))
-  assert.equal(view.valueOf({ label: 'Replace key' }), TYPED_KEY)
+  assert.equal(view.valueOf({ label: 'Name' }), 'x')
+  assert.equal(view.valueOf({ label: 'New API key' }), TYPED_KEY)
   await view.unmount()
 })
+
+test('a rejected key opens the detail with the paste-a-new-key help, and Console only for a known workspace', async () => {
+  const start = info('ws_1', { keyRejected: true })
+  const host = mockHost({
+    requests: requests({ ...start, workspaces: start.workspaces.map((row) => (row.localId === 'ws_1' ? { ...row, workspaceId: null } : row)) })
+  })
+  const view = await mount(panel, { host })
+  assert.ok(view.find({ text: 'Paste a new key for this workspace.' }))
+  assert.equal(view.find({ text: 'Leave empty to keep the current key.' }), null)
+  assert.equal(view.find({ role: 'button', text: 'Console' }), null)
+  await view.unmount()
+})
+
 
 test('Remove asks for a confirmation, Cancel calls nothing, the confirmation removes', async () => {
   const removed: unknown[] = []
@@ -332,14 +441,14 @@ test('Key missing badge', async () => {
   assert.ok(badge)
   assert.equal(view.find({ role: 'button', text: 'Agents' }), null)
   assert.equal(view.find({ role: 'button', text: 'Sessions' }), null)
-  // Le détail ✎ est déjà ouvert sur Replace key, sans autre geste.
-  assert.ok(view.find({ label: 'Replace key' }))
-  assert.equal(view.find({ role: 'button', text: 'Save key' })?.props.variant, 'solid')
+  // Le détail ✎ est déjà ouvert sur New API key, sans autre geste.
+  assert.ok(view.find({ label: 'New API key' }))
+  assert.equal(view.find({ role: 'button', text: 'Save' })?.props.variant, 'solid')
   assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
   await view.unmount()
 })
 
-test('Key rejected badge on the active workspace, detail open on Replace key', async () => {
+test('Key rejected badge on the active workspace, detail open on New API key', async () => {
   const host = mockHost({ requests: requests(info('ws_1', { keyRejected: true })) })
   const view = await mount(panel, { host })
   const badge = view.find({ type: 'Badge', text: 'Key rejected' })
@@ -347,7 +456,7 @@ test('Key rejected badge on the active workspace, detail open on Replace key', a
   assert.equal(badge.props.tone, 'danger')
   assert.equal(view.find({ type: 'Badge', text: 'Active' }), null)
   assert.equal(view.find({ role: 'button', text: 'Agents' }), null)
-  assert.ok(view.find({ label: 'Replace key' }))
+  assert.ok(view.find({ label: 'New API key' }))
   await view.unmount()
 })
 
@@ -364,12 +473,12 @@ test('replacing the rejected key of the active workspace reads the lists again',
   })
   const view = await mount(panel, { host })
   assert.equal(sessionReads, 0)
-  await view.type({ label: 'Replace key' }, TYPED_KEY)
-  await view.press({ role: 'button', text: 'Save key' })
+  await view.type({ label: 'New API key' }, TYPED_KEY)
+  await view.press({ role: 'button', text: 'Save' })
   assert.ok(sessionReads >= 1)
   assert.ok(view.find({ role: 'button', text: 'Agents' }))
   assert.ok(view.find({ type: 'Badge', text: 'Active' }))
-  assert.equal(view.find({ label: 'Replace key' }), null)
+  assert.equal(view.find({ label: 'New API key' }), null)
   await view.unmount()
 })
 

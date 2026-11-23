@@ -1,4 +1,4 @@
-// Accueil du panneau : la section « Anthropic workspace » (liste des workspaces, bascule, clé), puis une barre de
+// Accueil du panneau : la section « Workspaces » (liste des workspaces, bascule, clé), puis une barre de
 // cinq onglets (Sessions, Agents, Envs, Memory, Vaults) et la liste de l'onglet choisi.
 import {
   Badge,
@@ -35,11 +35,11 @@ import { WorkspacesSection } from './workspaces'
 const ROW_TITLE_LIMIT_BYTES = 200
 const ROW_DESCRIPTION_LIMIT_BYTES = 300
 
-const CONFIG_TABS: { value: ConfigKind; label: string; noun: string; icon: IconName }[] = [
-  { value: 'agent', label: 'Agents', noun: 'agents', icon: 'bot' },
-  { value: 'environment', label: 'Envs', noun: 'environments', icon: 'database' },
-  { value: 'memory_store', label: 'Memory', noun: 'memory stores', icon: 'layers' },
-  { value: 'vault', label: 'Vaults', noun: 'vaults', icon: 'plug' }
+const CONFIG_TABS: { value: ConfigKind; label: string; noun: string; filter: string; icon: IconName }[] = [
+  { value: 'agent', label: 'Agents', noun: 'agents', filter: 'agents', icon: 'bot' },
+  { value: 'environment', label: 'Envs', noun: 'environments', filter: 'envs', icon: 'database' },
+  { value: 'memory_store', label: 'Memory', noun: 'memory stores', filter: 'memory', icon: 'layers' },
+  { value: 'vault', label: 'Vaults', noun: 'vaults', filter: 'vaults', icon: 'plug' }
 ]
 
 const HOME_TABS: { value: HomeTab; label: string; icon: IconName }[] = [
@@ -94,7 +94,7 @@ function ConfigList({ tab }: { tab: (typeof CONFIG_TABS)[number] }) {
   const shown = rows ? filterRows(rows, query) : []
   return (
     <Stack gap="sm">
-      <FilterRow noun={tab.noun} newLabel={NEW_LABELS[tab.value]} onNew={() => openNew(tab.value)} />
+      <FilterRow noun={tab.filter} newLabel={NEW_LABELS[tab.value]} onNew={() => openNew(tab.value)} />
       {failure ? (
         <Callout tone="danger" title="Could not load the list">
           <Stack gap="sm">

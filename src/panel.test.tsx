@@ -33,7 +33,7 @@ test('shows the workspace list with a key, always open', async () => {
   await view.unmount()
 })
 
-test('marks the active workspace Key rejected and opens Replace key when the key is rejected', async () => {
+test('marks the active workspace Key rejected and opens New API key when the key is rejected', async () => {
   const host = mockHost({
     requests: {
       'workspace.info': { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null, workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] }
@@ -41,7 +41,7 @@ test('marks the active workspace Key rejected and opens Replace key when the key
   })
   const view = await mount(panel, { host })
   assert.ok(view.find({ type: 'Badge', text: 'Key rejected' }))
-  assert.ok(view.find({ label: 'Replace key' }))
+  assert.ok(view.find({ label: 'New API key' }))
   await view.unmount()
 })
 

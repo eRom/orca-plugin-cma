@@ -1,11 +1,10 @@
-// Section « Anthropic workspace » de l'accueil : la liste des workspaces associés (un actif, un badge), l'ajout,
+// Section « Workspaces » de l'accueil : la liste des workspaces associés (un actif, un badge), l'ajout,
 // la modification d'une ligne (nom, clé, console, retrait) et la bascule. Aucun atome de ce fichier n'est persisté :
 // une clé saisie reste en mémoire, dans son champ, nulle part ailleurs.
-import { atom, Box, Button, Callout, IconButton, Input, Link, plugin, read, set, Stack, Text } from 'orca'
+import { atom, Badge, Box, Button, Callout, IconButton, Input, plugin, read, set, shell, Stack, Text } from 'orca'
 import { ConfirmInline } from '../blocks/confirm-inline'
 import { GroupCard } from '../blocks/group-card'
 import type { IconAction } from '../blocks/icon-action'
-import { ItemRow } from '../blocks/item-row'
 import type { ApiResult, WorkspaceInfo, WorkspaceRow } from '../protocol'
 import { clipBytes } from '../shared/text'
 import { resetAgentForms } from './agent-form'
@@ -180,19 +179,24 @@ async function addFirstWorkspace(): Promise<void> {
   }
 }
 
-async function renameWorkspace(row: WorkspaceRow): Promise<void> {
+/**
+ * Le seul `Save` du détail : renomme si le nom a changé, puis remplace la clé si une clé est saisie, dans cet ordre.
+ * Un refus s'affiche et garde la saisie ; ce qui a déjà été accepté reste (le nom renommé survit à une clé refusée).
+ * Un refus du renommage arrête là : la clé n'est pas envoyée tant que le nom n'est pas réglé.
+ */
+async function saveWorkspace(row: WorkspaceRow): Promise<void> {
   set(editError, null)
   const name = (read(editName) ?? row.name).trim()
-  const renamed = await send(
-    () => plugin.request('workspaces.rename', { localId: row.localId, name }),
-    (message) => set(editError, message)
-  )
-  if (renamed) set(editName, null)
-}
-
-async function replaceKey(row: WorkspaceRow): Promise<void> {
-  set(editError, null)
   const key = read(editKey).trim()
+  if (name !== '' && name !== row.name) {
+    const renamed = await send(
+      () => plugin.request('workspaces.rename', { localId: row.localId, name }),
+      (message) => set(editError, message)
+    )
+    if (!renamed) return
+    set(editName, null)
+  }
+  if (key === '') return
   const replaced = await send(
     () => plugin.request('workspaces.replaceKey', { localId: row.localId, key }),
     (message) => set(editError, message)
@@ -202,6 +206,13 @@ async function replaceKey(row: WorkspaceRow): Promise<void> {
     // La ligne n'a plus de raison de rester ouverte d'office : la clé est bonne.
     set(editing, null)
   }
+}
+
+function openInConsole(url: string): void {
+  // L'appui sur ce bouton est le geste que `shell.openExternal` exige.
+  run(async () => {
+    await shell.openExternal(url)
+  })
 }
 
 async function removeWorkspace(row: WorkspaceRow): Promise<void> {
@@ -266,94 +277,122 @@ export function FirstKeyForm() {
   )
 }
 
-/** Le formulaire en ligne du `+` : un nom, une clé, `Add` (action principale) et `Cancel`. */
+/** Largeur mini d'un champ du formulaire d'ajout : en dessous, les deux champs passent l'un sous l'autre. */
+const FIELD_MIN_WIDTH = 140
+
+/**
+ * Le formulaire en ligne du `+`, posé dans la carte sous la dernière ligne : `Name` et `API key` côte à côte quand la
+ * largeur le permet (retour à la ligne sinon), puis `Add` (action principale) et `Cancel`. Composé en natif : aucun bloc
+ * du kit ne dessine deux champs qui se replient.
+ */
 function AddForm() {
   const working = read(busy)
   return (
-    <Box border radius="md" padding="sm">
-      <Stack gap="sm">
-        <Input label="Name" value={read(addName)} onChange={(value) => set(addName, value)} />
-        <Input
-          label="API key"
-          type="password"
-          placeholder="sk-ant-..."
-          value={read(addKey)}
-          onChange={(value) => set(addKey, value)}
-          onSubmit={() => run(addWorkspace)}
-        />
-        <ErrorLine message={read(addError)} />
-        <Box direction="row" wrap gap="sm">
-          <Button
-            variant="solid"
-            tone="accent"
-            size="sm"
-            onPress={() => run(addWorkspace)}
-            disabled={working || !read(addName).trim() || !read(addKey).trim()}
-          >
-            Add
-          </Button>
-          <Button variant="outline" size="sm" onPress={closeAddForm}>
-            Cancel
-          </Button>
+    <Box direction="column" gap="sm" paddingY="sm">
+      {[
+        <Box key="fields" direction="row" wrap gap="sm">
+          {[
+            <Box key="name" grow width={FIELD_MIN_WIDTH}>
+              <Input label="Name" value={read(addName)} onChange={(value) => set(addName, value)} />
+            </Box>,
+            <Box key="key" grow width={FIELD_MIN_WIDTH}>
+              <Input
+                label="API key"
+                type="password"
+                placeholder="sk-ant-..."
+                value={read(addKey)}
+                onChange={(value) => set(addKey, value)}
+                onSubmit={() => run(addWorkspace)}
+              />
+            </Box>
+          ]}
+        </Box>,
+        <ErrorLine key="error" message={read(addError)} />,
+        <Box key="actions" direction="row" wrap gap="sm">
+          {[
+            <Button
+              key="add"
+              variant="solid"
+              tone="accent"
+              size="sm"
+              onPress={() => run(addWorkspace)}
+              disabled={working || !read(addName).trim() || !read(addKey).trim()}
+            >
+              Add
+            </Button>,
+            <Button key="cancel" variant="outline" size="sm" onPress={closeAddForm}>
+              Cancel
+            </Button>
+          ]}
         </Box>
-      </Stack>
+      ]}
     </Box>
   )
 }
 
-/** Le détail ✎ d'une ligne : renommer, remplacer la clé, ouvrir la console, retirer. */
+/**
+ * Le détail ✎ d'une ligne : nom, nouvelle clé, un seul `Save`, puis `Console` et `Remove`. Sur une clé refusée ou
+ * manquante, le détail s'ouvre seul et l'aide de la clé le dit.
+ */
 function WorkspaceDetail({ row, needsFix }: { row: WorkspaceRow; needsFix: boolean }) {
   const working = read(busy)
   const name = read(editName) ?? row.name
   const nameChanged = name.trim() !== '' && name.trim() !== row.name
+  const changed = nameChanged || read(editKey).trim() !== ''
+  const save = () => {
+    if (changed) run(() => saveWorkspace(row))
+  }
   return (
-    <Box paddingY="sm">
-      <Stack gap="sm">
-        <Input label="Name" value={name} onChange={(value) => set(editName, value)} onSubmit={() => nameChanged && run(() => renameWorkspace(row))} />
-        <Box direction="row" wrap gap="sm">
-          <Button variant="outline" size="sm" disabled={working || !nameChanged} onPress={() => run(() => renameWorkspace(row))}>
-            Save
-          </Button>
-        </Box>
+    <Stack gap="sm">
+      <Input label="Name" value={name} onChange={(value) => set(editName, value)} onSubmit={save} />
+      <Stack gap="xs">
         <Input
-          label="Replace key"
+          label="New API key"
           type="password"
           placeholder="sk-ant-..."
           value={read(editKey)}
           onChange={(value) => set(editKey, value)}
-          onSubmit={() => run(() => replaceKey(row))}
+          onSubmit={save}
         />
-        <Box direction="row" wrap gap="sm">
-          {/* Sur une ligne dont la clé manque ou est refusée, enregistrer la clé est le geste attendu. */}
-          <Button
-            variant={needsFix ? 'solid' : 'outline'}
-            {...(needsFix ? { tone: 'accent' as const } : {})}
-            size="sm"
-            disabled={working || !read(editKey).trim()}
-            onPress={() => run(() => replaceKey(row))}
-          >
-            Save key
-          </Button>
-        </Box>
-        <ErrorLine message={read(editError)} />
-        <Box direction="row" wrap align="center" gap="sm">
-          {row.workspaceId ? <Link href={`https://platform.claude.com/workspaces/${row.workspaceId}/agents`}>Console</Link> : null}
-          {read(confirmingRemove) ? null : (
-            <Button variant="ghost" tone="danger" size="sm" onPress={() => set(confirmingRemove, true)}>
+        <Text muted size="xs">
+          {needsFix ? 'Paste a new key for this workspace.' : 'Leave empty to keep the current key.'}
+        </Text>
+      </Stack>
+      <ErrorLine message={read(editError)} />
+      <Box direction="row" wrap gap="sm">
+        <Button variant="solid" tone="accent" size="sm" disabled={working || !changed} onPress={save}>
+          Save
+        </Button>
+      </Box>
+      <Box direction="row" wrap align="center" gap="sm">
+        {[
+          row.workspaceId ? (
+            <Button
+              key="console"
+              variant="outline"
+              size="sm"
+              icon="open-external"
+              onPress={() => openInConsole(`https://platform.claude.com/workspaces/${row.workspaceId}/agents`)}
+            >
+              Console
+            </Button>
+          ) : null,
+          read(confirmingRemove) ? null : (
+            <Button key="remove" variant="outline" tone="danger" size="sm" onPress={() => set(confirmingRemove, true)}>
               Remove
             </Button>
-          )}
-        </Box>
-        {read(confirmingRemove) ? (
-          <ConfirmInline
-            question={`Remove ${clipName(row.name)}? Its key is deleted from this Mac.`}
-            confirmLabel="Remove"
-            onCancel={() => set(confirmingRemove, false)}
-            onConfirm={() => run(() => removeWorkspace(row))}
-          />
-        ) : null}
-      </Stack>
-    </Box>
+          )
+        ]}
+      </Box>
+      {read(confirmingRemove) ? (
+        <ConfirmInline
+          question={`Remove ${clipName(row.name)}? Its key is deleted from this Mac.`}
+          confirmLabel="Remove"
+          onCancel={() => set(confirmingRemove, false)}
+          onConfirm={() => run(() => removeWorkspace(row))}
+        />
+      ) : null}
+    </Stack>
   )
 }
 
@@ -364,6 +403,11 @@ function statusOf(row: WorkspaceRow, info: WorkspaceInfo): { label: string; tone
   return { label: 'Active', tone: 'success' }
 }
 
+/**
+ * Une ligne de la carte, composée en natif : `ItemRow` passe son badge à la ligne quand la place manque, d'où des hauteurs
+ * inégales. Ici deux lignes fixes, donc une hauteur constante à 220 comme à 360 : le nom et les actions, puis le badge
+ * d'état (s'il y en a un) et l'identifiant en sourdine.
+ */
 function WorkspaceLine({ row, info }: { row: WorkspaceRow; info: WorkspaceInfo }) {
   const opened = openedLocalId(info) === row.localId
   const name = clipName(row.name)
@@ -375,24 +419,69 @@ function WorkspaceLine({ row, info }: { row: WorkspaceRow; info: WorkspaceInfo }
     { key: 'edit', icon: 'edit', label: `Edit ${name}`, active: opened, onPress: () => toggleEdit(info, row) }
   ]
   return (
-    <Stack gap="xs">
-      <ItemRow title={name} subtitle={row.workspaceId ?? 'Workspace unknown'} {...(status ? { status } : {})} actions={actions} />
-      {opened ? <WorkspaceDetail row={row} needsFix={row.active && !isUsable(info)} /> : null}
-    </Stack>
+    <Box direction="column" gap="xs" paddingY="sm">
+      {/* Une seule liste plate et entièrement clée à chaque niveau : Orca ignore les clés d'un tableau imbriqué parmi d'autres enfants. */}
+      {[
+        <Box key="head" direction="row" align="center" gap="sm">
+          {[
+            <Box key="name" grow minWidth={0}>
+              <Text weight="semibold" truncate>
+                {name}
+              </Text>
+            </Box>,
+            <Box key="actions" direction="row" align="center" gap="xs" shrink={false}>
+              {actions.map((action) => (
+                <Box key={`action-${action.key}`} shrink={false}>
+                  <IconButton
+                    icon={action.icon}
+                    label={action.label}
+                    variant={action.active ? 'outline' : 'ghost'}
+                    size="sm"
+                    onPress={action.onPress}
+                  />
+                </Box>
+              ))}
+            </Box>
+          ]}
+        </Box>,
+        <Box key="meta" direction="row" align="center" gap="sm">
+          {[
+            status ? (
+              <Box key="status" shrink={false}>
+                <Badge tone={status.tone}>{status.label}</Badge>
+              </Box>
+            ) : null,
+            <Box key="id" grow minWidth={0}>
+              <Text muted size="xs" truncate>
+                {row.workspaceId ?? 'Workspace unknown'}
+              </Text>
+            </Box>
+          ]}
+        </Box>,
+        opened ? (
+          <Box key="detail" paddingY="sm">
+            <WorkspaceDetail row={row} needsFix={row.active && !isUsable(info)} />
+          </Box>
+        ) : null
+      ]}
+    </Box>
   )
 }
 
-/** La section : la liste des workspaces (ou le formulaire de la première clé), puis le formulaire d'ajout quand `+` l'ouvre. */
+/**
+ * La section : la liste des workspaces dans une carte (ou le formulaire de la première clé), le formulaire d'ajout dans la
+ * même carte, après un filet, quand `+` l'ouvre.
+ */
 export function WorkspacesSection({ info }: { info: WorkspaceInfo }) {
   if (info.workspaces.length === 0) return <FirstKeyForm />
   return (
-    <Stack gap="sm">
-      <GroupCard
-        title="Anthropic workspace"
-        trailing={<IconButton icon="add" label="Add workspace" variant="outline" onPress={openAddForm} />}
-        rows={info.workspaces.map((row) => ({ key: row.localId, row: <WorkspaceLine row={row} info={info} /> }))}
-      />
-      {read(addOpen) ? <AddForm /> : null}
-    </Stack>
+    <GroupCard
+      title="Workspaces"
+      trailing={<IconButton icon="add" label="Add workspace" variant="outline" onPress={openAddForm} />}
+      rows={[
+        ...info.workspaces.map((row) => ({ key: row.localId, row: <WorkspaceLine row={row} info={info} /> })),
+        read(addOpen) ? { key: 'add-form', row: <AddForm /> } : null
+      ]}
+    />
   )
 }
