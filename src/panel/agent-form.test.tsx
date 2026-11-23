@@ -133,6 +133,8 @@ function requests(calls: Calls, over: Record<string, unknown> = {}) {
 
 type View = Awaited<ReturnType<typeof mount>>
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
 const button = (view: View, text: string) => view.find({ role: 'button', text })
 
 /** Ouvre la section repliée des réglages par outil. */
@@ -236,6 +238,8 @@ test('an MCP server row shows its name, its URL, its policy and a Remove action'
   assert.ok(row)
   assert.ok(view.find({ text: 'https://api.githubcopilot.com/mcp/' }))
   assert.equal(view.valueOf({ label: 'Policy of github' }), 'always_ask')
+  // Le Select est l'unique contrôle de la politique : aucune pastille de statut ne la répète.
+  assert.equal(view.findAll({ type: 'Badge' }).length, 0)
   await view.select({ label: 'Policy of github' }, 'always_allow')
   assert.equal(view.valueOf({ label: 'Policy of github' }), 'always_allow')
   await view.press({ role: 'button', label: 'Remove github' })
@@ -293,6 +297,9 @@ test('Review changes is disabled until something changed, then previews and appl
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
   assert.equal(button(view, 'Review changes')?.disabled, true)
+  // L'action principale se lit comme telle : pleine, ton d'accent.
+  assert.equal(button(view, 'Review changes')?.props.variant, 'solid')
+  assert.equal(button(view, 'Review changes')?.props.tone, 'accent')
   await view.type({ label: 'Description' }, ' More.')
   assert.equal(button(view, 'Review changes')?.disabled, false)
   assert.ok(view.find({ text: 'Unsaved changes' }))
@@ -470,6 +477,9 @@ test('New agent on the home tab opens the empty form, Create is the single solid
   // Une seule action pleine dans tout l'écran.
   const solid = view.findAll({ role: 'button' }).filter((entry) => entry.props.variant === undefined || entry.props.variant === 'solid')
   assert.deepEqual(solid.map((entry) => entry.text), ['Create'])
+  assert.equal(button(view, 'Create')?.props.tone, 'accent')
+  // Create grisé parce que le nom et le modèle manquent : l'avis en sourdine le dit.
+  assert.ok(view.find({ text: 'Name and model are required.' }))
   // Pas d'erreur avant d'avoir touché le nom.
   assert.notEqual(view.find({ type: 'Input', label: 'Name' })?.props.invalid, true)
   await view.type({ label: 'Name' }, 'x')
@@ -495,6 +505,7 @@ test('Create sends the form with no base, then opens the new agent from Committe
   await view.select({ label: 'Model' }, 'claude-sonnet-5')
   await view.select({ label: 'Effort' }, 'low')
   assert.equal(button(view, 'Create')?.disabled, false)
+  assert.equal(view.find({ text: 'Name and model are required.' }), null)
   await view.press({ role: 'button', text: 'Create' })
   const sent = calls.prepares[0]
   assert.ok(sent)
@@ -510,6 +521,65 @@ test('Create sends the form with no base, then opens the new agent from Committe
   assert.ok(view.find({ text: 'Applied, v1' }))
   assert.deepEqual(read(formDrafts), {})
   assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('Create goes straight to the write: the button is busy and no changes preview ever shows', async () => {
+  const calls = newCalls()
+  const seen: { creating: boolean; creatingDisabled: boolean; preview: boolean }[] = []
+  let current: View | null = null
+  const host = mockHost({
+    requests: requests(calls, {
+      'write.commit': async (input: { token: string; force: boolean }) => {
+        calls.commits.push(input)
+        // Le temps que le panneau se redessine : ce que la personne voit pendant l'envoi.
+        await sleep(30)
+        const creating = current?.find({ role: 'button', text: 'Creating…' }) ?? null
+        seen.push({ creating: creating !== null, creatingDisabled: creating?.disabled === true, preview: current?.find({ type: 'List', label: 'Changes' }) != null })
+        return { ok: true, value: { label: 'Applied, v1', id: 'agent_new' } }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN_NEW })
+  current = view
+  await view.type({ label: 'Name' }, 'plugin-test-agent')
+  await view.select({ label: 'Model' }, 'claude-sonnet-5')
+  await view.press({ role: 'button', text: 'Create' })
+  assert.deepEqual(seen, [{ creating: true, creatingDisabled: true, preview: false }])
+  assert.equal(view.find({ role: 'button', text: 'Confirm' }), null)
+  await view.unmount()
+})
+
+test('after a write the old base never shows while the list and the detail are read again', async () => {
+  const calls = newCalls()
+  const written: AgentDetail = { ...DETAIL, version: 6, form: { ...FORM, description: 'Triages incidents. More.' } }
+  const seen: unknown[] = []
+  let current: View | null = null
+  const host = mockHost({
+    requests: requests(calls, {
+      'configs.detail': ({ id }: { id: string }) => {
+        calls.details.push(id)
+        return { ok: true, value: calls.commits.length > 0 ? written : DETAIL }
+      },
+      'configs.list': async ({ kind }: { kind: ConfigKind }) => {
+        calls.lists.push(kind)
+        // La relecture de la liste qui suit l'écriture, une fois l'écran redessiné : jamais l'ancienne base, seulement l'agent relu.
+        if (calls.commits.length > 0) {
+          await sleep(30)
+          seen.push(current?.valueOf({ label: 'Description' }))
+        }
+        return { ok: true, value: kind === 'agent' ? ROWS : [] }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN_DETAIL })
+  current = view
+  await view.type({ label: 'Description' }, ' More.')
+  await view.press({ role: 'button', text: 'Review changes' })
+  await view.press({ role: 'button', text: 'Confirm' })
+  assert.deepEqual(seen, ['Triages incidents. More.'])
+  assert.deepEqual(read(formDrafts), {})
+  assert.ok(view.find({ text: 'Applied, v6' }))
   await view.unmount()
 })
 

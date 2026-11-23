@@ -63,7 +63,7 @@ export function ChangesPreview({ prepared, busy, onConfirm, onCancel }: ChangesP
         <Button variant="ghost" size="sm" disabled={busy} onPress={onCancel}>
           Cancel
         </Button>
-        <Button variant="solid" size="sm" disabled={busy} onPress={onConfirm}>
+        <Button variant="solid" tone="accent" size="sm" disabled={busy} onPress={onConfirm}>
           Confirm
         </Button>
       </Row>

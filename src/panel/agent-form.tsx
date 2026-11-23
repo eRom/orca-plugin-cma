@@ -9,6 +9,7 @@ import {
   Button,
   Callout,
   CodeView,
+  IconButton,
   Input,
   KeyValue,
   plugin,
@@ -105,6 +106,7 @@ function emptyForm(): AgentForm {
 /** Où en est l'écriture d'un formulaire. Absent : au repos. `busy` : un envoi est en route. */
 type Flow =
   | { step: 'preparing' }
+  | { step: 'creating' }
   | { step: 'review'; prepared: PreparedWrite; busy: boolean; error: string | null }
   | { step: 'conflict'; prepared: PreparedWrite; busy: boolean; message: string }
   | { step: 'applied'; label: string }
@@ -133,12 +135,12 @@ function setFlow(key: string, flow: Flow | null): void {
 
 /** Vrai quand un envoi est en route. */
 function isBusy(flow: Flow | undefined): boolean {
-  return flow?.step === 'preparing' || ((flow?.step === 'review' || flow?.step === 'conflict') && flow.busy)
+  return flow?.step === 'preparing' || flow?.step === 'creating' || ((flow?.step === 'review' || flow?.step === 'conflict') && flow.busy)
 }
 
 /** Vrai tant que la préparation, la revue ou le conflit tiennent le formulaire : ses champs sont grisés. */
 function isLocked(flow: Flow | undefined): boolean {
-  return flow?.step === 'preparing' || flow?.step === 'review' || flow?.step === 'conflict'
+  return flow?.step === 'preparing' || flow?.step === 'creating' || flow?.step === 'review' || flow?.step === 'conflict'
 }
 
 function resetAddServer(): void {
@@ -179,13 +181,14 @@ async function showFailure(key: string, failure: { code: ApiErrorCode; error: st
 
 /**
  * « Review changes » : met l'écriture en attente. La base et la version envoyées sont celles de la saisie gardée (la
- * version sur laquelle elle a été commencée), jamais celles du détail frais. Une création part aussitôt, sans revue.
+ * version sur laquelle elle a été commencée), jamais celles du détail frais. Une création n'a rien à comparer : elle
+ * part aussitôt après sa préparation, sans écran de revue (le bouton `Create` dit qu'il travaille).
  */
 async function prepare(target: Target): Promise<void> {
   const { key, id } = target
   if (isBusy(read(flows)[key])) return
   const { form, base, baseStamp } = readForm(key, target.base, target.version)
-  setFlow(key, { step: 'preparing' })
+  setFlow(key, { step: id === null ? 'creating' : 'preparing' })
   let result
   try {
     result = await plugin.request('agent.prepareForm', {
@@ -202,13 +205,24 @@ async function prepare(target: Target): Promise<void> {
     await showFailure(key, result, 'Not applied', 'Could not prepare the changes')
     return
   }
-  setFlow(key, { step: 'review', prepared: result.value, busy: false, error: null })
-  if (id === null) await commit(target, false)
+  if (id !== null) {
+    setFlow(key, { step: 'review', prepared: result.value, busy: false, error: null })
+    return
+  }
+  let created
+  try {
+    created = await plugin.request('write.commit', { token: result.value.token, force: false })
+  } catch (error) {
+    setFlow(key, null)
+    throw error
+  }
+  if (created.ok) await finishWrite(target, created.value)
+  else await showFailure(key, created, 'Not created', 'Could not create the agent')
 }
 
 /** « Confirm » (ou « Apply anyway » après un conflit) : envoie l'écriture en attente. */
 async function commit(target: Target, force: boolean): Promise<void> {
-  const { key, id } = target
+  const { key } = target
   const flow = read(flows)[key]
   if ((flow?.step !== 'review' && flow?.step !== 'conflict') || flow.busy) return
   const { prepared } = flow
@@ -235,29 +249,35 @@ async function commit(target: Target, force: boolean): Promise<void> {
       await showFailure(key, result, 'Not applied', 'Could not apply')
       return
     default:
-      // Une création n'a pas de revue où revenir : l'avis s'affiche au-dessus de son bouton.
-      if (id === null) setFlow(key, noticeOf(result, 'Not created', 'Could not create the agent'))
-      else setFlow(key, { step: 'review', prepared, busy: false, error: clipBytes(result.error, ERROR_TEXT_LIMIT_BYTES).text })
+      setFlow(key, { step: 'review', prepared, busy: false, error: clipBytes(result.error, ERROR_TEXT_LIMIT_BYTES).text })
   }
 }
 
-/** Après l'écriture : la saisie gardée disparaît, la liste est relue, puis le détail (ou, pour une création, le détail du nouvel agent). */
+/**
+ * Après l'écriture : la liste est relue, puis le détail (ou, pour une création, le détail du nouvel agent). La saisie
+ * gardée disparaît une fois le détail vidé (l'écran passe par « Loading details »), jamais avant : sinon l'ancienne base
+ * reparaîtrait un instant.
+ */
 async function finishWrite(target: Target, committed: Committed): Promise<void> {
   const { key, id } = target
-  discardForm(key)
-  await loadConfigs('agent')
   if (id !== null) {
+    const reloading = loadDetail('agent', id)
+    clearForm(key)
     setFlow(key, { step: 'applied', label: committed.label })
-    await loadDetail('agent', id)
+    await Promise.all([loadConfigs('agent'), reloading])
     return
   }
+  await loadConfigs('agent')
   if (committed.id === undefined) {
+    clearForm(key)
     setFlow(key, { step: 'applied', label: committed.label })
     return
   }
   // Le résultat suit sur le détail du nouvel agent ; le formulaire de création, s'il est encore ouvert, lui cède la place.
   setFlow(formKey('agent', committed.id), { step: 'applied', label: committed.label })
   if (popIfTop((entry) => entry.view === 'newConfig' && entry.kind === 'agent')) openConfig('agent', committed.id)
+  clearForm(key)
+  setFlow(key, null)
 }
 
 /** « Reload » d'un conflit : relit l'agent et abandonne la saisie gardée. */
@@ -381,25 +401,29 @@ function ServersZone({ servers, disabled, onPolicy, onRemove, onAdd }: ServersPr
             : servers.slice(0, MAX_RENDERED_SERVERS).map((server) => ({
                 key: server.name,
                 row: (
-                  <Stack gap="xs">
-                    <ItemRow
-                      lead={{ kind: 'monogram', text: server.name }}
-                      title={clipTitle(server.name)}
-                      subtitle={clipBytes(server.url, DESCRIPTION_LIMIT_BYTES).text}
-                      status={{ label: POLICY_LABELS[server.policy], tone: 'neutral' }}
-                      actions={[{ key: 'remove', icon: 'delete', label: `Remove ${clipTitle(server.name)}`, disabled, onPress: () => onRemove(server.name) }]}
-                    />
-                    <Select
-                      label={`Policy of ${clipTitle(server.name)}`}
-                      labelHidden
-                      disabled={disabled}
-                      value={server.policy}
-                      options={POLICY_OPTIONS}
-                      onChange={(value) => {
-                        const policy = asPolicy(value)
-                        if (policy !== null) onPolicy(server.name, policy)
-                      }}
-                    />
+                  // Une unité, deux lignes à toute largeur : le nom et l'URL, puis la politique (qui prend la place libre) et le Remove collé à la fin.
+                  <Stack gap="none">
+                    <ItemRow lead={{ kind: 'monogram', text: server.name }} title={clipTitle(server.name)} subtitle={clipBytes(server.url, DESCRIPTION_LIMIT_BYTES).text} />
+                    <Box paddingY="xs">
+                      <Row gap="sm" align="center">
+                        <Box grow minWidth={0}>
+                          <Select
+                            label={`Policy of ${clipTitle(server.name)}`}
+                            labelHidden
+                            disabled={disabled}
+                            value={server.policy}
+                            options={POLICY_OPTIONS}
+                            onChange={(value) => {
+                              const policy = asPolicy(value)
+                              if (policy !== null) onPolicy(server.name, policy)
+                            }}
+                          />
+                        </Box>
+                        <Box shrink={false}>
+                          <IconButton icon="delete" label={`Remove ${clipTitle(server.name)}`} variant="ghost" size="sm" disabled={disabled} onPress={() => onRemove(server.name)} />
+                        </Box>
+                      </Row>
+                    </Box>
                   </Stack>
                 )
               }))
@@ -482,6 +506,8 @@ function FlowView({ target, flow }: { target: Target; flow: Flow }): OrcaNode {
   switch (flow.step) {
     case 'preparing':
       return <Spinner label="Preparing changes" />
+    case 'creating':
+      return null
     case 'review':
       return (
         <Stack gap="sm">
@@ -625,7 +651,9 @@ function AgentFormBody({ id, base, version, name, agent }: BodyProps) {
   const problem = nameMissing || form.model.trim() === ''
   // L'erreur du nom attend que la personne l'ait modifié une fois : un formulaire neuf ne s'ouvre pas en rouge.
   const nameInvalid = nameMissing && isTouched(key, 'name')
-  const idle = flow === undefined || flow.step === 'applied' || flow.step === 'notice'
+  // Le pied (le bouton principal) reste là au repos et pendant une création ; la revue ou le conflit le remplacent.
+  const showFooter = flow === undefined || flow.step === 'applied' || flow.step === 'notice' || flow.step === 'creating'
+  const creating = flow?.step === 'creating'
   return (
     <Stack gap="lg">
       {stale ? (
@@ -713,7 +741,7 @@ function AgentFormBody({ id, base, version, name, agent }: BodyProps) {
       />
       <Stack gap="sm">
         {flow !== undefined ? <FlowView target={target} flow={flow} /> : null}
-        {idle ? (
+        {showFooter ? (
           <Stack gap="xs">
             {dirty ? (
               <Text muted size="xs">
@@ -721,15 +749,20 @@ function AgentFormBody({ id, base, version, name, agent }: BodyProps) {
               </Text>
             ) : null}
             <Row gap="sm" align="center" wrap>
-              <Button disabled={problem || (id !== null && !dirty)} onPress={() => run(() => prepare(target))}>
-                {id === null ? 'Create' : 'Review changes'}
+              <Button variant="solid" tone="accent" disabled={creating || problem || (id !== null && !dirty)} onPress={() => run(() => prepare(target))}>
+                {id === null ? (creating ? 'Creating…' : 'Create') : 'Review changes'}
               </Button>
               {dirty ? (
-                <Button variant="ghost" onPress={() => discardForm(key)}>
+                <Button variant="ghost" disabled={creating} onPress={() => discardForm(key)}>
                   Discard
                 </Button>
               ) : null}
             </Row>
+            {problem ? (
+              <Text muted size="xs">
+                Name and model are required.
+              </Text>
+            ) : null}
           </Stack>
         ) : null}
       </Stack>

@@ -465,7 +465,7 @@ export function UploadsSection({ store }: { store: MemoryStoreDetail }) {
       {showApply ? (
         <Stack gap="xs">
           <Row>
-            <Button key="apply" disabled={blocked} onPress={() => run(() => applyUploads(store.id, rows))}>
+            <Button key="apply" variant="solid" tone="accent" disabled={blocked} onPress={() => run(() => applyUploads(store.id, rows))}>
               {`Apply (${ready})`}
             </Button>
           </Row>

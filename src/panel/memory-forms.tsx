@@ -447,7 +447,7 @@ export function MemoryActions({ memory }: { memory: MemoryContent }): OrcaNode {
     <Stack gap="sm">
       <ActionRow
         actions={[
-          { key: 'edit', icon: 'edit', label: 'Edit in editor', variant: 'solid', disabled: draftIsBusy(draftRef), onPress: () => startDraft(draftRef) },
+          { key: 'edit', icon: 'edit', label: 'Edit in editor', variant: 'solid', tone: 'accent', disabled: draftIsBusy(draftRef), onPress: () => startDraft(draftRef) },
           { key: 'replace', label: 'Replace…', onPress: () => replaceMemory(memory) },
           {
             key: 'rename',

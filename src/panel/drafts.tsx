@@ -490,7 +490,7 @@ export function DraftControls({ draftRef, label, showOpen = true, onApplied, onD
             ) : null}
             {kept ? (
               <>
-                <Button variant="solid" size="sm" disabled={busy} onPress={() => run(() => applyDraft(draftRef))}>
+                <Button variant="solid" tone="accent" size="sm" disabled={busy} onPress={() => run(() => applyDraft(draftRef))}>
                   Apply
                 </Button>
                 <ConfirmAction
