@@ -49,6 +49,8 @@ const UPLOAD_OPTIONS = { timeoutMs: RESOURCE_UPLOAD_WAIT_MS }
 /** Un nom venu de l'API ou du disque, coupé avant d'entrer dans un libellé (Orca refuse un libellé de plus de 1 Kio). */
 const clipName = (name: string): string => clipBytes(name, ROW_TITLE_LIMIT_BYTES).text
 
+const errorText = (error: unknown): string => clipBytes(error instanceof Error ? error.message : String(error), ERROR_TEXT_LIMIT_BYTES).text
+
 const isHostTimeout = (error: unknown): boolean => error instanceof Error && (error as { code?: unknown }).code === 'timeout'
 
 // --- Actions ---
@@ -99,7 +101,7 @@ async function pick(card: CardKey, startedIn: number): Promise<PickedFile | null
 
 type UploadOutcome = ApiResult<string> | 'unconfirmed'
 
-/** Envoie le choix. La valeur d'un succès est le texte de l'avis ; une attente épuisée rend `unconfirmed`. */
+/** Envoie le choix. La valeur d'un succès est le texte de l'avis ; une attente épuisée rend `unconfirmed`, un rejet de l'hôte un refus. */
 async function sendUpload(card: CardKey, picked: PickedFile, skill: { id: string; name: string } | null): Promise<UploadOutcome> {
   try {
     if (card === 'files') {
@@ -114,7 +116,8 @@ async function sendUpload(card: CardKey, picked: PickedFile, skill: { id: string
     return result.ok ? { ok: true, value: `Uploaded ${clipName(result.value.name)}.` } : result
   } catch (error) {
     if (isHostTimeout(error)) return 'unconfirmed'
-    throw error
+    // Un rejet de l'hôte (worker indisponible) est un refus comme un autre : il s'affiche sur la carte, sans bandeau.
+    return { ok: false, code: 'other', error: errorText(error) }
   }
 }
 
@@ -132,7 +135,8 @@ async function startUpload(card: CardKey, skill: { id: string; name: string } | 
   try {
     const outcome = await sendUpload(card, picked, skill)
     if (startedIn !== currentGeneration()) return
-    if (outcome === 'unconfirmed') {
+    // Le worker dit lui-même qu'une attente épuisée est peut-être passée : même avis que l'attente épuisée de l'hôte.
+    if (outcome === 'unconfirmed' || (!outcome.ok && outcome.error === UPLOAD_UNCONFIRMED)) {
       setNotice(card, { tone: 'warning', title: UPLOAD_UNCONFIRMED, message: null })
     } else if (outcome.ok) {
       setNotice(card, { tone: 'success', title: outcome.value, message: null })
@@ -156,14 +160,22 @@ async function deleteResource(card: CardKey, id: string, name: string): Promise<
   try {
     result = await (card === 'skills' ? plugin.request('skills.delete', { skillId: id }) : plugin.request('files.delete', { fileId: id }))
   } catch (error) {
-    if (startedIn === currentGeneration()) setNotice(card, refusal('Could not delete', error instanceof Error ? error.message : String(error)))
+    // Un rejet de l'hôte (délai, worker indisponible) : l'avis de la carte, puis la relecture comme pour tout refus.
+    if (startedIn !== currentGeneration()) return
+    setNotice(card, refusal('Could not delete', errorText(error)))
+    await reread(card, startedIn)
     return
   }
   if (startedIn !== currentGeneration()) return
   if (result.ok) {
     setNotice(card, { tone: 'success', title: `Deleted ${clipName(name)}.`, message: null })
   } else if (result.code === 'unauthorized') {
-    await loadWorkspace()
+    // `onConfirm` ne lève jamais : une identité qu'on ne peut pas relire devient l'avis de la carte.
+    try {
+      await loadWorkspace()
+    } catch (error) {
+      if (startedIn === currentGeneration()) setNotice(card, refusal('Could not delete', errorText(error)))
+    }
     return
   } else {
     setNotice(card, refusal('Could not delete', clipBytes(result.error, ERROR_TEXT_LIMIT_BYTES).text))

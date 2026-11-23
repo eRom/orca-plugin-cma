@@ -1,8 +1,9 @@
 import { read } from 'orca'
 import { assert, hostError, mockHost, mount, test, type TestPanel, type TestQuery } from 'orca/testing'
-import { UPLOAD_UNCONFIRMED, type FileRow, type SessionRow, type SkillRow, type WorkspaceInfo } from '../protocol'
+import { RESOURCE_UPLOAD_WAIT_MS, UPLOAD_UNCONFIRMED, type FileRow, type SessionRow, type SkillRow, type WorkspaceInfo } from '../protocol'
 import * as panel from '../panel'
 import { notice } from './state'
+import { PICK_TIMEOUT_MS } from './memory-uploads'
 
 const FIRST: WorkspaceInfo = {
   hasKey: true,
@@ -306,7 +307,6 @@ test('a list answer that arrives after a workspace switch is dropped', async () 
   await view.unmount()
 })
 
-
 test('an older list answer never overwrites a newer one', async () => {
   const first = gate()
   const second = gate()
@@ -562,8 +562,8 @@ test('the picker waits as long as Orca allows and the upload waits for the API',
     host.calls
       .filter((call) => call.method === 'plugin.request' && (call.params as { name?: string }).name === name)
       .map((call) => (call.params as { timeoutMs?: number }).timeoutMs)
-  assert.deepEqual(timeouts('skills.pickFolder'), [120_000])
-  assert.deepEqual(timeouts('skills.upload'), [120_000])
+  assert.deepEqual(timeouts('skills.pickFolder'), [PICK_TIMEOUT_MS])
+  assert.deepEqual(timeouts('skills.upload'), [RESOURCE_UPLOAD_WAIT_MS])
   await view.unmount()
 })
 
@@ -669,12 +669,13 @@ test('an unconfirmed upload says it may have gone through and rereads the list',
         return { ok: true, value: [] }
       },
       'files.pickFile': { ok: true, value: FILE_PICKED },
-      'files.upload': { ok: false, code: 'unconfirmed', error: UPLOAD_UNCONFIRMED }
+      'files.upload': { ok: false, code: 'other', error: UPLOAD_UNCONFIRMED }
     })
   })
   const view = await mount(panel, { host, persisted: OPEN })
   await view.press(addFile)
-  assert.ok(view.find({ type: 'Text', text: UPLOAD_UNCONFIRMED }))
+  assert.ok(callout(view, UPLOAD_UNCONFIRMED))
+  assert.equal(callout(view, /Could not upload/), null)
   assert.equal(lists, 2)
   await view.unmount()
 })
@@ -846,5 +847,55 @@ test('an upload that ends after a workspace switch shows no notice', async () =>
   assert.equal(view.find({ type: 'Callout' }), null)
   assert.equal(view.find({ type: 'Spinner' }), null)
   assert.equal(iconButton(view, 'Upload skill')?.disabled, false)
+  await view.unmount()
+})
+
+test('an upload the host rejects shows the text on the card, not in the banner, and rereads the list', async () => {
+  let lists = 0
+  const host = mockHost({
+    requests: requests({
+      'files.list': () => {
+        lists += 1
+        return { ok: true, value: [] }
+      },
+      'files.pickFile': { ok: true, value: FILE_PICKED },
+      'files.upload': () => {
+        throw hostError('unavailable', 'The worker is not running')
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN })
+  await view.press(addFile)
+  assert.ok(callout(view, /Could not upload/))
+  assert.ok(view.find({ type: 'Text', text: 'The worker is not running' }))
+  assert.equal(read(notice), null)
+  assert.equal(lists, 2)
+  assert.equal(iconButton(view, 'Upload file')?.disabled, false)
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
+  await view.unmount()
+})
+
+test('a delete the host rejects shows the text on the card, closes the question and rereads the list', async () => {
+  let lists = 0
+  const host = mockHost({
+    requests: requests({
+      'skills.list': () => {
+        lists += 1
+        return { ok: true, value: [skill()] }
+      },
+      'skills.delete': () => {
+        throw hostError('timeout', 'The worker took too long')
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN })
+  await view.press({ type: 'IconButton', label: 'Delete teach' })
+  await pressConfirm(view, 'Delete')
+  assert.ok(callout(view, /Could not delete/))
+  assert.ok(view.find({ type: 'Text', text: 'The worker took too long' }))
+  assert.equal(read(notice), null)
+  assert.equal(lists, 2)
+  assert.equal(view.find({ role: 'button', text: 'Cancel' }), null)
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
   await view.unmount()
 })
