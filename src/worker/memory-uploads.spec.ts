@@ -428,3 +428,19 @@ test('a failed or cancelled dialog is not kept: the next file.pick runs again', 
   expect(await pick()).toEqual({ ok: true, value: null })
   expect(runs).toBe(2)
 })
+
+test('a folder picker runs choose folder with its prompt and answers the folder name', async () => {
+  const calls: string[][] = []
+  const pick = createFilePicker(
+    {
+      platform: 'darwin',
+      run: async (args) => {
+        calls.push(args)
+        return '/Users/x/skills/teach/\n'
+      }
+    },
+    { kind: 'folder', prompt: 'Choose a skill folder (it must contain SKILL.md)' }
+  )
+  expect(await pick()).toEqual({ ok: true, value: { file: '/Users/x/skills/teach/', name: 'teach' } })
+  expect(calls).toEqual([['-e', 'POSIX path of (choose folder with prompt "Choose a skill folder (it must contain SKILL.md)")']])
+})

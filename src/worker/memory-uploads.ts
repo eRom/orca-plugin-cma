@@ -34,11 +34,16 @@ export const runOsascript = async (args: string[]): Promise<string> => (await ex
  * Une seule boîte à la fois : tant qu'elle est ouverte, un nouvel appel rejoint la même promesse (il reçoit la même
  * réponse). Sans cela, un appui après le délai du panneau empilerait une seconde boîte et la réponse de la première serait perdue.
  */
-export function createFilePicker(deps: FilePickerDeps): () => Promise<ApiResult<PickedFile | null>> {
+export function createFilePicker(
+  deps: FilePickerDeps,
+  options: { kind?: 'file' | 'folder'; prompt?: string } = {}
+): () => Promise<ApiResult<PickedFile | null>> {
+  const kind = options.kind ?? 'file'
+  const prompt = options.prompt ?? PICK_PROMPT
   let inFlight: Promise<ApiResult<PickedFile | null>> | null = null
   const pickOnce = async (): Promise<ApiResult<PickedFile | null>> => {
     try {
-      const output = await deps.run(['-e', `POSIX path of (choose file with prompt "${PICK_PROMPT}")`])
+      const output = await deps.run(['-e', `POSIX path of (choose ${kind} with prompt "${prompt}")`])
       const file = output.replace(/\r?\n$/, '')
       return { ok: true, value: file === '' ? null : { file, name: basename(file) } }
     } catch (error) {

@@ -364,6 +364,21 @@ export type PickedFile = { file: string; name: string }
 /** Une ligne d'envoi : `path` est le chemin de la mémoire, `memoryId` non nul pour remplacer une mémoire existante. */
 export type UploadItem = { path: string; file: string; memoryId: string | null }
 
+/** Un skill de l'espace (Skills API, bêta) : sa dernière version sert aux agents qui le référencent. */
+export type SkillRow = { id: string; name: string; latestVersionId: string; updatedAt: string }
+
+/** Un fichier de l'espace (Files API, bêta) ; `sessionId` non nul : produit par une session, pas envoyé. */
+export type FileRow = { id: string; name: string; sizeBytes: number; createdAt: string; sessionId: string | null }
+
+/** Délai que le panneau laisse à un envoi de skill ou de fichier avant de le dire incertain. */
+export const RESOURCE_UPLOAD_WAIT_MS = 120_000
+/** Taille maximale d'un dossier de skill (somme de ses fichiers). */
+export const SKILL_MAX_BYTES = 30_000_000
+/** Taille maximale d'un fichier envoyé depuis Orca. */
+export const FILE_MAX_BYTES = 100_000_000
+/** Lu par le worker (envoi coupé sans réponse) et par le panneau (délai de l'hôte dépassé) : il vit ici, pas dans `src/worker`. */
+export const UPLOAD_UNCONFIRMED = 'The upload may have gone through: check the list before trying again.'
+
 export type DraftsStatus = { folder: string; ready: boolean }
 
 export type DraftInfo = {
@@ -438,6 +453,17 @@ declare module 'orca' {
     /** `null` : la boîte de dialogue a été annulée. */
     'file.pick': { output: ApiResult<PickedFile | null> }
     'memory.stageUploads': { input: { memoryStoreId: string; items: UploadItem[] }; output: ApiResult<PreparedWrite> }
+    'skills.list': { output: ApiResult<SkillRow[]> }
+    /** `null` : la boîte de dialogue a été annulée. */
+    'skills.pickFolder': { output: ApiResult<PickedFile | null> }
+    'skills.upload': { input: { folder: string }; output: ApiResult<SkillRow> }
+    'skills.uploadVersion': { input: { skillId: string; folder: string }; output: ApiResult<{ versionId: string }> }
+    'skills.delete': { input: { skillId: string }; output: ApiResult<null> }
+    'files.list': { output: ApiResult<FileRow[]> }
+    /** `null` : la boîte de dialogue a été annulée. */
+    'files.pickFile': { output: ApiResult<PickedFile | null> }
+    'files.upload': { input: { file: string }; output: ApiResult<FileRow> }
+    'files.delete': { input: { fileId: string }; output: ApiResult<null> }
     'workspace.back': { input: { workspaceId: string }; output: ApiResult<null> }
     'diagnostics.testSpend': { output: ApiResult<{ sessions: number; total: Money | null }> }
   }
