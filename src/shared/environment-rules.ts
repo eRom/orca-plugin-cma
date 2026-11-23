@@ -27,11 +27,14 @@ export function metadataTextProblem(text: string): string | null {
 
 export const PACKAGE_LINE_MESSAGE = `Package lines must look like "pip requests" (${PACKAGE_MANAGERS.join(', ')}).`
 
-/** Une ligne de paquet : le gestionnaire, une espace, le paquet ; null si elle n'a pas cette forme. */
-export function parsePackageLine(line: string): { manager: (typeof PACKAGE_MANAGERS)[number]; name: string } | null {
-  const match = /^(\S+)\s+(.+)$/.exec(line.trim())
-  const manager = PACKAGE_MANAGERS.find((candidate) => candidate === match?.[1])
-  return match && manager ? { manager, name: match[2]!.trim() } : null
+/**
+ * Une ligne de paquets : le gestionnaire puis un ou plusieurs paquets séparés par des espaces (`pip requests httpx`),
+ * comme sur une ligne de commande ; null si elle n'a pas cette forme.
+ */
+export function parsePackageLine(line: string): { manager: (typeof PACKAGE_MANAGERS)[number]; names: string[] } | null {
+  const [head, ...names] = line.trim().split(/\s+/)
+  const manager = PACKAGE_MANAGERS.find((candidate) => candidate === head)
+  return manager && names.length > 0 ? { manager, names } : null
 }
 
 /** Le défaut du texte brut des paquets (`<gestionnaire> <paquet>` par ligne), ou null s'il est bon. */

@@ -252,7 +252,7 @@ test('with a stale version the token is a conflict, and a forced commit sends no
   await api.elsewhere({ description: 'Changed in the console.' })
   const prepared = await prepare({ agentId: 'agent_1', baseVersion: 5, form: POLICY_CHANGE, base: form })
   // La préparation ne vérifie pas la version : le jeton existe, et le récapitulatif ne montre que la politique.
-  expect(prepared.ok && prepared.value.changes.map((change) => change.path)).toEqual(['Built-in tools policy'])
+  expect(prepared.ok && prepared.value.changes.map((change) => change.path)).toEqual(['tools[0].default_config.permission_policy.type'])
   expect(await commitOf(pending, prepared, false)).toEqual({ ok: false, code: 'conflict', error: 'Changed elsewhere since you opened it (v5 → v6).' })
   expect(only(api.calls, 'agents.update').length).toBe(1)
   // Le jeton survit : « Apply anyway ».
@@ -276,8 +276,8 @@ test('I1: the changes are applied onto the live agent, so a forced send keeps a 
     form: withForm({ mcpServers: [{ ...form.mcpServers[0]!, policy: 'auto' }] }),
     base: form
   })
-  // L'aperçu ne montre que la politique, et il est calculé sur l'agent vivant.
-  expect(prepared.ok && prepared.value.changes.map((change) => change.path)).toEqual(['MCP server github policy'])
+  // L'agent a changé depuis l'ouverture : l'aperçu est le document exact, calculé sur l'agent vivant, et ne montre que la politique.
+  expect(prepared.ok && prepared.value.changes.map((change) => change.path)).toEqual(['tools[1].default_config.permission_policy.type'])
   expect(await commitOf(pending, prepared, false)).toEqual({ ok: false, code: 'conflict', error: 'Changed elsewhere since you opened it (v5 → v6).' })
   expect(await commitOf(pending, prepared, true)).toEqual({ ok: true, value: { label: 'Applied, v7', id: 'agent_1' } })
   const stored = api.agents.get('agent_1')!.tools as Record<string, unknown>[]
@@ -401,4 +401,14 @@ test('a null effort on an existing agent is not reviewed, as it is not sent', ()
     { path: 'Effort', before: 'high', after: 'low' },
     { path: 'Description', before: 'Triages incident ticket', after: null }
   ])
+})
+
+test('review I-1: a built-in toolset removed elsewhere is recreated by a rename, and the review says so instead of showing only the name', async () => {
+  const { api, prepare } = setup()
+  const [, github] = structuredClone(api.agents.get('agent_1')!.tools) as Record<string, unknown>[]
+  await api.elsewhere({ tools: [github] })
+  const prepared = await prepare({ agentId: 'agent_1', baseVersion: 5, form: withForm({ name: 'Renamed' }), base: form })
+  const paths = prepared.ok ? prepared.value.changes.map((change) => change.path) : []
+  expect(paths.includes('name')).toBe(true)
+  expect(paths.some((path) => path.startsWith('tools'))).toBe(true)
 })

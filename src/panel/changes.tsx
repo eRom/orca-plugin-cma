@@ -18,6 +18,9 @@ function clipLabel(text: string, maxBytes: number): string {
   return clipped.truncated ? `${clipped.text}…` : clipped.text
 }
 
+/** Une valeur ajoutée ou retirée ; vide (un fichier vide), elle se dit, plutôt qu'un « Added: » sans rien. */
+const shown = (value: string): string => (value === '' ? '(empty)' : clipLabel(value, VALUE_LIMIT_BYTES))
+
 /**
  * La description d'une ligne : les lignes ajoutées et retirées d'un texte long, sinon `avant → après`.
  * Un texte long qui ne change que d'ordre ou d'espaces (`+0 / −0`) ne dirait rien : il montre `avant → après`.
@@ -28,10 +31,10 @@ export function describeChange(change: FieldChange): string {
     return `+${lines.added} / −${lines.removed} lines`
   }
   if (change.before === null) {
-    return change.after === null ? ABSENT : `Added: ${clipLabel(change.after, VALUE_LIMIT_BYTES)}`
+    return change.after === null ? ABSENT : `Added: ${shown(change.after)}`
   }
   if (change.after === null) {
-    return `Removed: ${clipLabel(change.before, VALUE_LIMIT_BYTES)}`
+    return `Removed: ${shown(change.before)}`
   }
   return `${clipLabel(change.before, VALUE_LIMIT_BYTES)} → ${clipLabel(change.after, VALUE_LIMIT_BYTES)}`
 }

@@ -364,20 +364,26 @@ export async function prepareAgentForm(
   }
   try {
     let before: AgentDocument = {}
+    let liveVersion: number | null = null
     if (agentId !== null) {
       // Un agent existant n'est jamais écrit sans la garde de la version que le formulaire a ouverte.
       if (baseVersion === null) {
         return { ok: false, code: 'other', error: 'The form lost its version: open the agent again.' }
       }
-      before = agentToDocument(await (await store.get()).beta.agents.retrieve(agentId))
+      const live = await (await store.get()).beta.agents.retrieve(agentId)
+      before = agentToDocument(live)
+      liveVersion = live.version
     }
     const after = applyAgentForm(before, form, agentId === null ? null : base)
-    // Le document décide s'il y a quelque chose à envoyer ; la revue montre le formulaire, sauf s'il ne dit rien.
+    // Le document décide s'il y a quelque chose à envoyer.
     const documentChanges = diffDocuments(before, after)
     if (documentChanges.length === 0) {
       return { ok: false, code: 'nothing_to_apply', error: 'Nothing to apply: you have not changed anything.' }
     }
-    const described = formChanges(form, agentId === null ? null : base)
+    // La revue dit le formulaire tant que l'agent vivant est celui qu'il a ouvert : l'écart form/base est alors
+    // exactement l'envoi. Changé ailleurs depuis, l'envoi (forcé par « Apply anyway ») peut porter plus que cet
+    // écart (un toolset recréé, une politique déjà posée) : la revue montre alors le document, exact.
+    const described = liveVersion === baseVersion ? formChanges(form, agentId === null ? null : base) : []
     const changes = described.length > 0 ? described : documentChanges
     const commit = async (force: boolean): Promise<ApiResult<Committed>> => {
       try {

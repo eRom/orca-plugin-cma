@@ -143,7 +143,7 @@ export default defineCheck({
   },
   'new session form': newSessionScenario(),
   'new environment form': newEnvironmentScenario(),
-  // Le détail d'un environnement au repos : réseau limité, un paquet (Packages ouvert), Archive et Delete en bas.
+  // Le détail d'un environnement au repos : réseau limité, un paquet dans Packages, Archive et Delete en bas.
   'environment form': environmentDraftScenario(false),
   // Une saisie gardée sur une version plus ancienne que le détail : « Unsaved changes » et l'avis de conflit (Reload, Save anyway).
   'environment form conflict': environmentDraftScenario(),

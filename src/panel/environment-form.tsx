@@ -117,13 +117,13 @@ function parsePackages(text: string): EnvironmentForm['packages'] {
   const packages: EnvironmentForm['packages'] = { apt: [], cargo: [], gem: [], go: [], npm: [], pip: [] }
   for (const line of parseLines(text)) {
     const parsed = parsePackageLine(line)
-    if (parsed) packages[parsed.manager].push(parsed.name)
+    if (parsed) packages[parsed.manager].push(...parsed.names)
   }
   return packages
 }
 
 function packagesText(packages: EnvironmentForm['packages']): string {
-  return PACKAGE_MANAGERS.flatMap((manager) => packages[manager].map((name) => `${manager} ${name}`)).join('\n')
+  return PACKAGE_MANAGERS.filter((manager) => packages[manager].length > 0).map((manager) => `${manager} ${packages[manager].join(' ')}`).join('\n')
 }
 
 // --- Actions ---
@@ -185,7 +185,7 @@ async function reloadForm(key: string, id: string): Promise<void> {
   await loadDetail('environment', id)
 }
 
-/** Archive ou supprime, puis revient à l'accueil et relit la liste. Un refus de l'API remonte à `ConfirmAction`. */
+/** Archive ou supprime, puis revient à l'accueil et relit la liste. Un refus de l'API remonte à `ConfirmPanel`. */
 async function removeEnvironment(key: string, id: string, call: () => Promise<ApiResult<null>>): Promise<void> {
   const result = await call()
   if (!result.ok) throw new Error(result.error)
@@ -340,7 +340,7 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt }: BodyProps) {
           <Textarea
             key="packages"
             label="Packages"
-            placeholder="One per line, e.g. pip requests"
+            placeholder="One manager per line, e.g. pip requests httpx"
             disabled={busy}
             rows={3}
             value={packagesRaw}

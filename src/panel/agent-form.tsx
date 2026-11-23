@@ -55,7 +55,6 @@ import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, nav, popIfTop, popView, run } fr
 /** Mention affichée sous un texte coupé côté worker. */
 export const TRUNCATED_NOTICE = 'Truncated, open in Console for the full text'
 
-export { POLICY_LABELS }
 
 /** Titre de l'avis d'un conflit : le même texte que celui du worker. */
 const CONFLICT_TITLE = 'Changed elsewhere since you opened it.'

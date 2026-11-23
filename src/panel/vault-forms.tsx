@@ -114,7 +114,7 @@ async function submitForm(key: string, send: () => Promise<ApiResult<Saved>>, af
   }
 }
 
-/** Archive ou supprime, puis `afterRemove`. Un refus de l'API remonte à `ConfirmAction`. */
+/** Archive ou supprime, puis `afterRemove`. Un refus de l'API remonte à `ConfirmPanel`. */
 async function removeResource(key: string, call: () => Promise<ApiResult<null>>, afterRemove: () => Promise<void>): Promise<void> {
   const result = await call()
   if (!result.ok) throw new Error(result.error)

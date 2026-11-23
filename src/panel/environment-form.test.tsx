@@ -140,7 +140,7 @@ test('packages are one line per package: several managers go out sorted, and a l
   const host = mockHost({ requests: requests(calls) })
   const view = await mount(panel, { host, persisted: OPEN_NEW })
   await view.type({ label: 'Name' }, 'plugin-test-env')
-  await view.type({ label: 'Packages' }, 'pip requests==2.32\nnpm typescript\npip httpx')
+  await view.type({ label: 'Packages' }, 'pip requests==2.32 httpx\nnpm typescript')
   assert.equal(view.find({ text: /Package lines must look like/ }), null)
   await view.press({ role: 'button', text: 'Create' })
   assert.deepEqual(calls.saves[0]?.form.packages, { apt: [], cargo: [], gem: [], go: [], npm: ['typescript'], pip: ['requests==2.32', 'httpx'] })
