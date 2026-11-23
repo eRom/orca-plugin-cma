@@ -94,11 +94,6 @@ function newCalls(): Calls {
   return { saves: [], lists: [], details: [], archives: [], deletes: [] }
 }
 
-/** Ouvre la section repliée des gestionnaires de paquets. */
-async function openPackages(view: Awaited<ReturnType<typeof mount>>): Promise<void> {
-  await view.toggle({ type: 'Collapsible', text: /Packages/ })
-}
-
 /** Presse le dernier bouton de ce texte : la question de confirmation s'ouvre après le bouton du geste. */
 async function pressConfirm(view: Awaited<ReturnType<typeof mount>>, text: string): Promise<void> {
   const last = view.findAll({ role: 'button', text }).at(-1)
@@ -117,8 +112,7 @@ test('creates a limited environment with a host and a package, then opens its de
   await view.select({ label: 'Network' }, 'limited')
   await view.type({ label: 'Allowed hosts' }, 'example.com')
   await view.toggle({ label: 'Allow package managers' })
-  await openPackages(view)
-  await view.type({ label: 'pip' }, 'requests')
+  await view.type({ label: 'Packages' }, 'pip requests')
   const listsBefore = calls.lists.length
   await view.press({ role: 'button', text: 'Create' })
   assert.equal(calls.saves.length, 1)
@@ -141,14 +135,32 @@ test('creates a limited environment with a host and a package, then opens its de
   await view.unmount()
 })
 
+test('packages are one line per package: several managers go out sorted, and a line without a known manager blocks Create', async () => {
+  const calls = newCalls()
+  const host = mockHost({ requests: requests(calls) })
+  const view = await mount(panel, { host, persisted: OPEN_NEW })
+  await view.type({ label: 'Name' }, 'plugin-test-env')
+  await view.type({ label: 'Packages' }, 'pip requests==2.32\nnpm typescript\npip httpx')
+  assert.equal(view.find({ text: /Package lines must look like/ }), null)
+  await view.press({ role: 'button', text: 'Create' })
+  assert.deepEqual(calls.saves[0]?.form.packages, { apt: [], cargo: [], gem: [], go: [], npm: ['typescript'], pip: ['requests==2.32', 'httpx'] })
+  await view.unmount()
+
+  const second = await mount(panel, { host: mockHost({ requests: requests(newCalls()) }), persisted: OPEN_NEW })
+  await second.type({ label: 'Name' }, 'plugin-test-env')
+  await second.type({ label: 'Packages' }, 'requests')
+  assert.ok(second.find({ text: /Package lines must look like "pip requests"/ }))
+  assert.equal(second.find({ role: 'button', text: 'Create' })?.disabled, true)
+  await second.unmount()
+})
+
 test('flags a package without package managers before any send and keeps Create disabled', async () => {
   const calls = newCalls()
   const host = mockHost({ requests: requests(calls) })
   const view = await mount(panel, { host, persisted: OPEN_NEW })
   await view.type({ label: 'Name' }, 'plugin-test-env')
   await view.select({ label: 'Network' }, 'limited')
-  await openPackages(view)
-  await view.type({ label: 'pip' }, 'requests')
+  await view.type({ label: 'Packages' }, 'pip requests')
   const rule = "Package installs need 'Allow package managers' in a limited network."
   assert.ok(view.find({ text: rule }))
   assert.equal(view.find({ role: 'button', text: 'Create' })?.disabled, true)
@@ -357,7 +369,7 @@ test('hides the network and package fields of a self-hosted environment', async 
   const host = mockHost({ requests: requests(calls, { 'configs.detail': { ok: true, value: selfHosted } }) })
   const view = await mount(panel, { host, persisted: OPEN_DETAIL })
   assert.equal(view.find({ type: 'RadioGroup', label: 'Network' }), null)
-  assert.equal(view.find({ type: 'Collapsible', text: /Packages/ }), null)
+  assert.equal(view.find({ type: 'Textarea', label: 'Packages' }), null)
   assert.ok(view.find({ text: /managed by the host/ }))
   assert.ok(view.find({ label: 'Name' }))
   await view.unmount()

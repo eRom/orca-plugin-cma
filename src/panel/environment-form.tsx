@@ -12,6 +12,7 @@ import {
   RadioGroup,
   read,
   Row,
+  Separator,
   set,
   Stack,
   Text,
@@ -25,16 +26,14 @@ import {
   type ConfigKind,
   type EnvironmentForm,
   type EnvironmentNetworkForm,
-  type KeyValueItem,
-  type PackageManager
+  type KeyValueItem
 } from '../protocol'
 import { ActionRow } from '../blocks/action-row'
 import { BackHeader } from '../blocks/back-header'
 import { FormSection } from '../blocks/form-section'
 import { GroupCard } from '../blocks/group-card'
 import { LoadingState } from '../blocks/loading-state'
-import { SectionCollapsible } from '../blocks/section-collapsible'
-import { metadataTextProblem, validateEnvironmentForm } from '../shared/environment-rules'
+import { metadataTextProblem, packagesTextProblem, parsePackageLine, validateEnvironmentForm } from '../shared/environment-rules'
 import { clipBytes } from '../shared/text'
 import { archiveQuestion, askConfirmation, ConfirmPanel, deleteQuestion } from './confirm'
 import { configDetail, loadConfigs, loadDetail, openConfig } from './config-state'
@@ -113,8 +112,18 @@ function metadataText(items: readonly KeyValueItem[]): string {
   return items.map((item) => `${item.key}=${item.value}`).join('\n')
 }
 
-function hasPackages(form: EnvironmentForm): boolean {
-  return PACKAGE_MANAGERS.some((manager) => form.packages[manager].length > 0)
+/** `<gestionnaire> <paquet>` par ligne ; une ligne mal formée n'entre pas dans le formulaire : `packagesTextProblem` la signale. */
+function parsePackages(text: string): EnvironmentForm['packages'] {
+  const packages: EnvironmentForm['packages'] = { apt: [], cargo: [], gem: [], go: [], npm: [], pip: [] }
+  for (const line of parseLines(text)) {
+    const parsed = parsePackageLine(line)
+    if (parsed) packages[parsed.manager].push(parsed.name)
+  }
+  return packages
+}
+
+function packagesText(packages: EnvironmentForm['packages']): string {
+  return PACKAGE_MANAGERS.flatMap((manager) => packages[manager].map((name) => `${manager} ${name}`)).join('\n')
 }
 
 // --- Actions ---
@@ -191,14 +200,6 @@ function goBack(): void {
 
 // --- Rendu ---
 
-/** Ouverture de « Packages » choisie par la personne, par formulaire ; sans choix : ouvert seulement si l'environnement en a. */
-const packagesOpen = atom<Record<string, boolean>>({})
-
-function packagesSummary(form: EnvironmentForm): string {
-  const count = PACKAGE_MANAGERS.reduce((total, manager) => total + form.packages[manager].length, 0)
-  return count === 0 ? 'No packages' : `${count} package${count === 1 ? '' : 's'}`
-}
-
 type BodyProps = { id: string | null; base: EnvironmentForm; baseUpdatedAt: string | null }
 
 /** Name, Description, l'hébergement, la carte du réseau, les paquets repliés et les métadonnées, sous leur Save. */
@@ -217,7 +218,9 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt }: BodyProps) {
   const busy = read(saving)
   const failed = read(saveFailure)
   const metadataRaw = fieldText(key, 'metadata', metadataText(form.metadata))
-  const problem = validateEnvironmentForm(form) ?? metadataTextProblem(metadataRaw)
+  const packagesRaw = fieldText(key, 'packages', packagesText(form.packages))
+  // Les paquets d'un environnement auto-hébergé ne partent pas : leur texte ne bloque rien.
+  const problem = validateEnvironmentForm(form) ?? metadataTextProblem(metadataRaw) ?? (form.hosting === 'cloud' ? packagesTextProblem(packagesRaw) : null)
   const nameMissing = form.name.trim() === ''
   // L'erreur du nom attend que la personne l'ait modifié une fois : un formulaire neuf ne s'ouvre pas en rouge.
   const nameInvalid = nameMissing && isTouched(key, 'name')
@@ -334,30 +337,18 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt }: BodyProps) {
           </Text>
         ),
         form.hosting === 'cloud' ? (
-          <SectionCollapsible
+          <Textarea
             key="packages"
-            title="Packages"
-            summary={packagesSummary(form)}
-            open={read(packagesOpen)[key] ?? hasPackages(form)}
-            onChange={(next) => update(packagesOpen, (current) => ({ ...current, [key]: next }))}
-          >
-            <Stack gap="sm">
-              {PACKAGE_MANAGERS.map((manager: PackageManager) => (
-                <Textarea
-                  key={manager}
-                  label={manager}
-                  placeholder="One package per line"
-                  disabled={busy}
-                  rows={2}
-                  value={fieldText(key, manager, form.packages[manager].join('\n'))}
-                  onChange={(text) => {
-                    setFieldText(key, manager, text)
-                    change({ packages: { ...latest().packages, [manager]: parseLines(text) } })
-                  }}
-                />
-              ))}
-            </Stack>
-          </SectionCollapsible>
+            label="Packages"
+            placeholder="One per line, e.g. pip requests"
+            disabled={busy}
+            rows={3}
+            value={packagesRaw}
+            onChange={(text) => {
+              setFieldText(key, 'packages', text)
+              change({ packages: parsePackages(text) })
+            }}
+          />
         ) : null,
         <Textarea
           key="metadata"
@@ -394,6 +385,7 @@ function EnvironmentActions({ id, name }: { id: string; name: string }) {
   const deleteKey = `environment:${id}:delete`
   return (
     <Stack gap="sm">
+      <Separator />
       <ActionRow
         actions={[
           { key: 'archive', label: 'Archive', disabled: busy, onPress: () => askConfirmation(archiveKey) },

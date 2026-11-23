@@ -25,6 +25,24 @@ export function metadataTextProblem(text: string): string | null {
   return wellFormed ? null : METADATA_LINE_MESSAGE
 }
 
+export const PACKAGE_LINE_MESSAGE = `Package lines must look like "pip requests" (${PACKAGE_MANAGERS.join(', ')}).`
+
+/** Une ligne de paquet : le gestionnaire, une espace, le paquet ; null si elle n'a pas cette forme. */
+export function parsePackageLine(line: string): { manager: (typeof PACKAGE_MANAGERS)[number]; name: string } | null {
+  const match = /^(\S+)\s+(.+)$/.exec(line.trim())
+  const manager = PACKAGE_MANAGERS.find((candidate) => candidate === match?.[1])
+  return match && manager ? { manager, name: match[2]!.trim() } : null
+}
+
+/** Le défaut du texte brut des paquets (`<gestionnaire> <paquet>` par ligne), ou null s'il est bon. */
+export function packagesTextProblem(text: string): string | null {
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
+  return lines.every((line) => parsePackageLine(line) !== null) ? null : PACKAGE_LINE_MESSAGE
+}
+
 /** Le premier défaut du formulaire en texte lisible, ou null s'il peut partir. */
 export function validateEnvironmentForm(form: EnvironmentForm): string | null {
   if (form.name.trim() === '') {

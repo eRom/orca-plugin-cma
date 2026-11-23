@@ -16,6 +16,7 @@ import {
   read,
   Row,
   Select,
+  Separator,
   set,
   Stack,
   Text,
@@ -167,6 +168,7 @@ function RemoveRow({ actionKey, name, busy, onArchive, onDelete }: { actionKey: 
   const deleteKey = `${actionKey}:delete`
   return (
     <Stack gap="sm">
+      <Separator />
       <ActionRow
         actions={[
           { key: 'archive', label: 'Archive', disabled: busy, onPress: () => askConfirmation(archiveKey) },
