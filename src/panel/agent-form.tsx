@@ -45,7 +45,7 @@ import {
 } from '../protocol'
 import { clipBytes } from '../shared/text'
 import { ChangesPreview } from './changes'
-import { agentModels, configDetail, loadConfigs, loadDetail, openConfig } from './config-state'
+import { agentModels, configDetail, configDetailError, loadConfigs, loadDetail, openConfig } from './config-state'
 import { archiveQuestion, askConfirmation, ConfirmPanel } from './confirm'
 import { carryDraftOutcome, DraftControls, draftIsBusy, startDraft } from './drafts'
 import { clearForm, editForm, formKey, isTouched, readForm, touchField } from './form-state'
@@ -77,7 +77,9 @@ const MAX_RENDERED_SERVERS = 200
 
 const POLICIES: readonly ToolPolicy[] = ['always_allow', 'always_ask', 'auto']
 const POLICY_OPTIONS = POLICIES.map((value) => ({ value, label: POLICY_LABELS[value] }))
-const EFFORT_OPTIONS = [{ value: DEFAULT_CHOICE, label: 'Default' }, ...AGENT_EFFORTS.map((value) => ({ value, label: value }))]
+const EFFORT_OPTIONS = AGENT_EFFORTS.map((value) => ({ value, label: value }))
+/** « Default » n'existe qu'à la création : sur une mise à jour, omettre l'effort garde la valeur stockée de l'agent. */
+const NEW_EFFORT_OPTIONS = [{ value: DEFAULT_CHOICE, label: 'Default' }, ...EFFORT_OPTIONS]
 const ENABLED_OPTIONS = [
   { value: DEFAULT_CHOICE, label: 'Default' },
   { value: 'enabled', label: 'Enabled' },
@@ -94,7 +96,7 @@ const asEffort = (value: string): AgentEffort | null => AGENT_EFFORTS.find((effo
 export const agentDraft = (agentId: string | null): DraftRef => ({ kind: 'agent', agentId })
 
 function defaultTools(): AgentToolsForm {
-  return { enabled: true, policy: 'always_allow', tools: BUILTIN_TOOLS.map((name) => ({ name, enabled: null, policy: null })) }
+  return { enabled: true, policy: 'auto', tools: BUILTIN_TOOLS.map((name) => ({ name, enabled: null, policy: null })) }
 }
 
 function emptyForm(): AgentForm {
@@ -104,7 +106,7 @@ function emptyForm(): AgentForm {
 // --- État éphémère ---
 
 /** Où en est l'écriture d'un formulaire. Absent : au repos. `busy` : un envoi est en route. */
-type Flow =
+export type Flow =
   | { step: 'preparing' }
   | { step: 'creating' }
   | { step: 'review'; prepared: PreparedWrite; busy: boolean; error: string | null }
@@ -149,9 +151,17 @@ function resetAddServer(): void {
   set(serverTouched, { name: false, url: false })
 }
 
-/** À la sortie d'un écran d'agent : le résultat d'une écriture, un avis et le formulaire d'ajout ne survivent pas. */
+/** Les flux qui survivent à la sortie d'un écran : une revue ou un conflit au repos. */
+export function withoutTransientFlows(current: Record<string, Flow>): Record<string, Flow> {
+  return Object.fromEntries(Object.entries(current).filter(([, flow]) => flow.step !== 'applied' && flow.step !== 'notice' && !isBusy(flow)))
+}
+
+/**
+ * À la sortie d'un écran d'agent : le résultat d'une écriture, un avis, un envoi en route (« Creating… », revue ou
+ * conflit occupés) et le formulaire d'ajout ne survivent pas. Un envoi encore en vol rend son résultat quand il revient.
+ */
 export function leaveAgentView(): void {
-  update(flows, (current) => Object.fromEntries(Object.entries(current).filter(([, flow]) => flow.step !== 'applied' && flow.step !== 'notice')))
+  update(flows, withoutTransientFlows)
   resetAddServer()
 }
 
@@ -253,12 +263,27 @@ async function commit(target: Target, force: boolean): Promise<void> {
   }
 }
 
-/**
- * Après l'écriture : la liste est relue, puis le détail (ou, pour une création, le détail du nouvel agent). La saisie
- * gardée disparaît une fois le détail vidé (l'écran passe par « Loading details »), jamais avant : sinon l'ancienne base
- * reparaîtrait un instant.
- */
+/** Après l'écriture : la relecture (`readBack`), dont un échec s'affiche sur le formulaire au lieu de le laisser occupé. */
 async function finishWrite(target: Target, committed: Committed): Promise<void> {
+  try {
+    await readBack(target, committed)
+  } catch (error) {
+    // L'écriture a réussi : une relecture qui échoue ne laisse pas le formulaire en « Creating… » ou en revue occupée.
+    const { key, id } = target
+    const message = clipBytes(error instanceof Error ? error.message : String(error), ERROR_TEXT_LIMIT_BYTES).text
+    // La saisie d'une création ne doit pas pouvoir recréer l'agent qui existe déjà.
+    if (id === null) clearForm(key)
+    // Un détail jamais revenu laisserait « Loading details » pour toujours : l'erreur prend sa place, avec Retry.
+    if (id !== null && read(configDetail) === null) set(configDetailError, message)
+    setFlow(key, { step: 'notice', tone: 'danger', title: clipTitle(`${committed.label}, but it could not be read back`), message })
+  }
+}
+
+/**
+ * La liste est relue, puis le détail (ou, pour une création, le détail du nouvel agent). La saisie gardée disparaît
+ * une fois le détail vidé (l'écran passe par « Loading details »), jamais avant : sinon l'ancienne base reparaîtrait un instant.
+ */
+async function readBack(target: Target, committed: Committed): Promise<void> {
   const { key, id } = target
   if (id !== null) {
     const reloading = loadDetail('agent', id)
@@ -595,7 +620,7 @@ function YamlZone({ agent }: { agent: AgentDetail }) {
         </Stack>
       ))}
       <Row>
-        <Button variant="ghost" size="sm" disabled={draftIsBusy(ref)} onPress={() => startDraft(ref)}>
+        <Button variant="outline" size="sm" disabled={draftIsBusy(ref)} onPress={() => startDraft(ref)}>
           Edit in YAML
         </Button>
       </Row>
@@ -656,9 +681,20 @@ function AgentFormBody({ id, base, version, name, agent }: BodyProps) {
   const creating = flow?.step === 'creating'
   return (
     <Stack gap="lg">
-      {stale ? (
+      {stale && id !== null ? (
         <Callout tone="warning" title={CONFLICT_TITLE}>
-          <Text size="sm">{`Started on v${String(baseStamp)}, the agent is now v${String(version)}. Your changes are kept; Discard drops them.`}</Text>
+          <Stack gap="sm">
+            <Text size="sm">
+              {dirty
+                ? `Started on v${String(baseStamp)}, the agent is now v${String(version)}. Your changes are kept; Reload or Discard drops them.`
+                : `Started on v${String(baseStamp)}, the agent is now v${String(version)}. Reload reads the current version.`}
+            </Text>
+            <Row>
+              <Button variant="outline" size="sm" disabled={locked} onPress={() => run(() => reload(key, id))}>
+                Reload
+              </Button>
+            </Row>
+          </Stack>
         </Callout>
       ) : null}
       {id !== null ? (
@@ -686,52 +722,60 @@ function AgentFormBody({ id, base, version, name, agent }: BodyProps) {
             <Select
               label="Effort"
               disabled={locked}
-              value={form.effort ?? DEFAULT_CHOICE}
-              options={EFFORT_OPTIONS}
+              value={form.effort ?? (id === null ? DEFAULT_CHOICE : undefined)}
+              options={id === null ? NEW_EFFORT_OPTIONS : EFFORT_OPTIONS}
               onChange={(value) => change({ effort: asEffort(value) })}
             />
           </Box>
         </Box>
       </Stack>
-      <Stack gap="sm">
-        <Switch
-          label="Built-in tools"
-          disabled={locked}
-          checked={tools?.enabled ?? false}
-          onChange={(checked) => {
-            const current = latest().builtinTools
-            if (checked) change({ builtinTools: current === null ? defaultTools() : { ...current, enabled: true } })
-            // Un agent sans toolset qui l'a activé puis désactivé revient à sans toolset ; sinon le toolset reste, désactivé.
-            else change({ builtinTools: current === null || draftBase.builtinTools === null ? null : { ...current, enabled: false } })
-          }}
-        />
-        {tools !== null ? (
-          <Stack gap="sm">
-            <Select
-              label="Default permission"
+      <GroupCard
+        title="Built-in tools"
+        rows={[
+          // Chaque ligne respire de part et d'autre du filet, comme celles des serveurs MCP.
+          <Box paddingY="xs">
+            <Switch
+              label="Enabled"
               disabled={locked}
-              value={tools.policy}
-              options={POLICY_OPTIONS}
-              onChange={(value) => {
-                const policy = asPolicy(value)
-                if (policy !== null) changeTools({ policy })
+              checked={tools?.enabled ?? false}
+              onChange={(checked) => {
+                const current = latest().builtinTools
+                if (checked) change({ builtinTools: current === null ? defaultTools() : { ...current, enabled: true } })
+                // Un agent sans toolset qui l'a activé puis désactivé revient à sans toolset ; sinon le toolset reste, désactivé.
+                else change({ builtinTools: current === null || draftBase.builtinTools === null ? null : { ...current, enabled: false } })
               }}
             />
-            <SectionCollapsible title="Per-tool settings" summary={customisedSummary(tools)} open={read(perToolOpen)} onChange={(next) => set(perToolOpen, next)}>
-              <Stack gap="md">
-                {tools.tools.map((tool) => (
-                  <ToolRow
-                    key={tool.name}
-                    tool={tool}
-                    disabled={locked}
-                    onChange={(changes) => changeTools({ tools: tools.tools.map((entry) => (entry.name === tool.name ? { ...entry, ...changes } : entry)) })}
-                  />
-                ))}
+          </Box>,
+          tools !== null ? (
+            <Box paddingY="xs">
+              <Stack gap="sm">
+                <Select
+                  label="Default permission"
+                  disabled={locked}
+                  value={tools.policy}
+                  options={POLICY_OPTIONS}
+                  onChange={(value) => {
+                    const policy = asPolicy(value)
+                    if (policy !== null) changeTools({ policy })
+                  }}
+                />
+                <SectionCollapsible title="Per-tool settings" summary={customisedSummary(tools)} open={read(perToolOpen)} onChange={(next) => set(perToolOpen, next)}>
+                  <Stack gap="md">
+                    {tools.tools.map((tool) => (
+                      <ToolRow
+                        key={tool.name}
+                        tool={tool}
+                        disabled={locked}
+                        onChange={(changes) => changeTools({ tools: tools.tools.map((entry) => (entry.name === tool.name ? { ...entry, ...changes } : entry)) })}
+                      />
+                    ))}
+                  </Stack>
+                </SectionCollapsible>
               </Stack>
-            </SectionCollapsible>
-          </Stack>
-        ) : null}
-      </Stack>
+            </Box>
+          ) : null
+        ]}
+      />
       <ServersZone
         servers={form.mcpServers}
         disabled={locked}

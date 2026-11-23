@@ -3,6 +3,7 @@ import { assert, mockHost, mount, test } from 'orca/testing'
 import type { AgentDetail, AgentForm, ConfigKind, ConfigRow, DraftInfo, DraftRef, PreparedWrite } from '../protocol'
 import { BUILTIN_TOOLS } from '../protocol'
 import * as panel from '../panel'
+import { withoutTransientFlows } from './agent-form'
 import { formDrafts } from './form-state'
 
 const WITH_KEY = { hasKey: true, keyRejected: false, workspaceId: 'wrkspc_x', organizationName: 'Check Org' }
@@ -174,14 +175,37 @@ test('falls back to a text field for the model when the API lists none', async (
   await view.unmount()
 })
 
-test('the effort select offers the five efforts and Default, which sends null', async () => {
+test('an existing agent offers the five efforts and no Default: omitting the effort keeps the stored one', async () => {
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
-  assert.deepEqual(optionValues(view, 'Effort'), ['default', 'low', 'medium', 'high', 'xhigh', 'max'])
+  assert.deepEqual(optionValues(view, 'Effort'), ['low', 'medium', 'high', 'xhigh', 'max'])
   assert.equal(view.valueOf({ label: 'Effort' }), 'high')
-  await view.select({ label: 'Effort' }, 'default')
+  await view.select({ label: 'Effort' }, 'low')
   await view.press({ role: 'button', text: 'Review changes' })
+  assert.equal(calls.prepares[0]?.form.effort, 'low')
+  await view.unmount()
+})
+
+test('a new agent offers Default for the effort, which sends null', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_NEW })
+  assert.deepEqual(optionValues(view, 'Effort'), ['default', 'low', 'medium', 'high', 'xhigh', 'max'])
+  assert.equal(view.valueOf({ label: 'Effort' }), 'default')
+  await view.type({ label: 'Name' }, 'plugin-test-agent')
+  await view.select({ label: 'Model' }, 'claude-sonnet-5')
+  await view.press({ role: 'button', text: 'Create' })
   assert.equal(calls.prepares[0]?.form.effort, null)
+  await view.unmount()
+})
+
+test('a new agent starts with the auto permission, like the console and the YAML template', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_NEW })
+  assert.equal(view.valueOf({ label: 'Default permission' }), 'auto')
+  await view.type({ label: 'Name' }, 'plugin-test-agent')
+  await view.select({ label: 'Model' }, 'claude-sonnet-5')
+  await view.press({ role: 'button', text: 'Create' })
+  assert.equal(calls.prepares[0]?.form.builtinTools?.policy, 'auto')
   await view.unmount()
 })
 
@@ -190,7 +214,7 @@ test('the effort select offers the five efforts and Default, which sends null', 
 test('built-in tools: the switch and the default permission stay visible, the per-tool rows are folded with a summary', async () => {
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
-  assert.equal(view.valueOf({ label: 'Built-in tools' }), true)
+  assert.equal(view.valueOf({ label: 'Enabled' }), true)
   assert.equal(view.valueOf({ label: 'Default permission' }), 'always_allow')
   assert.deepEqual(optionValues(view, 'Default permission'), ['always_allow', 'always_ask', 'auto'])
   // Fermé par défaut : aucune ligne d'outil, un résumé d'une ligne.
@@ -210,6 +234,18 @@ test('built-in tools: the switch and the default permission stay visible, the pe
   await view.unmount()
 })
 
+test('the built-in tools zone is a titled group like the MCP servers zone, with the switch labelled Enabled', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  // Même bloc, donc même titre (semibold) et même surface que la zone des serveurs MCP.
+  assert.equal(view.find({ type: 'Text', text: 'Built-in tools' })?.props.weight, 'semibold')
+  assert.equal(view.find({ type: 'Text', text: 'MCP servers' })?.props.weight, 'semibold')
+  // Le titre n'est plus répété par l'interrupteur.
+  assert.equal(view.findAll({ text: 'Built-in tools' }).length, 1)
+  assert.ok(view.find({ label: 'Enabled' }))
+  await view.unmount()
+})
+
 test('per-tool selects send null for Default and the chosen value otherwise', async () => {
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
@@ -218,7 +254,7 @@ test('per-tool selects send null for Default and the chosen value otherwise', as
   await view.select({ label: 'bash permission' }, 'always_ask')
   await view.select({ label: 'web_search state' }, 'default')
   await view.select({ label: 'Default permission' }, 'auto')
-  await view.toggle({ label: 'Built-in tools' })
+  await view.toggle({ label: 'Enabled' })
   await view.press({ role: 'button', text: 'Review changes' })
   const tools = calls.prepares[0]?.form.builtinTools
   assert.ok(tools)
@@ -402,6 +438,42 @@ test('Reload after a conflict drops the kept edits and reads the agent again', a
   await view.unmount()
 })
 
+test('a kept input identical to its base but opened on an earlier version still offers Reload, which drops it', async () => {
+  const calls = newCalls()
+  const persisted = {
+    plugin: { ...OPEN_DETAIL.plugin, 'forms.drafts': { 'agent:agent_a': { form: FORM, base: FORM, baseStamp: 3 } } }
+  }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted })
+  assert.ok(view.find({ type: 'Callout', text: /Changed elsewhere since you opened it\./ }))
+  // Rien n'a été modifié : pas de « Discard », et le texte ne promet que la sortie qui existe.
+  assert.equal(view.find({ role: 'button', text: 'Discard' }), null)
+  assert.equal(view.find({ text: /Discard drops them/ }), null)
+  const reload = button(view, 'Reload')
+  assert.ok(reload)
+  assert.equal(reload.props.variant, 'outline')
+  await view.press({ role: 'button', text: 'Reload' })
+  assert.deepEqual(calls.details, ['agent_a', 'agent_a'])
+  assert.equal(view.find({ type: 'Callout', text: /Changed elsewhere since you opened it\./ }), null)
+  assert.deepEqual(read(formDrafts), {})
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('a stale kept input with edits offers Reload and Discard, and both drop it', async () => {
+  const calls = newCalls()
+  const kept: AgentForm = { ...FORM, description: 'Mine' }
+  const persisted = {
+    plugin: { ...OPEN_DETAIL.plugin, 'forms.drafts': { 'agent:agent_a': { form: kept, base: FORM, baseStamp: 3 } } }
+  }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted })
+  assert.ok(button(view, 'Reload'))
+  assert.ok(button(view, 'Discard'))
+  await view.press({ role: 'button', text: 'Reload' })
+  assert.equal(view.valueOf({ label: 'Description' }), 'Triages incidents.')
+  assert.deepEqual(read(formDrafts), {})
+  await view.unmount()
+})
+
 test('a refusal to prepare shows its notice and keeps the form', async () => {
   const host = mockHost({
     requests: requests(newCalls(), {
@@ -427,7 +499,8 @@ test('keeps the read-only summaries and one Edit in YAML link that opens the age
   assert.ok(view.find({ type: 'KeyValue', label: 'github tool settings' })?.text.includes('list_commits'))
   const links = view.findAll({ role: 'button', text: 'Edit in YAML' })
   assert.equal(links.length, 1)
-  assert.equal(links[0]?.props.variant, 'ghost')
+  assert.equal(links[0]?.props.variant, 'outline')
+  assert.equal(links[0]?.props.size, 'sm')
   await view.press({ role: 'button', text: 'Edit in YAML' })
   assert.deepEqual(calls.opens, [{ kind: 'agent', agentId: 'agent_a' }])
   // Une seule carte de brouillon : le brouillon ouvert propose Apply une fois.
@@ -548,6 +621,70 @@ test('Create goes straight to the write: the button is busy and no changes previ
   assert.deepEqual(seen, [{ creating: true, creatingDisabled: true, preview: false }])
   assert.equal(view.find({ role: 'button', text: 'Confirm' }), null)
   await view.unmount()
+})
+
+test('m5: when reading the list back fails after a successful create, the form leaves Creating and shows the error', async () => {
+  const calls = newCalls()
+  const host = mockHost({
+    requests: requests(calls, {
+      'write.commit': (input: { token: string; force: boolean }) => {
+        calls.commits.push(input)
+        return { ok: true, value: { label: 'Applied, v1', id: 'agent_new' } }
+      },
+      'configs.list': () => {
+        throw new Error('The network dropped')
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN_NEW })
+  await view.type({ label: 'Name' }, 'plugin-test-agent')
+  await view.select({ label: 'Model' }, 'claude-sonnet-5')
+  await view.press({ role: 'button', text: 'Create' })
+  assert.equal(calls.commits.length, 1)
+  assert.equal(view.find({ role: 'button', text: 'Creating…' }), null)
+  assert.ok(view.find({ type: 'Callout', text: /The network dropped/ }))
+  // L'agent existe : la saisie gardée ne peut pas le recréer.
+  assert.deepEqual(read(formDrafts), {})
+  await view.unmount()
+})
+
+test('m5: when reading the detail back fails after a successful update, the review is not left busy and the error shows', async () => {
+  const calls = newCalls()
+  let reads = 0
+  const host = mockHost({
+    requests: requests(calls, {
+      'configs.detail': ({ id }: { id: string }) => {
+        calls.details.push(id)
+        reads += 1
+        if (reads > 1) throw new Error('The detail could not be read')
+        return { ok: true, value: DETAIL }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN_DETAIL })
+  await view.type({ label: 'Description' }, ' More.')
+  await view.press({ role: 'button', text: 'Review changes' })
+  await view.press({ role: 'button', text: 'Confirm' })
+  assert.equal(calls.commits.length, 1)
+  assert.equal(view.find({ role: 'button', text: 'Confirm' }), null)
+  assert.ok(view.find({ type: 'Callout', text: /The detail could not be read/ }))
+  assert.deepEqual(read(formDrafts), {})
+  await view.unmount()
+})
+
+test('m5: leaving an agent screen drops every write in flight and the results already read, and keeps a settled review', () => {
+  const prepared: PreparedWrite = { token: 'plugin-test-token-QUOKKA-xyz', changes: [], totalChanges: 0, creates: false }
+  const kept = withoutTransientFlows({
+    a: { step: 'preparing' },
+    b: { step: 'creating' },
+    c: { step: 'review', prepared, busy: true, error: null },
+    d: { step: 'conflict', prepared, busy: true, message: 'm' },
+    e: { step: 'applied', label: 'Applied, v2' },
+    f: { step: 'notice', tone: 'danger', title: 't', message: 'm' },
+    g: { step: 'review', prepared, busy: false, error: null },
+    h: { step: 'conflict', prepared, busy: false, message: 'm' }
+  })
+  assert.deepEqual(Object.keys(kept), ['g', 'h'])
 })
 
 test('after a write the old base never shows while the list and the detail are read again', async () => {
