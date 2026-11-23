@@ -387,3 +387,43 @@ test('file.pick keeps trailing spaces of a file name and drops only the line end
   const crlf = createFilePicker({ platform: 'darwin', run: async () => '/Users/test/a.md\r\n' })
   expect(await crlf()).toEqual({ ok: true, value: { file: '/Users/test/a.md', name: 'a.md' } })
 })
+
+test('two concurrent file.pick calls share one dialog and one answer, and a later call opens a new one', async () => {
+  let runs = 0
+  let release: (output: string) => void = () => {}
+  const pick = createFilePicker({
+    platform: 'darwin',
+    run: () => {
+      runs++
+      return new Promise<string>((resolve) => {
+        release = resolve
+      })
+    }
+  })
+  const first = pick()
+  const second = pick()
+  expect(runs).toBe(1)
+  release('/Users/test/late.md\n')
+  const expected = { ok: true, value: { file: '/Users/test/late.md', name: 'late.md' } }
+  expect(await first).toEqual(expected)
+  expect(await second).toEqual(expected)
+  // La boîte est fermée : un nouvel appel en ouvre une autre.
+  const third = pick()
+  expect(runs).toBe(2)
+  release('/Users/test/other.md')
+  expect(await third).toEqual({ ok: true, value: { file: '/Users/test/other.md', name: 'other.md' } })
+})
+
+test('a failed or cancelled dialog is not kept: the next file.pick runs again', async () => {
+  let runs = 0
+  const pick = createFilePicker({
+    platform: 'darwin',
+    run: async () => {
+      runs++
+      throw new Error('User canceled. (-128)')
+    }
+  })
+  expect(await pick()).toEqual({ ok: true, value: null })
+  expect(await pick()).toEqual({ ok: true, value: null })
+  expect(runs).toBe(2)
+})

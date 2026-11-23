@@ -23,8 +23,11 @@ const PATH_TAKEN = 'A memory already has this path.'
  * une attente de plus de 120 000 ms (`Too big: expected number to be <=120000`), c'est donc le plafond.
  */
 const PICK_TIMEOUT_MS = 120_000
-/** Dit sous la ligne quand la boîte n'a pas répondu dans ce délai : le fichier éventuellement choisi après est perdu. */
-const PICK_TIMED_OUT = 'The file dialog took too long. Choose the file again.'
+/**
+ * Dit sous la ligne quand la boîte n'a pas répondu dans ce délai. Elle reste ouverte côté worker, qui n'en garde qu'une :
+ * un nouvel appui la rejoint (il reçoit sa réponse), il n'en ouvre pas une seconde.
+ */
+const PICK_STILL_OPEN = 'The file dialog is still open. Press the button again to wait for your choice.'
 /** Plafond du nom de fichier affiché dans le bouton : au-delà, le libellé est coupé (le chemin complet reste en infobulle). */
 const FILE_NAME_LIMIT = 28
 const CHOOSE_LABEL = 'Choose file…'
@@ -55,17 +58,25 @@ function setRows(storeId: string, change: (rows: UploadRow[]) => UploadRow[]): v
   })
 }
 
+/** Une ligne que la personne ajoute, modifie ou retire périme l'avis du dernier envoi refusé. */
+function clearNotice(storeId: string): void {
+  if (read(uploadFlows)[storeId]?.step === 'notice') setFlow(storeId, null)
+}
+
 function patchRow(storeId: string, rowId: string, changes: Partial<Omit<UploadRow, 'id'>>): void {
+  clearNotice(storeId)
   setRows(storeId, (rows) => rows.map((row) => (row.id === rowId ? { ...row, ...changes } : row)))
 }
 
 /** Ajoute une ligne vide à la banque. */
 export function addUploadRow(storeId: string): void {
+  clearNotice(storeId)
   setRows(storeId, (rows) => [...rows, { id: newRowId(), path: '', file: '', name: '', memoryId: null }])
 }
 
 /** « Replace… » : une ligne pré-remplie avec le chemin et l'identifiant de la mémoire ; une seule par mémoire. */
 export function addReplaceRow(storeId: string, memoryId: string, path: string): void {
+  clearNotice(storeId)
   setRows(storeId, (rows) =>
     rows.some((row) => row.memoryId === memoryId) ? rows : [...rows, { id: newRowId(), path, file: '', name: '', memoryId }]
   )
@@ -78,6 +89,7 @@ export function dropStoreUploads(storeId: string): void {
 }
 
 function removeRow(storeId: string, rowId: string): void {
+  clearNotice(storeId)
   setRows(storeId, (rows) => rows.filter((row) => row.id !== rowId))
   update(pickFailures, ({ [rowId]: _dropped, ...rest }) => rest)
 }
@@ -150,7 +162,7 @@ async function pickFile(storeId: string, rowId: string): Promise<void> {
       result = await plugin.request('file.pick', undefined, { timeoutMs: PICK_TIMEOUT_MS })
     } catch (error) {
       if (!(error instanceof Error) || (error as { code?: unknown }).code !== 'timeout') throw error
-      update(pickFailures, (failures) => ({ ...failures, [rowId]: PICK_TIMED_OUT }))
+      update(pickFailures, (failures) => ({ ...failures, [rowId]: PICK_STILL_OPEN }))
       return
     }
     if (!result.ok) {
@@ -405,11 +417,18 @@ export function UploadsSection({ store }: { store: MemoryStoreDetail }) {
       />
       {flow === undefined ? null : <FlowView storeId={store.id} flow={flow} />}
       {showApply ? (
-        <Row>
-          <Button key="apply" disabled={blocked} onPress={() => run(() => applyUploads(store.id, rows))}>
-            {`Apply (${ready})`}
-          </Button>
-        </Row>
+        <Stack gap="xs">
+          <Row>
+            <Button key="apply" disabled={blocked} onPress={() => run(() => applyUploads(store.id, rows))}>
+              {`Apply (${ready})`}
+            </Button>
+          </Row>
+          {rows.some((row) => row.path === '' || row.file === '') ? (
+            <Text muted size="xs">
+              Choose a file for every row, or remove it.
+            </Text>
+          ) : null}
+        </Stack>
       ) : null}
       {flow?.step === 'preparing' ? <LoadingState kind="operation" label="Reading the files…" /> : null}
     </Stack>

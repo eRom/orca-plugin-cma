@@ -767,23 +767,31 @@ test('two rows with a chosen file are staged in one call, previewed, confirmed, 
   await view.unmount()
 })
 
-test('a file dialog that does not answer in time says so under its row, without a global notice', async () => {
+test('a file dialog that does not answer in time says so under its row, and the next press waits for it again', async () => {
   const calls = newCalls()
+  let pickCalls = 0
   const host = mockHost({
     requests: requests(calls, newWorld(), {
       ...NO_DRAFT,
+      // Le premier appui expire (la boîte reste ouverte côté worker) ; le second rejoint cette boîte et reçoit son choix.
       'file.pick': () => {
-        throw hostError('timeout', 'The worker took too long')
+        pickCalls += 1
+        if (pickCalls === 1) throw hostError('timeout', 'The worker took too long')
+        return { ok: true, value: TODAY }
       }
     })
   })
   const view = await mount(panel, { host, persisted: OPEN_STORE })
   await addRows(view, 1)
   await view.press(fileButtons(view)[0]!)
-  assert.ok(view.find({ text: 'The file dialog took too long. Choose the file again.' }))
+  assert.ok(view.find({ text: 'The file dialog is still open. Press the button again to wait for your choice.' }))
   assert.equal(read(notice), null)
-  // La ligne reste utilisable : un nouvel essai est permis.
+  // La ligne reste utilisable : un nouvel appui relance la demande, et le choix arrive.
   assert.equal(fileButtons(view)[0]?.disabled, false)
+  await view.press(fileButtons(view)[0]!)
+  assert.equal(pickCalls, 2)
+  assert.equal(fileButtons(view)[0]?.text, 'today.md')
+  assert.equal(view.find({ text: /still open/ }), null)
   await view.unmount()
 })
 
@@ -1096,7 +1104,16 @@ test('a lost token rereads the store, drops the rows whose path now exists and k
 
 // --- Éditeur depuis la liste ---
 
-test('the edit icon of a row runs the draft cycle: open in the editor, Apply, preview, Confirm, reread', async () => {
+const OPENED_INFO = (ref: DraftRef): DraftInfo => ({
+  ref,
+  file: 'memories/notes--memstore_a/runbooks/deploy.md',
+  unapplied: false,
+  writtenAt: '2026-11-22T10:00:00Z',
+  savedAt: '2026-11-22T10:00:00Z',
+  returnTo: null
+})
+
+test('the edit icon of a row opens the draft in the editor, and Apply lives in the memory detail only', async () => {
   const calls = newCalls()
   const world = newWorld()
   const host = mockHost({
@@ -1105,10 +1122,7 @@ test('the edit icon of a row runs the draft cycle: open in the editor, Apply, pr
       // Le worker vient d'écrire le fichier : il n'a pas encore été modifié, le brouillon n'est « ouvert » que depuis ce panneau.
       'draft.open': (input: DraftRef) => {
         calls.opens.push(input)
-        return {
-          ok: true,
-          value: { ref: input, file: 'memories/notes--memstore_a/runbooks/deploy.md', unapplied: false, writtenAt: '2026-11-22T10:00:00Z', savedAt: '2026-11-22T10:00:00Z', returnTo: null }
-        }
+        return { ok: true, value: OPENED_INFO(input) }
       },
       'write.commit': (input: unknown) => {
         calls.commits.push(input)
@@ -1118,47 +1132,100 @@ test('the edit icon of a row runs the draft cycle: open in the editor, Apply, pr
     })
   })
   const view = await mount(panel, { host, persisted: OPEN_STORE })
-  assert.equal(view.find({ text: /Draft open in the editor/ }), null)
   await view.press({ role: 'button', label: 'Edit /runbooks/deploy.md in editor' })
   assert.deepEqual(calls.opens, [{ kind: 'memory', memoryStoreId: 'memstore_a', memoryId: 'mem_a', path: '/runbooks/deploy.md' }])
+  // Rien de plus dans la carte : ni texte de brouillon, ni Apply, ni Discard.
+  assert.equal(view.find({ text: /Draft open in the editor/ }), null)
+  assert.equal(view.findAll({ role: 'button', text: 'Apply' }).length, 0)
+  assert.equal(view.findAll({ role: 'button', text: 'Discard' }).length, 0)
+  await view.press({ role: 'button', label: 'Open /runbooks/deploy.md' })
   assert.ok(view.find({ text: 'Draft open in the editor. Save it, then press Apply.' }))
   await view.press({ role: 'button', text: 'Apply' })
   assert.ok(view.find({ text: 'Review changes' }))
   await view.press({ role: 'button', text: 'Confirm' })
   assert.equal(calls.commits.length, 1)
   assert.ok(view.find({ type: 'Callout', text: /Applied/ }))
+  await view.press({ role: 'button', text: /Back/ })
   assert.deepEqual(calls.details, ['memstore_a', 'memstore_a'])
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
 
-test('an unapplied draft is shown under its row when the store opens, and the other rows stay plain', async () => {
+test('a refused open from the list shows its notice and the setup card under the row', async () => {
+  const calls = newCalls()
+  const host = mockHost({
+    requests: requests(calls, newWorld(), {
+      ...NO_DRAFT,
+      'drafts.status': { folder: FOLDER, ready: false },
+      'draft.open': { ok: false, code: 'drafts_missing', error: 'The drafts folder is not a project yet.' }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN_STORE })
+  // Avant tout refus, la carte d'installation ne s'affiche pas dans la liste.
+  assert.equal(view.find({ type: 'Callout', text: /Add the drafts folder to Orca/ }), null)
+  await view.press({ role: 'button', label: 'Edit /runbooks/deploy.md in editor' })
+  assert.ok(view.find({ type: 'Callout', text: /Could not open the draft/ }))
+  assert.ok(view.find({ type: 'Callout', text: /Add the drafts folder to Orca/ }))
+  await view.unmount()
+})
+
+test('an unapplied draft shows a status on its row and no Apply or Discard in the card; the detail has them', async () => {
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls, newWorld()) }), persisted: OPEN_STORE })
-  assert.equal(view.findAll({ text: /Unapplied draft from/ }).length, 1)
+  assert.equal(view.findAll({ text: 'Unapplied draft' }).length, 1)
   assert.ok(calls.states.some((ref) => ref.kind === 'memory' && ref.memoryId === 'mem_b'))
+  assert.equal(view.findAll({ role: 'button', text: 'Apply' }).length, 0)
+  assert.equal(view.findAll({ role: 'button', text: 'Discard' }).length, 0)
+  assert.equal(view.find({ text: /Unapplied draft from/ }), null)
+  await view.press({ role: 'button', label: 'Open /runbooks/deploy.md' })
+  assert.ok(view.find({ role: 'button', text: 'Apply' }))
+  assert.ok(view.find({ role: 'button', text: 'Discard' }))
   await view.unmount()
 })
 
-test('the screen offers one solid action per zone: Save only when edited, Apply only with rows', async () => {
+test('the icon that opens a memory is a next arrow, not a menu', async () => {
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls, newWorld(), NO_DRAFT) }), persisted: OPEN_STORE })
-  const solid = (): string[] => view.findAll({ role: 'button' }).filter((button) => button.props.variant === undefined || button.props.variant === 'solid').map((button) => button.text)
-  // Au repos : Save (grisé, rien à enregistrer) est le seul bouton plein de l'écran.
-  assert.deepEqual(solid(), ['Save'])
-  await addRows(view, 1)
-  assert.deepEqual(solid().sort(), ['Apply (0)', 'Save'])
+  assert.equal(view.find({ role: 'button', label: 'Open /runbooks/deploy.md' })?.props.icon, 'next')
+  assert.equal(view.find({ role: 'button', label: 'Edit /runbooks/deploy.md in editor' })?.props.icon, 'edit')
+  assert.equal(view.findAll({ role: 'button' }).filter((button) => button.props.icon === 'more').length, 0)
   await view.unmount()
 })
 
-test('archiving a store forgets its pending rows and keeps the other stores rows', async () => {
+test('a row without its file explains why Apply is off, and the line goes away once every row is complete', async () => {
   const calls = newCalls()
-  const other = { ...SAVED_ROW, id: 'r9' }
-  const persisted = { plugin: { ...OPEN_STORE.plugin, 'memory.uploads': { memstore_a: [SAVED_ROW], memstore_z: [other] } } }
-  const view = await mount(panel, { host: mockHost({ requests: requests(calls, newWorld(), NO_DRAFT) }), persisted })
-  await view.press({ role: 'button', text: 'Archive' })
-  await pressConfirm(view, 'Archive')
-  assert.deepEqual(calls.archives, [{ kind: 'memory_store', id: 'memstore_a' }])
-  assert.deepEqual(view.persisted.plugin['memory.uploads'], { memstore_z: [other] })
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, newWorld(), { ...NO_DRAFT, 'file.pick': picks([TODAY]) }) }), persisted: OPEN_STORE })
+  assert.equal(view.find({ text: 'Choose a file for every row, or remove it.' }), null)
+  await addRows(view, 1)
+  assert.ok(view.find({ text: 'Choose a file for every row, or remove it.' }))
+  assert.equal(view.find({ role: 'button', text: 'Apply (0)' })?.disabled, true)
+  await fillRow(view, 0, '/notes/today.md')
+  assert.equal(view.find({ text: 'Choose a file for every row, or remove it.' }), null)
+  assert.equal(view.find({ role: 'button', text: 'Apply (1)' })?.disabled, false)
+  await view.unmount()
+})
+
+test('the refusal notice of an upload is cleared when a row is edited, added or removed', async () => {
+  const calls = newCalls()
+  const host = mockHost({
+    requests: requests(calls, newWorld(), { ...NO_DRAFT, 'memory.stageUploads': { ok: false, code: 'invalid', error: NOT_TEXT } })
+  })
+  const view = await mount(panel, { host, persisted: withRows([SAVED_ROW]) })
+  const refuse = async (): Promise<void> => {
+    await view.press({ role: 'button', text: 'Apply (1)' })
+    assert.ok(view.find({ text: NOT_TEXT }))
+  }
+  await refuse()
+  await view.type(pathFields(view)[0]!, 'x')
+  assert.equal(view.find({ text: NOT_TEXT }), null)
+  await view.type(pathFields(view)[0]!, '/notes/today.md', { replace: true })
+  await refuse()
+  await addRows(view, 1)
+  assert.equal(view.find({ text: NOT_TEXT }), null)
+  // La ligne vide retirée, l'envoi est de nouveau possible ; retirer la dernière ligne referme l'avis aussi.
+  await view.press(view.findAll({ role: 'button', label: 'Remove' })[1]!)
+  await refuse()
+  await view.press({ role: 'button', label: 'Remove' })
+  assert.equal(view.find({ text: NOT_TEXT }), null)
   await view.unmount()
 })

@@ -30,12 +30,14 @@ const execFileAsync = promisify(execFile)
 /** L'exécution réelle : `osascript`. Les tests injectent la leur, aucun ne ouvre de vraie boîte de dialogue. */
 export const runOsascript = async (args: string[]): Promise<string> => (await execFileAsync('osascript', args)).stdout
 
-/** Le choix d'un fichier. macOS seulement ; annuler la boîte (erreur -128 d'`osascript`) rend `null`. */
+/**
+ * Le choix d'un fichier. macOS seulement ; annuler la boîte (erreur -128 d'`osascript`) rend `null`.
+ * Une seule boîte à la fois : tant qu'elle est ouverte, un nouvel appel rejoint la même promesse (il reçoit la même
+ * réponse). Sans cela, un appui après le délai du panneau empilerait une seconde boîte et la réponse de la première serait perdue.
+ */
 export function createFilePicker(deps: FilePickerDeps): () => Promise<ApiResult<PickedFile | null>> {
-  return async () => {
-    if (deps.platform !== 'darwin') {
-      return { ok: false, code: 'other', error: NOT_MACOS_MESSAGE }
-    }
+  let inFlight: Promise<ApiResult<PickedFile | null>> | null = null
+  const pickOnce = async (): Promise<ApiResult<PickedFile | null>> => {
     try {
       const output = await deps.run(['-e', `POSIX path of (choose file with prompt "${PICK_PROMPT}")`])
       const file = output.replace(/\r?\n$/, '')
@@ -46,6 +48,18 @@ export function createFilePicker(deps: FilePickerDeps): () => Promise<ApiResult<
       }
       return { ok: false, code: 'other', error: PICK_FAILED_MESSAGE }
     }
+  }
+  return async () => {
+    if (deps.platform !== 'darwin') {
+      return { ok: false, code: 'other', error: NOT_MACOS_MESSAGE }
+    }
+    if (inFlight === null) {
+      // `pickOnce` ne rejette jamais : la boîte fermée (choix, annulation ou échec), l'appel suivant en ouvre une autre.
+      inFlight = pickOnce().finally(() => {
+        inFlight = null
+      })
+    }
+    return inFlight
   }
 }
 
@@ -93,7 +107,7 @@ function overlaps(first: string, second: string): boolean {
   return p === q || p.startsWith(`${q}/`) || q.startsWith(`${p}/`)
 }
 
-const memoriesCount =(count: number): string => (count === 1 ? 'Uploaded 1 memory' : `Uploaded ${count} memories`)
+const memoriesCount = (count: number): string => (count === 1 ? 'Uploaded 1 memory' : `Uploaded ${count} memories`)
 
 /** Un remplacement retenu : la mémoire en ligne, dont l'empreinte devient la précondition. */
 type Send = { line: Line; memoryId: string | null; precondition: string | null }

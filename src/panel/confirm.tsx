@@ -85,11 +85,6 @@ export function askConfirmation(actionKey: string): void {
   set(pendingConfirmation, actionKey)
 }
 
-/** Vrai tant que la question de `actionKey` est ouverte. */
-export function isConfirming(actionKey: string): boolean {
-  return read(pendingConfirmation) === actionKey
-}
-
 /**
  * La confirmation d'un geste lancé ailleurs (`askConfirmation`) : le bloc `ConfirmInline`, avec la même logique que
  * `ConfirmAction` (une seule question à la fois, bouton grisé en route, refus de l'API remonté, question laissée ouverte).

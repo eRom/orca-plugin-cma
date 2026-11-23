@@ -16,7 +16,7 @@ import { INVALID_MEMORY_PATH, isSafeMemoryPath } from '../shared/memory-path'
 import { clipBytes } from '../shared/text'
 import { archiveQuestion, askConfirmation, ConfirmPanel, deleteQuestion } from './confirm'
 import { configDetail, loadConfigs, loadDetail, loadMemory, memoryDraft, openConfig, openMemory, RENDER_ROW_CAP } from './config-state'
-import { DraftControls, draftIsBusy, draftIsUnapplied, startDraft } from './drafts'
+import { DraftControls, DraftNotice, draftIsBusy, draftIsUnapplied, startDraft } from './drafts'
 import { clearForm, editForm, formConflict, formKey, isTouched, readForm, touchField } from './form-state'
 import { addReplaceRow, dropStoreUploads, UploadsSection } from './memory-uploads'
 import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, nav, popIfTop, popView, run } from './state'
@@ -272,21 +272,24 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-/** Une mémoire de la banque : sa ligne (✎ ouvre l'éditeur, ⋯ ouvre son détail) et, dessous, ce que dit son brouillon. */
+/**
+ * Une mémoire de la banque : sa ligne (✎ ouvre l'éditeur, → ouvre son détail). Un brouillon non appliqué se dit par un
+ * statut sur la ligne ; son Apply et son Discard vivent dans le détail de la mémoire, jamais dans cette carte.
+ */
 function MemoryLine({ store, memory }: { store: MemoryStoreDetail; memory: MemoryRow }) {
   const draftRef = memoryDraft(store.id, memory.id, memory.path)
-  const reread = (): void => run(() => refreshStore(store.id))
   return (
     <Stack gap="xs">
       <ItemRow
         title={clipTitle(memory.path)}
         subtitle={formatSize(memory.sizeBytes)}
+        status={draftIsUnapplied(draftRef) ? { label: 'Unapplied draft', tone: 'warning' } : undefined}
         actions={[
           { key: 'edit', icon: 'edit', label: `Edit ${clipLabel(memory.path, 200)} in editor`, disabled: draftIsBusy(draftRef), onPress: () => startDraft(draftRef) },
-          { key: 'open', icon: 'more', label: `Open ${clipLabel(memory.path, 200)}`, onPress: () => openMemory(store.id, memory.id) }
+          { key: 'open', icon: 'next', label: `Open ${clipLabel(memory.path, 200)}`, onPress: () => openMemory(store.id, memory.id) }
         ]}
       />
-      <DraftControls draftRef={draftRef} label="Edit in editor" showOpen={false} onApplied={reread} onDiscarded={reread} />
+      <DraftNotice draftRef={draftRef} />
     </Stack>
   )
 }

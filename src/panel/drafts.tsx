@@ -390,10 +390,22 @@ function FlowView({ draftRef, flow, onApplied, onDiscarded }: { draftRef: DraftR
   }
 }
 
-/** Vrai tant qu'un récapitulatif, un conflit, un succès ou un avis de ce brouillon est affiché. */
-export function draftHasFlow(ref: DraftRef): boolean {
-  return read(draftFlows)[draftKey(ref)] !== undefined
+/**
+ * Le refus d'une ouverture lancée depuis une liste (`startDraft`) : seul l'avis, avec la carte d'installation si le dossier
+ * n'est pas un projet. Apply et Discard d'un brouillon vivent dans le détail de sa mémoire, jamais dans une liste.
+ */
+export function DraftNotice({ draftRef }: { draftRef: DraftRef }): OrcaNode {
+  const flow = read(draftFlows)[draftKey(draftRef)]
+  if (flow?.step !== 'notice') return null
+  const status = read(draftsStatus)
+  return (
+    <Stack gap="sm">
+      {status !== null && !status.ready ? <SetupCard folder={status.folder} /> : null}
+      <FlowView draftRef={draftRef} flow={flow} onApplied={undefined} onDiscarded={undefined} />
+    </Stack>
+  )
 }
+
 
 /** Vrai quand le worker sait ce brouillon modifié depuis son écriture (non appliqué) ; faux tant que son état est inconnu. */
 export function draftIsUnapplied(ref: DraftRef): boolean {
