@@ -2,6 +2,7 @@
 import type { OrcaWorkerApi } from 'orca/worker'
 import type { ApiResult, ResourceRef, SessionRow, ThreadRow, WorkspaceInfo } from './protocol'
 import { createAgentAdapter } from './worker/agent-drafts'
+import { agentFormOptions, prepareAgentForm } from './worker/agent-form'
 import { SECRET_NAME, attempt, createClientStore, describeError, failure, setKey, workspaceInfo } from './worker/client'
 import { createWriteHandlers } from './worker/config-writes'
 import { createConfigHandlers } from './worker/configs'
@@ -209,6 +210,9 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     }
     return result
   })
+  // Le formulaire d'agent : les modèles proposés, puis l'écriture mise en attente (confirmée par `write.commit`).
+  orca.panels.handle('agent.formOptions', () => attempt(store, (client) => agentFormOptions(client, (message) => orca.log(message))))
+  orca.panels.handle('agent.prepareForm', (input) => prepareAgentForm(store, pendingWrites, (message) => orca.log(message), input))
   orca.panels.handle('drafts.status', drafts.status)
   orca.panels.handle('draft.open', drafts.open)
   orca.panels.handle('draft.discard', drafts.discard)

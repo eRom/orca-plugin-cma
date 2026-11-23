@@ -1,5 +1,6 @@
 import { assert, mockHost, mount, test } from 'orca/testing'
 import type { AgentDetail, ConfigDetail, ConfigKind, ConfigRow, EnvironmentDetail, MemoryStoreDetail, VaultDetail } from '../protocol'
+import { BUILTIN_TOOLS } from '../protocol'
 import * as panel from '../panel'
 
 const WITH_KEY = {
@@ -29,6 +30,18 @@ const AGENT: AgentDetail = {
   id: 'agent_a',
   name: 'Incident commander',
   version: 3,
+  form: {
+    name: 'Incident commander',
+    model: 'claude-haiku-5-5',
+    effort: 'high',
+    description: 'Triages incidents.',
+    builtinTools: {
+      enabled: true,
+      policy: 'always_allow',
+      tools: BUILTIN_TOOLS.map((name) => ({ name, enabled: name === 'web_search' ? false : null, policy: null }))
+    },
+    mcpServers: [{ name: 'github', url: 'https://api.githubcopilot.com/mcp/', policy: 'always_ask' }]
+  },
   model: 'claude-haiku-5-5',
   effort: 'high',
   description: 'Triages incidents.',

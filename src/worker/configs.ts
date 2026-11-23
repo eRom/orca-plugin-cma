@@ -35,6 +35,7 @@ import {
   type VaultDetail
 } from '../protocol'
 import { clipBytes } from '../shared/text'
+import { toAgentForm } from './agent-form'
 import { attempt, type ClientStore } from './client'
 import { toCredentialForm, toEnvironmentForm } from './config-writes'
 
@@ -186,6 +187,7 @@ export function toAgentDetail(agent: BetaManagedAgentsAgent): AgentDetail {
     id: agent.id,
     name: agent.name,
     version: agent.version,
+    form: toAgentForm(agent),
     model: agent.model.id,
     // `effort` est un objet `{ type: 'high' }` dans le SDK, pas une chaîne.
     effort: agent.model.effort?.type ?? null,

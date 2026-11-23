@@ -67,6 +67,49 @@ export function sendAgent(
   return client.beta.agents.update(agentId, params as AgentUpdateParams)
 }
 
+/**
+ * Le document que Romain a ouvert, base du différentiel : seules les clés qu'il a touchées partent, jamais celles
+ * qu'un autre éditeur a changées depuis (même forcé). C'est l'agent vivant quand sa version est celle de la base ;
+ * sinon la version ouverte, relue par `retrieve(id, { version })`. Si cette relecture échoue (404, rétention), la
+ * version vivante sert de repli : le différentiel montre alors aussi les changements d'ailleurs.
+ * Partagée avec le formulaire d'agent (`agent-form.ts`), qui suit la même règle.
+ */
+export async function openedAgentDocument(
+  store: ClientStore,
+  agentId: string,
+  base: number,
+  log: (message: string) => void
+): Promise<AgentDocument> {
+  const client = await store.get()
+  const live = await client.beta.agents.retrieve(agentId)
+  if (live.version === base) {
+    return agentToDocument(live)
+  }
+  try {
+    return agentToDocument(await client.beta.agents.retrieve(agentId, { version: base }))
+  } catch (error) {
+    log(`agent ${agentId} v${base} could not be read back (${messageOf(error)}); comparing with the live v${live.version}`)
+    return agentToDocument(live)
+  }
+}
+
+/** Le refus de version : l'agent a changé ailleurs, la version actuelle est relue pour le dire. */
+export async function agentVersionConflict(
+  store: ClientStore,
+  agentId: string,
+  base: number
+): Promise<{ ok: false; error: string; code: 'conflict' }> {
+  const current = await store
+    .get()
+    .then((client) => client.beta.agents.retrieve(agentId))
+    .then(
+      (agent) => agent.version,
+      () => null
+    )
+  const error = current === null ? CONFLICT_MESSAGE : `Changed elsewhere since you opened it (v${base} → v${current}).`
+  return { ok: false, error, code: 'conflict' }
+}
+
 export function createAgentAdapter(
   store: ClientStore,
   drafts: () => Drafts,
@@ -113,35 +156,6 @@ export function createAgentAdapter(
     }
   }
 
-  /**
-   * Le document que Romain a ouvert, base du différentiel : seules les clés qu'il a touchées partent, jamais celles
-   * qu'un autre éditeur a changées depuis (même forcé). C'est l'agent vivant quand sa version est celle de la base ;
-   * sinon la version ouverte, relue par `retrieve(id, { version })`. Si cette relecture échoue (404, rétention), la
-   * version vivante sert de repli : le différentiel montre alors aussi les changements d'ailleurs.
-   */
-  async function openedDocument(agentId: string, base: number): Promise<AgentDocument> {
-    const live = await retrieve(agentId)
-    if (live.version === base) {
-      return agentToDocument(live)
-    }
-    try {
-      return agentToDocument(await (await store.get()).beta.agents.retrieve(agentId, { version: base }))
-    } catch (error) {
-      log(`agent ${agentId} v${base} could not be read back (${messageOf(error)}); comparing with the live v${live.version}`)
-      return agentToDocument(live)
-    }
-  }
-
-  /** Le refus de version : l'agent a changé ailleurs, la version actuelle est relue pour le dire. */
-  async function conflictOf(agentId: string, base: number): Promise<{ ok: false; error: string; code: 'conflict' }> {
-    const current = await retrieve(agentId).then(
-      (agent) => agent.version,
-      () => null
-    )
-    const error = current === null ? CONFLICT_MESSAGE : `Changed elsewhere since you opened it (v${base} → v${current}).`
-    return { ok: false, error, code: 'conflict' }
-  }
-
   return {
     async file(ref) {
       if (ref.agentId === null) {
@@ -178,7 +192,7 @@ export function createAgentAdapter(
           return { ok: false, code: 'other', error: 'The draft file is gone: open it again.' }
         }
         version = base.version
-        before = await openedDocument(ref.agentId, base.version)
+        before = await openedAgentDocument(store, ref.agentId, base.version, log)
       }
       const changes = diffDocuments(before, after)
       if (changes.length === 0) {
@@ -192,7 +206,7 @@ export function createAgentAdapter(
           return { ok: true, value: { label: `Applied, v${agent.version}`, id: agent.id } }
         } catch (error) {
           if (ref.agentId !== null && version !== null && isVersionRefusal(error)) {
-            return conflictOf(ref.agentId, version)
+            return agentVersionConflict(store, ref.agentId, version)
           }
           return failure(error)
         }

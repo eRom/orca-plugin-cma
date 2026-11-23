@@ -1,6 +1,7 @@
 // `orca plugin check` dessine le panneau une fois par scénario ; le worker y est remplacé par des
 // réponses figées, donc aucun appel réseau et aucune clé.
 import { defineCheck } from 'orca/testing'
+import { BUILTIN_TOOLS } from './protocol'
 import type {
   ConfigDetail,
   ConfigKind,
@@ -111,6 +112,18 @@ export default defineCheck({
     id: 'agent_check',
     name: 'Incident commander',
     version: 3,
+    form: {
+      name: 'Incident commander',
+      model: 'claude-haiku-5-5',
+      effort: 'high',
+      description: 'Triages incidents.',
+      builtinTools: {
+        enabled: true,
+        policy: 'always_allow',
+        tools: BUILTIN_TOOLS.map((name) => ({ name, enabled: name === 'web_search' ? false : null, policy: null }))
+      },
+      mcpServers: [{ name: 'github', url: 'https://api.githubcopilot.com/mcp/', policy: 'always_ask' }]
+    },
     model: 'claude-haiku-5-5',
     effort: 'high',
     description: 'Triages incidents and coordinates the response.',

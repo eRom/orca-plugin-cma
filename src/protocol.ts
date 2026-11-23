@@ -62,11 +62,36 @@ export type ToolsetView = {
   overrides: ToolSetting[]
 }
 
+export const AGENT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+export type AgentEffort = (typeof AGENT_EFFORTS)[number]
+
+/** Les outils intégrés d'un agent, dans l'ordre où le formulaire les propose. */
+export const BUILTIN_TOOLS = ['bash', 'edit', 'glob', 'grep', 'read', 'web_fetch', 'web_search', 'write'] as const
+
+export type AgentToolsForm = {
+  enabled: boolean
+  policy: ToolPolicy
+  /** Par outil : null = hérite du défaut du toolset (aucune entrée `configs` pour ce réglage). */
+  tools: { name: (typeof BUILTIN_TOOLS)[number]; enabled: boolean | null; policy: ToolPolicy | null }[]
+}
+
+/** L'agent tel que le formulaire le modifie. */
+export type AgentForm = {
+  name: string
+  model: string
+  effort: AgentEffort | null
+  description: string
+  /** null : l'agent n'a pas de toolset intégré. */
+  builtinTools: AgentToolsForm | null
+  mcpServers: { name: string; url: string; policy: ToolPolicy }[]
+}
+
 export type AgentDetail = {
   kind: 'agent'
   id: string
   name: string
   version: number
+  form: AgentForm
   model: string
   effort: string | null
   description: string | null
@@ -384,6 +409,13 @@ declare module 'orca' {
     'resource.delete': { input: ResourceRef; output: ApiResult<null> }
     'write.commit': { input: { token: string; force: boolean }; output: ApiResult<Committed> }
     'createForm.options': { output: ApiResult<CreateFormOptions> }
+    /** Les modèles que le formulaire d'agent propose ; vide si l'API ne les donne pas (le panneau ajoute le modèle courant). */
+    'agent.formOptions': { output: ApiResult<{ models: string[] }> }
+    /** `agentId` null : un nouvel agent. `baseVersion` et `base` sont ceux que le formulaire a ouverts. */
+    'agent.prepareForm': {
+      input: { agentId: string | null; baseVersion: number | null; form: AgentForm; base: AgentForm | null }
+      output: ApiResult<PreparedWrite>
+    }
     'drafts.status': { output: DraftsStatus }
     'draft.open': { input: DraftRef; output: ApiResult<DraftInfo> }
     'draft.discard': { input: DraftRef; output: ApiResult<DraftInfo> }
