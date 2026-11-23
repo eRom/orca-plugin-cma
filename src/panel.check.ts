@@ -3,6 +3,8 @@
 import { defineCheck } from 'orca/testing'
 import { BUILTIN_TOOLS } from './protocol'
 import type {
+  AgentDetail,
+  AgentForm,
   ConfigDetail,
   ConfigKind,
   ConfigRow,
@@ -43,6 +45,28 @@ const CHECK_MEMORIES = [
 const NO_DRAFTS = {
   'drafts.status': { folder: '/Users/someone/.config/agent-claude-managed/managed-agents', ready: true },
   'draft.state': { ok: true as const, value: null }
+}
+
+const AGENT_FORM: AgentForm = {
+  name: 'Incident commander',
+  model: 'claude-haiku-5-5',
+  effort: 'high',
+  description: 'Triages incidents.',
+  builtinTools: {
+    enabled: true,
+    policy: 'always_allow',
+    tools: BUILTIN_TOOLS.map((name) => ({ name, enabled: name === 'web_search' ? false : null, policy: name === 'bash' ? 'always_ask' : null }))
+  },
+  mcpServers: [
+    { name: 'github', url: 'https://api.githubcopilot.com/mcp/', policy: 'always_ask' },
+    { name: 'linear', url: 'https://mcp.linear.app/mcp', policy: 'always_allow' }
+  ]
+}
+
+/** Ce que l'écran d'un agent lit : les modèles de l'API et le dossier de brouillons (prêt, sans brouillon). */
+const AGENT_READS = {
+  'agent.formOptions': { ok: true as const, value: { models: ['claude-haiku-5-5', 'claude-sonnet-5', 'claude-opus-5'] } },
+  ...NO_DRAFTS
 }
 
 export default defineCheck({
@@ -107,40 +131,12 @@ export default defineCheck({
       }
     }
   },
-  'agent detail': configScenario('agent', {
-    kind: 'agent',
-    id: 'agent_check',
-    name: 'Incident commander',
-    version: 3,
-    form: {
-      name: 'Incident commander',
-      model: 'claude-haiku-5-5',
-      effort: 'high',
-      description: 'Triages incidents.',
-      builtinTools: {
-        enabled: true,
-        policy: 'always_allow',
-        tools: BUILTIN_TOOLS.map((name) => ({ name, enabled: name === 'web_search' ? false : null, policy: null }))
-      },
-      mcpServers: [{ name: 'github', url: 'https://api.githubcopilot.com/mcp/', policy: 'always_ask' }]
-    },
-    model: 'claude-haiku-5-5',
-    effort: 'high',
-    description: 'Triages incidents and coordinates the response.',
-    system: { text: 'You are an incident commander.\n\nBe brief and cite your sources.', truncated: true },
-    builtinTools: { enabled: true, policy: 'always_allow', overrides: [{ name: 'web_search', enabled: false, policy: null }] },
-    mcpServers: [
-      {
-        name: 'github',
-        url: 'https://api.githubcopilot.com/mcp/',
-        enabled: true,
-        policy: 'always_ask',
-        overrides: [{ name: 'list_commits', enabled: true, policy: 'always_allow' }]
-      }
-    ],
-    skills: ['skill_triage'],
-    multiagent: 'Multiagent: advisor claude-opus-5'
-  }),
+  // Le formulaire d'un agent au repos : champs, outils intégrés (réglages par outil repliés), serveurs MCP, résumés en lecture seule, Archive.
+  'agent form': agentScenario(),
+  // Une saisie gardée sur une version plus ancienne que le détail : « Unsaved changes », l'avis de départ, Review changes et Discard.
+  'agent form unsaved': agentScenario({ unsaved: true }),
+  // Le formulaire de création : vide, Create grisé, « New agent from YAML » et le bouton du lot 5, grisé.
+  'new agent form': newAgentScenario(),
   // L'écran d'une banque : sans mémoire, avec trois mémoires, avec des lignes à envoyer (une en défaut), et le détail d'une mémoire.
   'memory store empty': memoryStoreScenario([]),
   'memory store filled': memoryStoreScenario(CHECK_MEMORIES),
@@ -458,6 +454,68 @@ function credentialScenario(credentialId: string | null) {
       plugin: {
         nav: [{ view: 'home' }, { view: 'config', kind: 'vault', id: detail.id }, { view: 'credential', vaultId: detail.id, credentialId }]
       }
+    }
+  }
+}
+
+/** Le détail d'un agent ouvert, avec en option une saisie gardée commencée sur une version plus ancienne. */
+function agentScenario(options: { unsaved?: boolean } = {}) {
+  const detail: AgentDetail = {
+    kind: 'agent',
+    id: 'agent_check',
+    name: 'Incident commander',
+    version: 5,
+    form: AGENT_FORM,
+    model: 'claude-haiku-5-5',
+    effort: 'high',
+    description: 'Triages incidents.',
+    system: { text: 'You are an incident commander.\n\nBe brief and cite your sources.', truncated: true },
+    builtinTools: { enabled: true, policy: 'always_allow', overrides: [{ name: 'web_search', enabled: false, policy: null }] },
+    mcpServers: [
+      {
+        name: 'github',
+        url: 'https://api.githubcopilot.com/mcp/',
+        enabled: true,
+        policy: 'always_ask',
+        overrides: [{ name: 'list_commits', enabled: true, policy: 'always_allow' }]
+      },
+      { name: 'linear', url: 'https://mcp.linear.app/mcp', enabled: true, policy: 'always_allow', overrides: [] }
+    ],
+    skills: ['skill_triage'],
+    multiagent: 'Multiagent: advisor claude-opus-5'
+  }
+  const scenario = configScenario('agent', detail)
+  return {
+    persisted: {
+      plugin: {
+        ...scenario.persisted.plugin,
+        ...(options.unsaved
+          ? {
+              'forms.drafts': {
+                'agent:agent_check': {
+                  form: { ...AGENT_FORM, description: 'Triages incidents and coordinates the response.', effort: 'medium' },
+                  base: AGENT_FORM,
+                  baseStamp: 3
+                }
+              }
+            }
+          : {})
+      }
+    },
+    requests: { ...scenario.requests, ...AGENT_READS }
+  }
+}
+
+/** Le formulaire de création d'un agent. */
+function newAgentScenario() {
+  return {
+    persisted: { plugin: { nav: [{ view: 'home' }, { view: 'newConfig', kind: 'agent' }] } },
+    requests: {
+      'workspace.info': WITH_KEY,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'configs.list': { ok: true as const, value: [] },
+      'sessions.list': { ok: true as const, value: [] },
+      ...AGENT_READS
     }
   }
 }

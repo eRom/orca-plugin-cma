@@ -5,11 +5,8 @@
 import {
   Button,
   Callout,
-  Card,
   Code,
-  CodeView,
   IconButton,
-  KeyValue,
   Markdown,
   read,
   RelativeTime,
@@ -18,40 +15,28 @@ import {
   Spinner,
   Stack,
   Text,
-  update,
-  type OrcaNode
+  update
 } from 'orca'
-import type { AgentDetail, ConfigDetail, ConfigKind, ConfigRow, ToolPolicy, ToolsetView } from '../protocol'
+import type { ConfigDetail, ConfigKind, ConfigRow } from '../protocol'
 import { clipBytes } from '../shared/text'
 import { BackHeader } from '../blocks/back-header'
 import { ErrorRetry } from '../blocks/error-retry'
 import { LoadingState } from '../blocks/loading-state'
+import { AgentFormView, leaveAgentView, TRUNCATED_NOTICE } from './agent-form'
 import { EnvironmentFormView } from './environment-form'
 import { MemoryActions, MemoryDeleteAction, MemoryStoreFormView, refreshStore } from './memory-forms'
 import { VaultFormView } from './vault-forms'
-import { configDetail, configDetailError, configRows, loadDetail, loadMemory, memoryContent, memoryError, RENDER_ROW_CAP } from './config-state'
+import { configDetail, configDetailError, configRows, loadDetail, loadMemory, memoryContent, memoryError, restoreNewAgent } from './config-state'
 import { ERROR_TEXT_LIMIT_BYTES, nav, popView, run, workspace } from './state'
-
-/** Mention affichée sous un texte coupé côté worker. */
-const TRUNCATED_NOTICE = 'Truncated, open in Console for the full text'
 
 /** Plafond d'un titre ou d'un libellé : un libellé de plus de 1 Kio fait refuser le rendu. */
 const TITLE_LIMIT_BYTES = 200
-const DESCRIPTION_LIMIT_BYTES = 300
-/** Plafond d'une description d'agent : sous les 16 Kio qu'Orca accepte par `Text`, avec marge. */
-const LONG_TEXT_LIMIT_BYTES = 4_000
 
 const CONSOLE_SEGMENTS: Record<ConfigKind, string> = {
   agent: 'agents',
   environment: 'environments',
   memory_store: 'memory-stores',
   vault: 'vaults'
-}
-
-const POLICY_LABELS: Record<ToolPolicy, string> = {
-  always_allow: 'always allow',
-  always_ask: 'always ask',
-  auto: 'auto'
 }
 
 /** Garde les lignes dont le nom ou l'identifiant contient la saisie, sans tenir compte de la casse. */
@@ -75,10 +60,13 @@ export async function restoreConfigView(): Promise<void> {
     await loadDetail('vault', top.vaultId)
   } else if (top?.view === 'memory' && read(memoryContent)?.id !== top.memoryId) {
     await loadMemory(top.memoryStoreId, top.memoryId)
+  } else if (top?.view === 'newConfig') {
+    await restoreNewAgent()
   }
 }
 
 function goBack(): void {
+  leaveAgentView()
   update(nav, popView)
   run(restoreConfigView)
 }
@@ -140,95 +128,6 @@ function LoadFailure({ title, message }: { title: string; message: string }) {
   )
 }
 
-/** Mention sous une liste coupée au plafond de rendu. */
-function CapNotice({ total }: { total: number }) {
-  return total > RENDER_ROW_CAP ? (
-    <Text muted size="xs">
-      {`Showing the first ${RENDER_ROW_CAP} of ${total}. Open in Console for the rest.`}
-    </Text>
-  ) : null
-}
-
-function Section({ title, children }: { title: string; children: OrcaNode }) {
-  return (
-    <Stack gap="xs">
-      <Text size="sm" weight="medium">
-        {title}
-      </Text>
-      {children}
-    </Stack>
-  )
-}
-
-// --- Agent ---
-
-function toolsetDefault(view: ToolsetView): string {
-  return `Default: ${view.enabled ? 'enabled' : 'disabled'}${view.policy ? `, ${POLICY_LABELS[view.policy]}` : ''}`
-}
-
-function ToolsetSummary({ view, label }: { view: ToolsetView; label: string }) {
-  return (
-    <Stack gap="sm">
-      <Text size="sm">{toolsetDefault(view)}</Text>
-      {view.overrides.length > 0 ? (
-        <KeyValue
-          label={label}
-          items={view.overrides.slice(0, RENDER_ROW_CAP).map((tool) => ({
-            label: clipTitle(tool.name),
-            value: `${tool.enabled ? 'enabled' : 'disabled'}${tool.policy ? `, ${POLICY_LABELS[tool.policy]}` : ''}`
-          }))}
-        />
-      ) : null}
-    </Stack>
-  )
-}
-
-function AgentBody({ agent }: { agent: AgentDetail }) {
-  const description = agent.description ? clipBytes(agent.description, LONG_TEXT_LIMIT_BYTES).text : null
-  return (
-    <Stack gap="md">
-      <KeyValue
-        label="Agent"
-        items={[
-          { label: 'Version', value: `v${agent.version}` },
-          { label: 'Model', value: clipTitle(agent.model), code: true },
-          ...(agent.effort ? [{ label: 'Effort', value: agent.effort }] : []),
-          ...(description ? [{ label: 'Description', value: description }] : [])
-        ]}
-      />
-      <Section title="System prompt">
-        {agent.system.text ? (
-          <CodeView code={agent.system.text} label="System prompt" wrap maxHeight="md" />
-        ) : (
-          <Text muted size="sm">
-            No system prompt.
-          </Text>
-        )}
-        {agent.system.truncated ? <Truncated /> : null}
-      </Section>
-      <Section title="Tools">
-        {agent.builtinTools ? (
-          <Card title="Built-in tools">
-            <ToolsetSummary view={agent.builtinTools} label="Built-in tool settings" />
-          </Card>
-        ) : (
-          <Text muted size="sm">
-            No built-in toolset.
-          </Text>
-        )}
-        {agent.mcpServers.slice(0, RENDER_ROW_CAP).map((server) => (
-          <Card key={server.name} title={clipTitle(server.name)} description={clipBytes(server.url, DESCRIPTION_LIMIT_BYTES).text}>
-            <ToolsetSummary view={server} label={`${clipTitle(server.name)} tool settings`} />
-          </Card>
-        ))}
-        <CapNotice total={agent.mcpServers.length} />
-      </Section>
-      {agent.skills.length > 0 ? <Text size="sm">{`Skills: ${clipBytes(agent.skills.join(', '), LONG_TEXT_LIMIT_BYTES).text}`}</Text> : null}
-      {agent.multiagent ? <Text size="sm">{clipBytes(agent.multiagent, LONG_TEXT_LIMIT_BYTES).text}</Text> : null}
-    </Stack>
-  )
-}
-
 /** Le lien vers la console, en icône : un geste d'en-tête, pas une action de la page. */
 function ConsoleButton({ url }: { url: string | null }) {
   return url ? <IconButton icon="open-external" label="Open in Console" variant="ghost" size="sm" onPress={() => openInConsole(url)} /> : null
@@ -286,7 +185,7 @@ export function MemoryView({ memoryStoreId, memoryId }: { memoryStoreId: string;
 function DetailBody({ detail }: { detail: ConfigDetail }) {
   switch (detail.kind) {
     case 'agent':
-      return <AgentBody agent={detail} />
+      return <AgentFormView id={detail.id} />
     case 'environment':
       return <EnvironmentFormView id={detail.id} />
     case 'memory_store':

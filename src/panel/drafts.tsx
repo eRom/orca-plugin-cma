@@ -19,7 +19,7 @@ import {
   type OrcaNode,
   type PanelContext
 } from 'orca'
-import type { ApiErrorCode, DraftInfo, DraftRef, DraftsStatus, PreparedWrite } from '../protocol'
+import type { ApiErrorCode, Committed, DraftInfo, DraftRef, DraftsStatus, PreparedWrite } from '../protocol'
 import { clipBytes } from '../shared/text'
 import { ChangesPreview } from './changes'
 import { ConfirmAction } from './confirm'
@@ -211,7 +211,7 @@ async function applyDraft(ref: DraftRef): Promise<void> {
 }
 
 /** Envoie l'écriture en attente. Un conflit rouvre le choix, un refus du récapitulatif le ferme, tout autre échec garde le jeton. */
-async function commitDraft(ref: DraftRef, force: boolean, onApplied?: () => void): Promise<void> {
+async function commitDraft(ref: DraftRef, force: boolean, onApplied?: (committed: Committed) => void): Promise<void> {
   const key = draftKey(ref)
   const flow = read(draftFlows)[key]
   // Le worker partage le résultat d'un envoi en vol : un second appui, forcé ou non, ne ferait que rejouer le premier.
@@ -229,7 +229,7 @@ async function commitDraft(ref: DraftRef, force: boolean, onApplied?: () => void
   if (result.ok) {
     setFlow(key, { step: 'applied', label: result.value.label, returnTo })
     // La vue relit l'objet écrit (rien d'autre ne le fait) : le rappel part dès que le succès est affiché.
-    onApplied?.()
+    onApplied?.(result.value)
     await refreshDraftState(ref).catch(() => {})
     return
   }
@@ -327,7 +327,7 @@ function SetupCard({ folder }: { folder: string }): OrcaNode {
   )
 }
 
-function FlowView({ draftRef, flow, onApplied, onDiscarded }: { draftRef: DraftRef; flow: Flow; onApplied: (() => void) | undefined; onDiscarded: (() => void) | undefined }): OrcaNode {
+function FlowView({ draftRef, flow, onApplied, onDiscarded }: { draftRef: DraftRef; flow: Flow; onApplied: ((committed: Committed) => void) | undefined; onDiscarded: (() => void) | undefined }): OrcaNode {
   const key = draftKey(draftRef)
   switch (flow.step) {
     case 'review':
@@ -422,6 +422,19 @@ export function startDraft(ref: DraftRef): void {
   run(() => openDraft(ref))
 }
 
+/**
+ * Un objet créé depuis son brouillon change de clé (`agent:new` devient `agent:<id>`) : le succès affiché (avec son
+ * « Back to ») passe sur le brouillon du nouvel objet, et celui du modèle est remis au repos.
+ */
+export function carryDraftOutcome(from: DraftRef, to: DraftRef): void {
+  const fromKey = draftKey(from)
+  const flow = read(draftFlows)[fromKey]
+  if (flow?.step !== 'applied') return
+  setFlow(draftKey(to), flow)
+  setFlow(fromKey, null)
+  setOpened(fromKey, false)
+}
+
 /** Vrai tant qu'un appel est en vol pour ce brouillon (ouverture, préparation, envoi) : aucun second ne part. */
 export function draftIsBusy(ref: DraftRef): boolean {
   return isBusy(read(draftFlows)[draftKey(ref)])
@@ -436,8 +449,8 @@ type DraftControlsProps = {
    * Apply, Discard, récapitulatif, conflit, succès) et rien tant que le brouillon n'a rien à dire.
    */
   showOpen?: boolean
-  /** Appelé dès que l'écriture est appliquée : la vue hôte relit l'objet écrit. */
-  onApplied?: () => void
+  /** Appelé dès que l'écriture est appliquée, avec son résultat (l'id d'un objet créé) : la vue hôte relit l'objet écrit. */
+  onApplied?: (committed: Committed) => void
   /** Appelé dès que le brouillon est abandonné (Discard, ou Reload après un conflit) : la vue hôte oublie ce qu'elle gardait. */
   onDiscarded?: () => void
 }

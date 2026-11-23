@@ -20,10 +20,14 @@ export const configErrors = atom<Partial<Record<ConfigKind, string | null>>>('co
 export const configDetail = atom<ConfigDetail | null>('configs.detail', null)
 export const configDetailError = atom<string | null>('configs.detail.error', null)
 
+/** Les modèles que le formulaire d'agent propose ; null tant que la lecture n'a pas abouti (le formulaire offre alors un champ libre). */
+export const agentModels = atom<string[] | null>(null)
+
 /** Oublie les listes lues (clé changée ou oubliée) : elles ne valent plus pour la nouvelle clé. */
 export function resetConfigs(): void {
   set(configRows, {})
   set(configErrors, {})
+  set(agentModels, null)
 }
 
 /**
@@ -62,6 +66,7 @@ export async function loadDetail(kind: ConfigKind, id: string): Promise<void> {
   if (result.ok) {
     set(configDetail, result.value)
     if (result.value.kind === 'memory_store') await loadStoreDrafts(result.value)
+    if (result.value.kind === 'agent') await loadAgentExtras(result.value.id)
   } else {
     set(configDetailError, result.error)
   }
@@ -79,6 +84,40 @@ async function loadStoreDrafts(store: MemoryStoreDetail): Promise<void> {
     refreshDraftsStatus().catch(() => {}),
     ...store.memories.slice(0, RENDER_ROW_CAP).map((memory) => refreshDraftState(memoryDraft(store.id, memory.id, memory.path)).catch(() => {}))
   ])
+}
+
+// --- Formulaire d'agent ---
+
+/**
+ * Lit les modèles que l'API propose, une fois par clé. Une lecture de fond : un échec laisse la liste inconnue,
+ * et le formulaire offre un champ libre pour le modèle.
+ */
+export async function loadAgentModels(): Promise<void> {
+  if (read(agentModels) !== null) return
+  try {
+    const result = await plugin.request('agent.formOptions')
+    if (result.ok) set(agentModels, result.value.models)
+    else if (result.code === 'unauthorized') await loadWorkspace()
+  } catch {
+    // Rien à montrer : le champ libre prend le relais.
+  }
+}
+
+/** À l'ouverture d'un écran d'agent (détail ou création) : les modèles et l'état du brouillon YAML. `agentId` null : un nouvel agent. */
+async function loadAgentExtras(agentId: string | null): Promise<void> {
+  await Promise.all([loadAgentModels(), loadDraftControls({ kind: 'agent', agentId })])
+}
+
+/** Ouvre le formulaire de création d'un agent : empile la vue, puis charge ce qu'elle lit. */
+export function openNewAgent(): void {
+  update(nav, (stack) => pushView(stack, { view: 'newConfig', kind: 'agent' }))
+  run(() => loadAgentExtras(null))
+}
+
+/** Rouvre le formulaire de création d'un agent resté au sommet de la pile (redémarrage du panneau). */
+export function restoreNewAgent(): Promise<void> {
+  const top = read(nav).at(-1)
+  return top?.view === 'newConfig' && top.kind === 'agent' ? loadAgentExtras(null) : Promise.resolve()
 }
 
 /** Ouvre le détail d'une configuration depuis l'accueil : empile la vue, puis la charge. */

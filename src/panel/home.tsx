@@ -25,7 +25,7 @@ import {
 import { formatMoney } from '../shared/money'
 import { badgeLabel, badgeTone, sortSessions } from '../shared/sessions'
 import { clipBytes } from '../shared/text'
-import { configErrors, configRows, loadConfigs, openConfig, RENDER_ROW_CAP, resetConfigs } from './config-state'
+import { configErrors, configRows, loadConfigs, openConfig, openNewAgent, RENDER_ROW_CAP, resetConfigs } from './config-state'
 import { filterRows, restoreConfigView } from './config-views'
 import { openNewConfig } from './environment-form'
 import { openNewSession, restoreNewSession } from './new-session'
@@ -140,6 +140,11 @@ function ConfigList({ tab }: { tab: (typeof CONFIG_TABS)[number] }) {
   const shown = rows ? filterRows(rows, query) : []
   return (
     <Stack gap="sm">
+      {tab.value === 'agent' ? (
+        <Button icon="add" onPress={openNewAgent}>
+          New agent
+        </Button>
+      ) : null}
       {tab.value === 'environment' ? (
         <Button icon="add" onPress={() => openNewConfig('environment')}>
           New environment

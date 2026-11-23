@@ -209,24 +209,22 @@ test('keeps the filter when coming back from a detail', async () => {
   await view.unmount()
 })
 
-test('shows the agent detail with its tools and servers', async () => {
+test('shows the agent detail as a form, with the read-only summaries kept', async () => {
   const host = mockHost({ requests: requests({ 'configs.detail': { ok: true, value: AGENT } }), })
   const view = await mount(panel, { host, persisted: openConfig('agent', 'agent_a') })
   assert.ok(view.find({ text: 'Incident commander' }))
   assert.ok(view.find({ type: 'Code', text: 'agent_a' }))
-  assert.ok(view.find({ text: /claude-haiku-5-5/ }))
-  assert.ok(view.find({ text: /high/ }))
+  assert.equal(view.valueOf({ label: 'Model' }), 'claude-haiku-5-5')
+  assert.equal(view.valueOf({ label: 'Effort' }), 'high')
   const prompt = view.find({ type: 'CodeView' })
   assert.ok(prompt)
   assert.equal(prompt.props.code, 'You are an incident commander.')
-  // Outils intégrés : politique par défaut puis outils réglés un par un.
-  assert.ok(view.find({ type: 'Card', label: 'Built-in tools' }))
-  assert.ok(view.find({ text: /web_search/ }))
-  // Serveur MCP : nom, URL, politique par défaut.
-  const server = view.find({ type: 'Card', label: 'github' })
-  assert.ok(server)
-  assert.ok(server.text.includes('always ask'))
-  assert.ok(server.text.includes('list_commits'))
+  // Outils intégrés : le réglage par défaut est un champ, un outil réglé un par un se dit dans le résumé du pli.
+  assert.equal(view.valueOf({ label: 'Default permission' }), 'always_allow')
+  assert.ok(String(view.find({ type: 'Collapsible', text: /Per-tool settings/ })?.props.description).includes('1 tool customised'))
+  // Serveur MCP : son nom, son URL et sa politique dans le groupe ; ses réglages par outil restent en lecture seule.
+  assert.equal(view.valueOf({ label: 'Policy of github' }), 'always_ask')
+  assert.ok(view.find({ type: 'KeyValue', label: 'github tool settings' })?.text.includes('list_commits'))
   assert.ok(view.find({ text: /skill_triage/ }))
   assert.ok(view.find({ text: /advisor claude-opus-5/ }))
   assert.equal(view.find({ text: 'Truncated, open in Console for the full text' }), null)

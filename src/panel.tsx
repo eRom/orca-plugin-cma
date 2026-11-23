@@ -2,6 +2,7 @@
 // Il route sur le sommet de la pile de navigation ; une vue inconnue retombe sur l'accueil.
 import { Callout, plugin, read, set, Spinner, Stack, Text, type PanelContext } from 'orca'
 import { POLL_VISIBLE_MS } from './protocol'
+import { AgentFormView } from './panel/agent-form'
 import { loadConfigs } from './panel/config-state'
 import { ConfigDetailView, MemoryView, restoreConfigView } from './panel/config-views'
 import { setupDrafts } from './panel/drafts'
@@ -94,7 +95,8 @@ function CurrentView() {
     case 'config':
       return <ConfigDetailView kind={top.kind} id={top.id} />
     case 'newConfig':
-      // L'environnement et le coffre ont leur formulaire de création ; une pile persistée d'un autre type retombe sur l'accueil.
+      // Chaque type a son formulaire de création.
+      if (top.kind === 'agent') return <AgentFormView id={null} />
       if (top.kind === 'environment') return <EnvironmentFormView id={null} />
       if (top.kind === 'memory_store') return <MemoryStoreFormView id={null} />
       return top.kind === 'vault' ? <VaultFormView id={null} /> : <Home />
