@@ -60,8 +60,10 @@ export type Drafts = {
    * `sent` est le texte du brouillon qui vient d'être envoyé : si le fichier a changé depuis (Romain a
    * sauvegardé entre-temps), ses modifications plus récentes sont gardées et le brouillon reste « non appliqué ».
    * Ne rejette jamais, l'envoi étant déjà fait : rend false (et journalise) quand le disque refuse.
+   * `returnTo` : le workspace de retour d'un brouillon qui n'a pas encore d'entrée (le fichier canonique d'un
+   * agent créé reprend celui du modèle) ; une entrée existante garde le sien.
    */
-  rewrite(ref: DraftRef, text: string, base: DraftBase, sent: string): Promise<boolean>
+  rewrite(ref: DraftRef, text: string, base: DraftBase, sent: string, returnTo?: ReturnTo | null): Promise<boolean>
   /**
    * Les brouillons du registre dont la référence vérifie `match`, avec leur fichier et leur état. Lecture
    * seule, sans appel réseau, et hors de la file des opérations : un adaptateur peut l'appeler depuis
@@ -79,7 +81,7 @@ export type Drafts = {
   release(match: (ref: DraftRef) => boolean, becomes?: (ref: DraftRef) => DraftRef): Promise<{ released: string[]; kept: string[] }>
 }
 
-type ReturnTo = { workspaceId: string; name: string }
+export type ReturnTo = { workspaceId: string; name: string }
 
 type RegistryEntry = {
   ref: DraftRef
@@ -544,7 +546,7 @@ export function createDrafts(deps: {
       }
     },
 
-    rewrite: (ref, text, base, sent) =>
+    rewrite: (ref, text, base, sent, inheritedReturnTo) =>
       serial(async () => {
         try {
           const adapter = adapterFor(ref)
@@ -565,7 +567,7 @@ export function createDrafts(deps: {
             throw new Error(claimed.error)
           }
           const { file, known } = claimed
-          const returnTo = known?.returnTo ?? registry.lastReturnTo
+          const returnTo = known?.returnTo ?? inheritedReturnTo ?? registry.lastReturnTo
           const onDisk = await readOrNull(join(folder, file))
           if (onDisk === null || sha256(onDisk) === sha256(sent)) {
             await writeDraft(registry, ref, file, text, base, returnTo)

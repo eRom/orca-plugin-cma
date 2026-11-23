@@ -303,7 +303,11 @@ export const CHANGES_RENDER_CAP = 200
 export type PreparedWrite = { token: string; changes: FieldChange[]; totalChanges: number; creates: boolean }
 
 /** Le résultat d'une écriture confirmée, en une étiquette lisible. */
-export type Committed = { label: string }
+export type Committed = {
+  label: string
+  /** L'id de l'objet écrit, quand l'appelant en a besoin (un agent créé depuis son YAML). */
+  id?: string
+}
 
 /** Une ressource à archiver ou supprimer ; credentials et mémoires portent l'id de leur parent. */
 export type ResourceRef =

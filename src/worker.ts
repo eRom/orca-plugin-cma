@@ -1,6 +1,7 @@
 // Worker du plugin : le seul côté qui a le réseau. Il détient la clé API et répond au panneau.
 import type { OrcaWorkerApi } from 'orca/worker'
 import type { ApiResult, ResourceRef, SessionRow, ThreadRow, WorkspaceInfo } from './protocol'
+import { createAgentAdapter } from './worker/agent-drafts'
 import { SECRET_NAME, attempt, createClientStore, describeError, failure, setKey, workspaceInfo } from './worker/client'
 import { createWriteHandlers } from './worker/config-writes'
 import { createConfigHandlers } from './worker/configs'
@@ -182,13 +183,15 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   const pendingWrites = createPendingWrites(() => Date.now())
   orca.panels.handle('write.commit', ({ token, force }) => pendingWrites.commit(token, force))
 
-  // Les brouillons : un fichier par agent ou mémoire, édité dans l'éditeur d'Orca. L'adaptateur des
-  // agents arrive avec sa tâche ; sans lui, leurs requêtes répondent « Not available yet ». Les
-  // adaptateurs reçoivent `drafts` par une fonction : ils servent à le construire.
+  // Les brouillons : un fichier par agent ou mémoire, édité dans l'éditeur d'Orca. Les adaptateurs
+  // reçoivent `drafts` par une fonction : ils servent à le construire.
   const drafts: Drafts = createDrafts({
     folder: DRAFTS_FOLDER,
     host: createEditorHost(orca.host),
-    adapters: { memory: createMemoryAdapter(store, () => drafts, (message) => orca.log(message)) },
+    adapters: {
+      agent: createAgentAdapter(store, () => drafts, (message) => orca.log(message)),
+      memory: createMemoryAdapter(store, () => drafts, (message) => orca.log(message))
+    },
     pending: pendingWrites,
     now: () => new Date(),
     log: (message) => orca.log(message)
