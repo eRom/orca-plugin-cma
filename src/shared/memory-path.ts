@@ -41,3 +41,16 @@ export function isSafeMemoryPath(path: string): boolean {
   }
   return segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..' && byteLength(segment) <= SEGMENT_MAX_BYTES)
 }
+
+/**
+ * Deux chemins se recouvrent quand ils sont égaux ou que l'un est l'ancêtre de l'autre (`/notes` et
+ * `/notes/todo.md`) : l'API refuse alors le second (409 `memory_path_conflict_error`). Insensible à la casse.
+ */
+export function overlaps(first: string, second: string): boolean {
+  const p = first.toLowerCase()
+  const q = second.toLowerCase()
+  return p === q || p.startsWith(`${q}/`) || q.startsWith(`${p}/`)
+}
+
+/** Le refus d'un chemin déjà pris dans la banque ou dans une autre ligne : le même texte des deux côtés. */
+export const MEMORY_PATH_TAKEN = 'A memory already has this path.'

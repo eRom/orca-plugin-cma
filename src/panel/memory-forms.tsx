@@ -16,17 +16,26 @@ import { INVALID_MEMORY_PATH, isSafeMemoryPath } from '../shared/memory-path'
 import { clipBytes } from '../shared/text'
 import { archiveQuestion, askConfirmation, ConfirmPanel, deleteQuestion } from './confirm'
 import { configDetail, loadConfigs, loadDetail, loadMemory, memoryDraft, openConfig, openMemory, RENDER_ROW_CAP } from './config-state'
-import { DraftControls, DraftNotice, draftIsBusy, draftIsUnapplied, startDraft } from './drafts'
+import { DraftControls, DraftNotice, draftFile, draftIsBusy, draftIsUnapplied, startDraft } from './drafts'
 import { clearForm, editForm, formConflict, formKey, isTouched, readForm, touchField } from './form-state'
-import { addReplaceRow, dropStoreUploads, UploadsSection } from './memory-uploads'
+import { addReplaceRow, dropReplaceRows, dropStoreUploads, UploadsSection } from './memory-uploads'
 import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, nav, popIfTop, popView, run } from './state'
 
 /** Titre de l'avis d'un conflit : le même texte que celui du worker. */
 const CONFLICT_TITLE = 'Changed elsewhere since you opened it.'
 /** Plafond d'un nom ou d'un chemin repris dans un libellé : un libellé de plus de 1 Kio fait refuser le rendu. */
 const TITLE_LIMIT_BYTES = 200
-/** Ajouté à la question d'une suppression quand un brouillon non appliqué existe : le worker le garde, comme une nouvelle mémoire. */
-const KEPT_DRAFT_NOTE = ' Your unapplied draft stays as a new memory at this path.'
+/** Plafond du chemin du fichier de brouillon repris dans la question d'une suppression. */
+const DRAFT_FILE_LIMIT_BYTES = 200
+
+/**
+ * Ajouté à la question d'une suppression quand un brouillon non appliqué existe : son fichier reste dans le dossier de
+ * brouillons (le worker le garde), et la personne peut le renvoyer par « To upload ». Sans fichier connu, rien n'est promis.
+ */
+function keptDraftNote(file: string | null): string {
+  if (file === null) return ''
+  return ` Your unapplied draft stays in the drafts folder at ${clipBytes(file, DRAFT_FILE_LIMIT_BYTES).text}; you can upload it again from To upload.`
+}
 /** Largeur minimale d'un champ qui partage sa ligne avec un bouton : en dessous, le bouton passe dessous. */
 const FIELD_MIN_WIDTH = 140
 
@@ -180,6 +189,7 @@ async function deleteMemory(memory: MemoryContent): Promise<void> {
   const result = await plugin.request('resource.delete', { kind: 'memory', memoryStoreId: memory.memoryStoreId, id: memory.id })
   if (!result.ok) throw new Error(result.error)
   setRenamePath(memory.id, null)
+  dropReplaceRows(memory.memoryStoreId, memory.id)
   popIfTop((entry) => entry.view === 'memory' && entry.memoryId === memory.id)
   await loadConfigs('memory_store')
   // Sans condition : si Back a été pressé pendant la suppression, la banque est déjà au sommet avec un détail
@@ -427,32 +437,44 @@ function RenameForm({ memory }: { memory: MemoryContent }) {
 }
 
 /**
- * Les actions d'une mémoire ouverte, en une seule rangée : éditeur (✎, cycle de brouillon), remplacement par un fichier,
- * renommage (son champ s'ouvre dessous) et suppression (sa question s'ouvre dessous).
+ * Les gestes d'une mémoire ouverte, au-dessus de son contenu : l'éditeur (cycle de brouillon) en bouton plein, action
+ * principale, puis le remplacement par un fichier et le renommage (son champ s'ouvre dessous) en contour.
  */
 export function MemoryActions({ memory }: { memory: MemoryContent }): OrcaNode {
   const draftRef = memoryDraft(memory.memoryStoreId, memory.id, memory.path)
   const reread = (): void => run(() => afterMemoryWrite(memory.memoryStoreId, memory.id))
-  const deleteKey = `memory:${memory.id}:delete`
   return (
     <Stack gap="sm">
       <ActionRow
         actions={[
-          { key: 'edit', icon: 'edit', label: 'Edit in editor', disabled: draftIsBusy(draftRef), onPress: () => startDraft(draftRef) },
+          { key: 'edit', icon: 'edit', label: 'Edit in editor', variant: 'solid', disabled: draftIsBusy(draftRef), onPress: () => startDraft(draftRef) },
           { key: 'replace', label: 'Replace…', onPress: () => replaceMemory(memory) },
           {
             key: 'rename',
             label: 'Rename',
             onPress: () => set(renameOpen, read(renameOpen) === memory.id ? null : memory.id)
-          },
-          { key: 'delete', label: 'Delete', tone: 'danger', onPress: () => askConfirmation(deleteKey) }
+          }
         ]}
       />
       <DraftControls draftRef={draftRef} label="Edit in editor" showOpen={false} onApplied={reread} onDiscarded={reread} />
       {read(renameOpen) === memory.id ? <RenameForm memory={memory} /> : null}
+    </Stack>
+  )
+}
+
+/**
+ * Supprimer la mémoire : en bas du détail, une rangée à part avec sa confirmation, comme Archive et Delete d'une banque
+ * (jamais à côté des gestes d'édition).
+ */
+export function MemoryDeleteAction({ memory }: { memory: MemoryContent }): OrcaNode {
+  const draftRef = memoryDraft(memory.memoryStoreId, memory.id, memory.path)
+  const deleteKey = `memory:${memory.id}:delete`
+  return (
+    <Stack gap="sm">
+      <ActionRow actions={[{ key: 'delete', label: 'Delete', tone: 'danger', onPress: () => askConfirmation(deleteKey) }]} />
       <ConfirmPanel
         actionKey={deleteKey}
-        question={`${deleteQuestion(memory.path)}${draftIsUnapplied(draftRef) ? KEPT_DRAFT_NOTE : ''}`}
+        question={`${deleteQuestion(memory.path)}${draftIsUnapplied(draftRef) ? keptDraftNote(draftFile(draftRef)) : ''}`}
         confirmLabel="Delete"
         onConfirm={() => deleteMemory(memory)}
       />

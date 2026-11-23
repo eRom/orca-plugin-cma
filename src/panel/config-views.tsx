@@ -27,7 +27,7 @@ import { BackHeader } from '../blocks/back-header'
 import { ErrorRetry } from '../blocks/error-retry'
 import { LoadingState } from '../blocks/loading-state'
 import { EnvironmentFormView } from './environment-form'
-import { MemoryActions, MemoryStoreFormView, refreshStore } from './memory-forms'
+import { MemoryActions, MemoryDeleteAction, MemoryStoreFormView, refreshStore } from './memory-forms'
 import { VaultFormView } from './vault-forms'
 import { configDetail, configDetailError, configRows, loadDetail, loadMemory, memoryContent, memoryError, RENDER_ROW_CAP } from './config-state'
 import { ERROR_TEXT_LIMIT_BYTES, nav, popView, run, workspace } from './state'
@@ -274,6 +274,7 @@ export function MemoryView({ memoryStoreId, memoryId }: { memoryStoreId: string;
             )}
             {loaded.content.truncated ? <Truncated /> : null}
           </Stack>
+          <MemoryDeleteAction memory={loaded} />
         </Stack>
       )}
     </Stack>

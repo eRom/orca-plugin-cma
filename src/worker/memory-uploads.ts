@@ -8,7 +8,7 @@ import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { promisify } from 'node:util'
 import type { ApiResult, Committed, FieldChange, PickedFile, PreparedWrite, UploadItem } from '../protocol'
-import { INVALID_MEMORY_PATH, isSafeMemoryPath } from '../shared/memory-path'
+import { INVALID_MEMORY_PATH, isSafeMemoryPath, MEMORY_PATH_TAKEN, overlaps } from '../shared/memory-path'
 import { attempt, describeError, type ClientStore } from './client'
 import { abbreviate, summarizeLines } from './diff'
 import type { PendingWrites } from './pending-writes'
@@ -17,7 +17,6 @@ const PICK_PROMPT = 'Choose a file to upload as a memory'
 const NOT_MACOS_MESSAGE = 'File picking works on macOS only.'
 const PICK_FAILED_MESSAGE = 'Could not open the file picker.'
 const NOT_TEXT_MESSAGE = 'This file is not text: memories hold UTF-8 text.'
-const TAKEN_PATH_MESSAGE = 'A memory already has this path.'
 
 export type FilePickerDeps = {
   platform: string
@@ -63,6 +62,9 @@ export function createFilePicker(deps: FilePickerDeps): () => Promise<ApiResult<
   }
 }
 
+/** Un refus qui nomme la ligne fautive par le chemin de sa mémoire : `/notes/a.md: <message>`. */
+const named = (path: string, message: string): string => `${path}: ${message}`
+
 /** Une ligne dont le fichier est lu et reconnu comme du texte UTF-8. */
 type Line = { path: string; memoryId: string | null; content: string }
 
@@ -71,21 +73,24 @@ const invalid = (error: string): { ok: false; code: 'invalid'; error: string } =
 // `ignoreBOM: true` garde un éventuel BOM dans le texte : le contenu envoyé égale le fichier octet pour octet.
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
-/** Le texte d'un fichier, ou le message du refus (jamais le chemin absolu : le nom de base seul). */
-async function readText(file: string): Promise<{ ok: true; content: string } | { ok: false; error: string }> {
+/**
+ * Le texte d'un fichier, ou le message du refus (jamais le chemin absolu : le nom de base seul). `notText` : le refus
+ * ne nomme aucune ligne, l'appelant lui préfixe le chemin de la mémoire.
+ */
+async function readText(file: string): Promise<{ ok: true; content: string } | { ok: false; error: string; notText: boolean }> {
   let bytes: Buffer
   try {
     bytes = await readFile(file)
   } catch {
-    return { ok: false, error: `Could not read ${basename(file)}.` }
+    return { ok: false, error: `Could not read ${basename(file)}.`, notText: false }
   }
   if (bytes.includes(0)) {
-    return { ok: false, error: NOT_TEXT_MESSAGE }
+    return { ok: false, error: NOT_TEXT_MESSAGE, notText: true }
   }
   try {
     return { ok: true, content: utf8.decode(bytes) }
   } catch {
-    return { ok: false, error: NOT_TEXT_MESSAGE }
+    return { ok: false, error: NOT_TEXT_MESSAGE, notText: true }
   }
 }
 
@@ -96,16 +101,6 @@ async function collect<T>(items: AsyncIterable<T>): Promise<T[]> {
 }
 
 const isMemory = (item: BetaManagedAgentsMemoryListItem): item is BetaManagedAgentsMemory => item.type === 'memory'
-
-/**
- * Deux chemins se recouvrent quand ils sont égaux ou que l'un est l'ancêtre de l'autre (`/notes` et
- * `/notes/todo.md`) : l'API refuse alors le second (409 `memory_path_conflict_error`). Insensible à la casse.
- */
-function overlaps(first: string, second: string): boolean {
-  const p = first.toLowerCase()
-  const q = second.toLowerCase()
-  return p === q || p.startsWith(`${q}/`) || q.startsWith(`${p}/`)
-}
 
 const memoriesCount = (count: number): string => (count === 1 ? 'Uploaded 1 memory' : `Uploaded ${count} memories`)
 
@@ -131,7 +126,7 @@ export function createMemoryUploads(
         return invalid(INVALID_MEMORY_PATH)
       }
       if (seen.some((earlier) => overlaps(earlier, path))) {
-        return invalid(TAKEN_PATH_MESSAGE)
+        return invalid(named(path, MEMORY_PATH_TAKEN))
       }
       seen.push(path)
     }
@@ -139,7 +134,7 @@ export function createMemoryUploads(
     for (const { path, file, memoryId } of items) {
       const text = await readText(file)
       if (!text.ok) {
-        return invalid(text.error)
+        return invalid(text.notText ? named(path, text.error) : text.error)
       }
       lines.push({ path, memoryId, content: text.content })
     }
@@ -149,7 +144,7 @@ export function createMemoryUploads(
       for (const line of lines) {
         const taken = listed.some((memory) => memory.id !== line.memoryId && overlaps(memory.path, line.path))
         if (taken) {
-          return { refused: TAKEN_PATH_MESSAGE }
+          return { refused: named(line.path, MEMORY_PATH_TAKEN) }
         }
       }
       const sends: Send[] = []

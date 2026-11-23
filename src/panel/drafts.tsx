@@ -412,6 +412,11 @@ export function draftIsUnapplied(ref: DraftRef): boolean {
   return read(draftInfos)[draftKey(ref)]?.unapplied === true
 }
 
+/** Le fichier du brouillon, relatif au dossier de brouillons, tel que le worker le dit ; null tant qu'il n'en sait pas. */
+export function draftFile(ref: DraftRef): string | null {
+  return read(draftInfos)[draftKey(ref)]?.file ?? null
+}
+
 /** Ouvre le brouillon dans l'éditeur : le geste d'un bouton posé hors de `DraftControls` (une action ✎ d'une ligne). */
 export function startDraft(ref: DraftRef): void {
   run(() => openDraft(ref))

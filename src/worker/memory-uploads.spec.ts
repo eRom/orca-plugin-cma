@@ -227,11 +227,11 @@ test('every refusal answers invalid on the first faulty line and sends nothing',
     { name: 'nothing', items: [], error: 'Nothing to upload.' },
     { name: 'bad path', items: [item('notes.md', good)], error: INVALID_MEMORY_PATH },
     { name: 'bad path after a good one', items: [item('/a.md', good), item('/a//b', good)], error: INVALID_MEMORY_PATH },
-    { name: 'duplicate by case', items: [item('/Notes.md', good), item('/notes.md', good)], error: 'A memory already has this path.' },
+    { name: 'duplicate by case', items: [item('/Notes.md', good), item('/notes.md', good)], error: '/notes.md: A memory already has this path.' },
     { name: 'missing file', items: [item('/m.md', missing)], error: 'Could not read gone.md.' },
     { name: 'directory', items: [item('/d.md', dir)], error: `Could not read ${dir.split('/').pop()}.` },
-    { name: 'NUL byte', items: [item('/n.md', withNul)], error: textOnly },
-    { name: 'not UTF-8', items: [item('/l.md', notUtf8)], error: textOnly }
+    { name: 'NUL byte', items: [item('/n.md', withNul)], error: `/n.md: ${textOnly}` },
+    { name: 'not UTF-8', items: [item('/l.md', notUtf8)], error: `/l.md: ${textOnly}` }
   ]
   for (const refusal of refusals) {
     const result = await stageUploads({ memoryStoreId: 'memstore_1', items: refusal.items })
@@ -248,12 +248,12 @@ test('a path taken in the store by another memory is refused, case insensitively
   expect(await stageUploads({ memoryStoreId: 'memstore_1', items: [item('/notes/a.md', path)] })).toEqual({
     ok: false,
     code: 'invalid',
-    error: 'A memory already has this path.'
+    error: '/notes/a.md: A memory already has this path.'
   })
   expect(await stageUploads({ memoryStoreId: 'memstore_1', items: [item('/Notes/A.md', path)] })).toEqual({
     ok: false,
     code: 'invalid',
-    error: 'A memory already has this path.'
+    error: '/Notes/A.md: A memory already has this path.'
   })
   // Un remplacement d'une AUTRE mémoire sur ce chemin est refusé aussi.
   expect((await stageUploads({ memoryStoreId: 'memstore_1', items: [item('/notes/a.md', path, 'mem_other')] })).ok).toBe(false)
@@ -355,17 +355,18 @@ test('overlapping paths are refused before any request, between rows and against
   const { stageUploads, file, api, only } = setup()
   const path = file('x.md', 'x\n')
   const taken = 'A memory already has this path.'
-  const cases: { name: string; items: UploadItem[] }[] = [
-    { name: 'row ancestor then descendant', items: [item('/docs', path), item('/docs/todo.md', path)] },
-    { name: 'row descendant then ancestor', items: [item('/docs/todo.md', path), item('/docs', path)] },
-    { name: 'row case-insensitive overlap', items: [item('/Docs', path), item('/docs/todo.md', path)] },
-    { name: 'row ancestor of a store memory', items: [item('/notes', path)] },
-    { name: 'row descendant of a store memory', items: [item('/notes/a.md/deeper.md', path)] },
-    { name: 'store overlap, case-insensitive', items: [item('/NOTES', path)] }
+  // `faulty` : la ligne que le refus nomme (la première en défaut, dans l'ordre).
+  const cases: { name: string; items: UploadItem[]; faulty: string }[] = [
+    { name: 'row ancestor then descendant', items: [item('/docs', path), item('/docs/todo.md', path)], faulty: '/docs/todo.md' },
+    { name: 'row descendant then ancestor', items: [item('/docs/todo.md', path), item('/docs', path)], faulty: '/docs' },
+    { name: 'row case-insensitive overlap', items: [item('/Docs', path), item('/docs/todo.md', path)], faulty: '/docs/todo.md' },
+    { name: 'row ancestor of a store memory', items: [item('/notes', path)], faulty: '/notes' },
+    { name: 'row descendant of a store memory', items: [item('/notes/a.md/deeper.md', path)], faulty: '/notes/a.md/deeper.md' },
+    { name: 'store overlap, case-insensitive', items: [item('/NOTES', path)], faulty: '/NOTES' }
   ]
   for (const entry of cases) {
     const result = await stageUploads({ memoryStoreId: 'memstore_1', items: entry.items })
-    expect({ name: entry.name, result }).toEqual({ name: entry.name, result: { ok: false, code: 'invalid', error: taken } })
+    expect({ name: entry.name, result }).toEqual({ name: entry.name, result: { ok: false, code: 'invalid', error: `${entry.faulty}: ${taken}` } })
   }
   // Aucune écriture ; seule la relecture de la banque a eu lieu (les cas en ligne n'envoient rien).
   expect(only('memories.create')).toEqual([])

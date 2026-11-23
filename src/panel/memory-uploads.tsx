@@ -8,7 +8,7 @@ import { EmptyView } from '../blocks/empty-view'
 import { GroupCard } from '../blocks/group-card'
 import { LoadingState } from '../blocks/loading-state'
 import type { MemoryRow, MemoryStoreDetail, PreparedWrite } from '../protocol'
-import { INVALID_MEMORY_PATH, isSafeMemoryPath } from '../shared/memory-path'
+import { INVALID_MEMORY_PATH, isSafeMemoryPath, MEMORY_PATH_TAKEN, overlaps } from '../shared/memory-path'
 import { clipBytes } from '../shared/text'
 import { ChangesPreview } from './changes'
 import { configDetail, loadConfigs, loadDetail } from './config-state'
@@ -16,8 +16,6 @@ import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, run } from './state'
 
 /** Titre de l'avis d'un conflit : le même texte que celui du worker. */
 const CONFLICT_TITLE = 'Changed elsewhere since you opened it.'
-/** Le même texte que le worker : un chemin déjà pris dans la banque ou dans une autre ligne. */
-const PATH_TAKEN = 'A memory already has this path.'
 /**
  * La boîte de dialogue du système attend la personne : bien plus que les 30 s par défaut d'une requête. Orca refuse
  * une attente de plus de 120 000 ms (`Too big: expected number to be <=120000`), c'est donc le plafond.
@@ -41,7 +39,7 @@ const CHOOSE_TOOLTIP = 'Choose a file to upload'
 const KEPT_TAIL = 7
 
 /** Coupe un nom trop long par le milieu en gardant sa fin : `long-long-…name.md`. */
-export function middleClip(name: string, limit: number): string {
+function middleClip(name: string, limit: number): string {
   const chars = Array.from(name)
   if (chars.length <= limit) return name
   const head = limit - KEPT_TAIL - 1
@@ -53,13 +51,13 @@ export function middleClip(name: string, limit: number): string {
 // --- Lignes en attente ---
 
 /** Une ligne en attente : `file` et `name` valent '' tant qu'aucun fichier n'est choisi ; `memoryId` non nul : remplace cette mémoire. */
-export type UploadRow = { id: string; path: string; file: string; name: string; memoryId: string | null }
+type UploadRow = { id: string; path: string; file: string; name: string; memoryId: string | null }
 
 /**
  * Les lignes en attente, par identifiant de banque. Persisté : elles survivent à un redémarrage. Des chemins
  * seulement (le chemin de la mémoire, le chemin du fichier local, son nom), jamais le contenu d'un fichier.
  */
-export const uploadRows = atom<Record<string, UploadRow[]>>('memory.uploads', {}, { persist: 'plugin' })
+const uploadRows = atom<Record<string, UploadRow[]>>('memory.uploads', {}, { persist: 'plugin' })
 
 let rowSeq = 0
 
@@ -87,7 +85,7 @@ function patchRow(storeId: string, rowId: string, changes: Partial<Omit<UploadRo
 }
 
 /** Ajoute une ligne vide à la banque. */
-export function addUploadRow(storeId: string): void {
+function addUploadRow(storeId: string): void {
   clearNotice(storeId)
   setRows(storeId, (rows) => [...rows, { id: newRowId(), path: '', file: '', name: '', memoryId: null }])
 }
@@ -106,6 +104,13 @@ export function dropStoreUploads(storeId: string): void {
   update(uploadFlows, ({ [storeId]: _dropped, ...rest }) => rest)
 }
 
+/** Une mémoire est supprimée : sa ligne « Replace » en attente ne mène plus nulle part. */
+export function dropReplaceRows(storeId: string, memoryId: string): void {
+  for (const row of read(uploadRows)[storeId] ?? []) {
+    if (row.memoryId === memoryId) removeRow(storeId, row.id)
+  }
+}
+
 function removeRow(storeId: string, rowId: string): void {
   clearNotice(storeId)
   setRows(storeId, (rows) => rows.filter((row) => row.id !== rowId))
@@ -113,23 +118,22 @@ function removeRow(storeId: string, rowId: string): void {
 }
 
 /**
- * Le message de chaque ligne en défaut : chemin invalide, ou déjà pris dans la banque (autre mémoire que celle
- * remplacée) ou dans une ligne plus haut, sans tenir compte de la casse. Les textes sont ceux du worker.
+ * Le message de chaque ligne en défaut : chemin invalide, ou recouvrant celui d'une mémoire de la banque (autre que
+ * celle remplacée) ou d'une ligne plus haut. Même règle (`overlaps`) et mêmes textes que le worker.
  */
-export function rowMessages(rows: readonly UploadRow[], memories: readonly MemoryRow[]): Record<string, string> {
+function rowMessages(rows: readonly UploadRow[], memories: readonly MemoryRow[]): Record<string, string> {
   const messages: Record<string, string> = {}
-  const seen = new Set<string>()
+  const seen: string[] = []
   for (const row of rows) {
     if (row.path === '') continue
     if (!isSafeMemoryPath(row.path)) {
       messages[row.id] = INVALID_MEMORY_PATH
       continue
     }
-    const lowered = row.path.toLowerCase()
-    if (seen.has(lowered) || memories.some((memory) => memory.path.toLowerCase() === lowered && memory.id !== row.memoryId)) {
-      messages[row.id] = PATH_TAKEN
+    if (seen.some((earlier) => overlaps(earlier, row.path)) || memories.some((memory) => memory.id !== row.memoryId && overlaps(memory.path, row.path))) {
+      messages[row.id] = MEMORY_PATH_TAKEN
     }
-    seen.add(lowered)
+    seen.push(row.path)
   }
   return messages
 }
@@ -150,7 +154,8 @@ type Notice = { tone: 'warning' | 'danger'; title: string; message: string }
 type Flow =
   | { step: 'preparing' }
   | { step: 'review'; prepared: PreparedWrite; rowIds: string[]; busy: boolean; error: string | null }
-  | { step: 'conflict'; prepared: PreparedWrite; rowIds: string[]; busy: boolean }
+  /** `progress` : « Uploaded 1 of 2. » quand l'envoi s'est arrêté après des lignes déjà passées, sinon null. */
+  | { step: 'conflict'; prepared: PreparedWrite; rowIds: string[]; busy: boolean; progress: string | null }
   | { step: 'applied'; label: string }
   | { step: 'notice'; notice: Notice }
 
@@ -249,7 +254,12 @@ async function applyUploads(storeId: string, rows: readonly UploadRow[]): Promis
 }
 
 /** « Uploaded 1 of 2. … » : l'envoi s'est arrêté en route, les premières lignes sont déjà dans la banque. */
-const isPartial = (message: string): boolean => /^Uploaded \d+ of \d+\./.test(message)
+const PROGRESS = /^Uploaded \d+ of \d+\./
+
+const isPartial = (message: string): boolean => PROGRESS.test(message)
+
+/** Le début « Uploaded 1 of 2. » d'un message d'envoi interrompu, ou null. */
+const progressOf = (message: string): string | null => PROGRESS.exec(message)?.[0] ?? null
 
 /** Envoie l'écriture en attente. Un conflit rouvre le choix ; un jeton perdu ou un envoi à moitié passé relit la banque ; tout autre échec garde le jeton. */
 async function commitUploads(storeId: string, force: boolean): Promise<void> {
@@ -273,7 +283,7 @@ async function commitUploads(storeId: string, force: boolean): Promise<void> {
   }
   switch (result.code) {
     case 'conflict':
-      setFlow(storeId, { step: 'conflict', prepared, rowIds, busy: false })
+      setFlow(storeId, { step: 'conflict', prepared, rowIds, busy: false, progress: progressOf(result.error) })
       return
     case 'unauthorized':
     case 'nothing_to_apply':
@@ -290,12 +300,23 @@ async function commitUploads(storeId: string, force: boolean): Promise<void> {
   }
 }
 
-/** « Reload » d'un conflit : relit la banque et garde les lignes ; l'écriture en attente est abandonnée. */
+/**
+ * « Reload » d'un conflit : relit la banque, retire les lignes créées avant l'arrêt (elles sont déjà en ligne) et garde
+ * les autres ; l'écriture en attente est abandonnée. Un envoi à moitié passé laisse un avis qui dit où il s'est arrêté.
+ */
 async function reloadAfterConflict(storeId: string): Promise<void> {
   const flow = read(uploadFlows)[storeId]
   if (flow?.step !== 'conflict' || flow.busy) return
-  setFlow(storeId, null)
-  await reloadStore(storeId)
+  setFlow(
+    storeId,
+    flow.progress === null
+      ? null
+      : {
+          step: 'notice',
+          notice: { tone: 'warning', title: 'Partly uploaded', message: `${flow.progress} The memory store changed elsewhere: your other rows are kept.` }
+        }
+  )
+  await reloadAndDropCreated(storeId)
 }
 
 // --- Rendu ---
@@ -377,6 +398,7 @@ function FlowView({ storeId, flow }: { storeId: string; flow: Flow }) {
       return (
         <Callout tone="warning" title={CONFLICT_TITLE}>
           <Stack gap="sm">
+            {flow.progress === null ? null : <Text size="sm">{flow.progress}</Text>}
             <Text size="sm">Reload rereads the memory store and keeps your rows. Apply anyway overwrites what changed.</Text>
             <Row gap="sm" wrap>
               <Button variant="outline" size="sm" disabled={flow.busy} onPress={() => run(() => reloadAfterConflict(storeId))}>
@@ -417,7 +439,8 @@ export function UploadsSection({ store }: { store: MemoryStoreDetail }) {
   const locked = isLocked(flow)
   const messages = rowMessages(rows, store.memories)
   const ready = rows.filter((row) => isComplete(row, messages)).length
-  const blocked = rows.length === 0 || ready !== rows.length
+  // Tant qu'une boîte de choix de fichier est ouverte, la ligne qu'elle remplit n'est pas à jour : Apply attend.
+  const blocked = rows.length === 0 || ready !== rows.length || read(pickingRow) !== null
   // Pendant un récapitulatif ou un conflit, `Apply` laisse la place à leurs boutons.
   const showApply = rows.length > 0 && !locked
   return (
