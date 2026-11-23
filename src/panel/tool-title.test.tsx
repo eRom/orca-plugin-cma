@@ -42,7 +42,7 @@ const longTool: ThreadRow = {
 test('clips an oversized tool title in the thread', async () => {
   const host = mockHost({
     requests: {
-      'workspace.info': { hasKey: true, keyRejected: false, workspaceId: 'wrkspc_x', organizationName: 'Org', workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] },
+      'workspace.info': { hasKey: true, keyRejected: false, workspaceId: 'wrkspc_x', workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] },
       'sessions.visibility': { bootId: 'boot-1', watching: 's1' },
       'configs.list': { ok: true, value: [] },
       'sessions.list': { ok: true, value: [row] },

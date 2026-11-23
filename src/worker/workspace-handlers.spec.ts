@@ -7,7 +7,7 @@ const KEY_A = 'plugin-test-token-QUOKKA-a'
 const KEY_B = 'plugin-test-token-QUOKKA-b'
 const KEY_C = 'plugin-test-token-QUOKKA-c'
 
-const INFO: WorkspaceInfo = { hasKey: true, keyRejected: false, workspaceId: 'wrkspc_a', organizationName: null, workspaces: [] }
+const INFO: WorkspaceInfo = { hasKey: true, keyRejected: false, workspaceId: 'wrkspc_a', workspaces: [] }
 
 function setup(info: () => Promise<WorkspaceInfo> = async () => INFO) {
   const logs: string[] = []
@@ -185,7 +185,6 @@ test('activate still succeeds with a degraded info when reading the info fails',
       hasKey: true,
       keyRejected: false,
       workspaceId: 'wrkspc_b',
-      organizationName: null,
       workspaces: [
         { localId: 'ws_1', name: 'First', workspaceId: 'wrkspc_a', active: false },
         { localId: 'ws_2', name: 'Second', workspaceId: 'wrkspc_b', active: true }
@@ -238,7 +237,6 @@ test('workspace.info never throws: a network error answers from the index with t
     hasKey: true,
     keyRejected: false,
     workspaceId: 'wrkspc_b',
-    organizationName: null,
     workspaces: [
       { localId: 'ws_1', name: 'First', workspaceId: 'wrkspc_a', active: false },
       { localId: 'ws_2', name: 'Second', workspaceId: 'wrkspc_b', active: true }

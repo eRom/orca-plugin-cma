@@ -24,7 +24,6 @@ const WITH_KEY = {
   hasKey: true,
   keyRejected: false,
   workspaceId: 'wrkspc_check',
-  organizationName: 'Check Org',
   workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }]
 }
 
@@ -33,7 +32,6 @@ const WORKSPACES_INFO = {
   hasKey: true,
   keyRejected: false,
   workspaceId: 'wrkspc_0198iz9hody2oYuZvJ1SMcHz',
-  organizationName: 'Check Org',
   workspaces: [
     { localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_0198iz9hody2oYuZvJ1SMcHz', active: true },
     { localId: 'ws_2', name: 'Orca-claude', workspaceId: 'wrkspc_013Mp1kNaYDSgw93rzjxpQkF', active: false }
@@ -95,7 +93,7 @@ const AGENT_READS = {
 
 export default defineCheck({
   'no key': {
-    requests: { 'workspace.info': { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null, workspaces: [] } }
+    requests: { 'workspace.info': { hasKey: false, keyRejected: false, workspaceId: null, workspaces: [] } }
   },
   'key saved': {
     requests: {
@@ -129,7 +127,7 @@ export default defineCheck({
     }
   },
   'rejected key': {
-    requests: { 'workspace.info': { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null, workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] } }
+    requests: { 'workspace.info': { hasKey: true, keyRejected: true, workspaceId: null, workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] } }
   },
   // La section des workspaces : deux lignes, le badge Active sur la première, ✓ et ✎ sur la seconde.
   workspaces: workspacesScenario(),

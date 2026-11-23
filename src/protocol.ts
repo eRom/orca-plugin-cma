@@ -48,7 +48,6 @@ export type WorkspaceInfo = {
   /** Vrai quand l'API a refusé la clé enregistrée (401) : le panneau remontre le formulaire. */
   keyRejected: boolean
   workspaceId: string | null
-  organizationName: string | null
   workspaces: WorkspaceRow[]
 }
 

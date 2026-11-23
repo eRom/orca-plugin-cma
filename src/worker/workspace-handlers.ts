@@ -54,7 +54,6 @@ export function createWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         hasKey: (await workspaces.activeKey()) !== null,
         keyRejected: false,
         workspaceId: active?.workspaceId ?? null,
-        organizationName: null,
         workspaces: index.entries.map((entry) => ({ ...entry, active: entry.localId === index.activeLocalId }))
       }
     }

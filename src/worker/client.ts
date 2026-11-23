@@ -181,7 +181,7 @@ export async function workspaceInfo(store: ClientStore, workspaces: Workspaces):
       return { ...entry, workspaceId: active ? (entry.workspaceId ?? learned) : entry.workspaceId, active }
     })
   if (!(await store.hasKey())) {
-    return { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null, workspaces: rows() }
+    return { hasKey: false, keyRejected: false, workspaceId: null, workspaces: rows() }
   }
   try {
     const client = await store.get()
@@ -192,10 +192,10 @@ export async function workspaceInfo(store: ClientStore, workspaces: Workspaces):
       await workspaces.noteWorkspaceId(active.localId, workspaceId)
       learned = workspaceId
     }
-    return { hasKey: true, keyRejected: false, workspaceId, organizationName: null, workspaces: rows() }
+    return { hasKey: true, keyRejected: false, workspaceId, workspaces: rows() }
   } catch (error) {
     if (error instanceof Anthropic.AuthenticationError) {
-      return { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null, workspaces: rows() }
+      return { hasKey: true, keyRejected: true, workspaceId: null, workspaces: rows() }
     }
     throw error
   }

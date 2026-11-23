@@ -6,13 +6,12 @@ const WITH_KEY = {
   hasKey: true,
   keyRejected: false,
   workspaceId: 'wrkspc_x',
-  organizationName: "Romain's Individual Org",
   workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }]
 }
 
 test('shows the key form without a key', async () => {
   const host = mockHost({
-    requests: { 'workspace.info': { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null, workspaces: [] } }
+    requests: { 'workspace.info': { hasKey: false, keyRejected: false, workspaceId: null, workspaces: [] } }
   })
   const view = await mount(panel, { host })
   assert.ok(view.find({ label: 'API key' }))
@@ -36,7 +35,7 @@ test('shows the workspace list with a key, always open', async () => {
 test('marks the active workspace Key rejected and opens New API key when the key is rejected', async () => {
   const host = mockHost({
     requests: {
-      'workspace.info': { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null, workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] }
+      'workspace.info': { hasKey: true, keyRejected: true, workspaceId: null, workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] }
     }
   })
   const view = await mount(panel, { host })
@@ -48,7 +47,7 @@ test('marks the active workspace Key rejected and opens New API key when the key
 test('keeps the key draft when workspaces.add fails', async () => {
   const host = mockHost({
     requests: {
-      'workspace.info': { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null, workspaces: [] },
+      'workspace.info': { hasKey: false, keyRejected: false, workspaceId: null, workspaces: [] },
       'workspaces.add': { ok: false, code: 'unauthorized', error: 'The API key was rejected (401).' }
     }
   })
@@ -156,7 +155,7 @@ test('re-reads the workspace when the worker reports an empty list after a rejec
         infoCalls += 1
         return infoCalls === 1
           ? WITH_KEY
-          : { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null, workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] }
+          : { hasKey: true, keyRejected: true, workspaceId: null, workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] }
       },
       'sessions.visibility': { bootId: 'boot-1', watching: null }, 'configs.list': { ok: true, value: [] },
       'sessions.list': { ok: true, value: [sessionRow({ title: 'Soon gone' })] }
@@ -285,7 +284,6 @@ const TWO_WORKSPACES = (activeLocalId: string) => ({
   hasKey: true,
   keyRejected: false,
   workspaceId: activeLocalId === 'ws_1' ? 'wrkspc_x' : 'wrkspc_y',
-  organizationName: null,
   workspaces: [
     { localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: activeLocalId === 'ws_1' },
     { localId: 'ws_2', name: 'Other', workspaceId: 'wrkspc_y', active: activeLocalId === 'ws_2' }

@@ -131,7 +131,6 @@ test('workspaceInfo without key lists the workspaces and does no network call', 
     hasKey: false,
     keyRejected: false,
     workspaceId: null,
-    organizationName: null,
     workspaces: []
   })
 })
@@ -143,7 +142,6 @@ test('workspaceInfo reports hasKey false when the key of the active entry is mis
     hasKey: false,
     keyRejected: false,
     workspaceId: null,
-    organizationName: null,
     workspaces: [DEFAULT_ROW]
   })
 })
@@ -158,7 +156,6 @@ test('workspaceInfo marks only the active row', async () => {
     hasKey: true,
     keyRejected: false,
     workspaceId: 'wrkspc_test',
-    organizationName: null,
     workspaces: [DEFAULT_ROW, { ...other, active: false }]
   })
 })
@@ -185,7 +182,6 @@ test('workspaceInfo notes nothing and reports a rejected key on a 401', async ()
     hasKey: true,
     keyRejected: true,
     workspaceId: null,
-    organizationName: null,
     workspaces: [{ ...DEFAULT_ROW, workspaceId: null }]
   })
   expect(noted).toEqual([])
@@ -198,7 +194,6 @@ test('workspaceInfo makes no organization call: one agents list is the only requ
     hasKey: true,
     keyRejected: false,
     workspaceId: 'wrkspc_test',
-    organizationName: null,
     workspaces: [DEFAULT_ROW]
   })
 })

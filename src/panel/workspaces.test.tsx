@@ -13,13 +13,12 @@ function info(activeLocalId: string | null, over: Partial<WorkspaceInfo> = {}): 
     hasKey: active !== undefined,
     keyRejected: false,
     workspaceId: active?.workspaceId ?? null,
-    organizationName: 'Check Org',
     workspaces: rows,
     ...over
   }
 }
 
-const NO_WORKSPACE: WorkspaceInfo = { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null, workspaces: [] }
+const NO_WORKSPACE: WorkspaceInfo = { hasKey: false, keyRejected: false, workspaceId: null, workspaces: [] }
 
 const TYPED_KEY = 'plugin-test-token-QUOKKA-typed'
 
