@@ -28,9 +28,27 @@ const PICK_TIMEOUT_MS = 120_000
  * un nouvel appui la rejoint (il reçoit sa réponse), il n'en ouvre pas une seconde.
  */
 const PICK_STILL_OPEN = 'The file dialog is still open. Press the button again to wait for your choice.'
-/** Plafond du nom de fichier affiché dans le bouton : au-delà, le libellé est coupé (le chemin complet reste en infobulle). */
-const FILE_NAME_LIMIT = 28
+/**
+ * Plafond du nom de fichier affiché dans le bouton : au-delà, le milieu est remplacé par « … » (l'extension reste, le chemin
+ * complet est en infobulle). Réglé sur une capture à 220 px : le bouton y tient avec son icône, sans déborder de la carte.
+ */
+const FILE_NAME_LIMIT = 13
 const CHOOSE_LABEL = 'Choose file…'
+/** Infobulle d'une ligne sans fichier : tout bouton de fichier en a une, la même largeur de bouton à chaque ligne. */
+const CHOOSE_TOOLTIP = 'Choose a file to upload'
+
+/** Fin gardée d'un nom coupé par le milieu : assez pour lire l'extension et un bout du nom (`name.md`). */
+const KEPT_TAIL = 7
+
+/** Coupe un nom trop long par le milieu en gardant sa fin : `long-long-…name.md`. */
+export function middleClip(name: string, limit: number): string {
+  const chars = Array.from(name)
+  if (chars.length <= limit) return name
+  const head = limit - KEPT_TAIL - 1
+  // Pas de place pour une tête lisible avec la fin : on coupe la fin, comme un libellé ordinaire.
+  if (head < 3) return `${chars.slice(0, limit - 1).join('')}…`
+  return `${chars.slice(0, head).join('')}…${chars.slice(-KEPT_TAIL).join('')}`
+}
 
 // --- Lignes en attente ---
 
@@ -288,47 +306,52 @@ function UploadLine({ storeId, row, message, locked }: LineProps) {
   const picking = read(pickingRow)
   const failure = read(pickFailures)[row.id]
   const replaces = row.memoryId !== null
+  // Deux lignes à toute largeur, sans retour à la ligne laissé au hasard : le chemin sur toute la largeur, puis le fichier
+  // (qui prend la place libre) et le × collé à la fin. `paddingY` donne au filet entre deux lignes (GroupCard) de l'air des deux côtés.
   return (
-    <Stack gap="xs">
-      <Row gap="sm" align="center" wrap>
-        <Box key="path" grow minWidth={140}>
-          <Input
-            label="Memory path"
-            labelHidden
-            placeholder="/notes/today.md"
-            value={row.path}
-            invalid={message !== undefined}
-            disabled={locked || replaces}
-            onChange={(value) => patchRow(storeId, row.id, { path: value })}
-          />
-        </Box>
-        <Button
-          key="file"
-          variant="outline"
-          size="sm"
-          icon="file"
-          tooltip={row.file === '' ? undefined : clipLabel(row.file)}
-          disabled={locked || picking !== null}
-          onPress={() => run(() => pickFile(storeId, row.id))}
-        >
-          {row.name === '' ? CHOOSE_LABEL : clipLabel(row.name, FILE_NAME_LIMIT)}
-        </Button>
-        <IconButton key="remove" icon="close" label="Remove" variant="ghost" size="sm" disabled={locked} onPress={() => removeRow(storeId, row.id)} />
-      </Row>
-      {message !== undefined ? (
-        <Text tone="danger" size="xs">
-          {message}
-        </Text>
-      ) : failure !== undefined ? (
-        <Text tone="danger" size="xs">
-          {failure}
-        </Text>
-      ) : replaces ? (
-        <Text muted size="xs">
-          Replaces the content of this memory.
-        </Text>
-      ) : null}
-    </Stack>
+    <Box paddingY="sm">
+      <Stack gap="xs">
+        <Input
+          label="Memory path"
+          labelHidden
+          placeholder="/notes/today.md"
+          value={row.path}
+          invalid={message !== undefined}
+          disabled={locked || replaces}
+          onChange={(value) => patchRow(storeId, row.id, { path: value })}
+        />
+        <Row gap="sm" align="center">
+          <Box key="file" grow minWidth={0}>
+            <Button
+              variant="outline"
+              size="sm"
+              icon="file"
+              tooltip={row.file === '' ? CHOOSE_TOOLTIP : clipLabel(row.file)}
+              disabled={locked || picking !== null}
+              onPress={() => run(() => pickFile(storeId, row.id))}
+            >
+              {row.name === '' ? CHOOSE_LABEL : middleClip(row.name, FILE_NAME_LIMIT)}
+            </Button>
+          </Box>
+          <Box key="remove" shrink={false}>
+            <IconButton icon="close" label="Remove" variant="ghost" size="sm" disabled={locked} onPress={() => removeRow(storeId, row.id)} />
+          </Box>
+        </Row>
+        {message !== undefined ? (
+          <Text tone="danger" size="xs">
+            {message}
+          </Text>
+        ) : failure !== undefined ? (
+          <Text tone="danger" size="xs">
+            {failure}
+          </Text>
+        ) : replaces ? (
+          <Text muted size="xs">
+            Replaces the content of this memory.
+          </Text>
+        ) : null}
+      </Stack>
+    </Box>
   )
 }
 

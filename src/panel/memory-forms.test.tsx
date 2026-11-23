@@ -930,7 +930,8 @@ test('a long file name is cut in the button and kept whole in its tooltip', asyn
   const button = fileButtons(view)[0]
   assert.ok(button)
   assert.ok(button.text.length < name.length)
-  assert.ok(button.text.endsWith('…'))
+  // Coupé par le milieu : le début et l'extension restent lisibles.
+  assert.equal(button.text, 'long-…name.md')
   assert.equal(button.props.tooltip, row.file)
   assert.deepEqual(view.errors, [])
   await view.unmount()
