@@ -170,3 +170,13 @@ test('two staged writes commit independently', async () => {
   expect(await pending.commit(second.token, false)).toEqual({ ok: true, value: { label: 'Second' } })
   expect(await pending.commit(first.token, false)).toEqual({ ok: true, value: { label: 'First' } })
 })
+
+test('clear drops every staged write', async () => {
+  const { pending, calls } = setup()
+  const first = pending.stage(async (force) => (calls.push(force), committed), [change('a')], false)
+  const second = pending.stage(async (force) => (calls.push(force), committed), [change('b')], false)
+  pending.clear()
+  expect(await pending.commit(first.token, false)).toEqual(EXPIRED)
+  expect(await pending.commit(second.token, true)).toEqual(EXPIRED)
+  expect(calls).toEqual([])
+})

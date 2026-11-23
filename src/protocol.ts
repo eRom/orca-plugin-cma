@@ -39,12 +39,17 @@ export type Money = { minor: string; currency: string }
 
 export type ClippedText = { text: string; truncated: boolean }
 
+/** Un workspace associé, tel que la liste l'affiche. */
+export type WorkspaceRow = { localId: string; name: string; workspaceId: string | null; active: boolean }
+
+/** Les champs décrivent le workspace actif ; `workspaces` liste tous ceux qui sont associés (vide : aucun). */
 export type WorkspaceInfo = {
   hasKey: boolean
   /** Vrai quand l'API a refusé la clé enregistrée (401) : le panneau remontre le formulaire. */
   keyRejected: boolean
   workspaceId: string | null
   organizationName: string | null
+  workspaces: WorkspaceRow[]
 }
 
 export type ConfigKind = 'agent' | 'environment' | 'memory_store' | 'vault'
@@ -380,6 +385,11 @@ declare module 'orca' {
     'workspace.info': { output: WorkspaceInfo }
     'key.set': { input: { key: string }; output: ApiResult<WorkspaceInfo> }
     'key.clear': { output: WorkspaceInfo }
+    'workspaces.add': { input: { name: string; key: string }; output: ApiResult<WorkspaceInfo> }
+    'workspaces.rename': { input: { localId: string; name: string }; output: ApiResult<WorkspaceInfo> }
+    'workspaces.replaceKey': { input: { localId: string; key: string }; output: ApiResult<WorkspaceInfo> }
+    'workspaces.remove': { input: { localId: string }; output: ApiResult<WorkspaceInfo> }
+    'workspaces.activate': { input: { localId: string }; output: ApiResult<WorkspaceInfo> }
     'configs.list': { input: { kind: ConfigKind }; output: ApiResult<ConfigRow[]> }
     'configs.detail': { input: { kind: ConfigKind; id: string }; output: ApiResult<ConfigDetail> }
     'memory.read': { input: { memoryStoreId: string; memoryId: string }; output: ApiResult<MemoryContent> }

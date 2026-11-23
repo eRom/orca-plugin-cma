@@ -526,7 +526,7 @@ test('an invalid budget keeps its own message and sends nothing', async () => {
 })
 
 test('a missing key stays a missing key on create', async () => {
-  const store = createClientStore({ get: async () => null } as never)
+  const store = createClientStore(async () => null)
   const result = await createSessionHandlers(store).create(baseInput)
   expect(!result.ok && result.code).toBe('no_key')
 })

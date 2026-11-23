@@ -16,6 +16,8 @@ export type PendingWrites = {
    * Deux appels simultanés sur un jeton n'écrivent qu'une fois et partagent le résultat.
    */
   commit(token: string, force: boolean): Promise<ApiResult<Committed>>
+  /** Oublie toutes les écritures en attente : leurs jetons se confirment ensuite en `expired` (bascule de workspace). */
+  clear(): void
 }
 
 type Entry = {
@@ -66,6 +68,10 @@ export function createPendingWrites(now: () => number): PendingWrites {
       } finally {
         entry.inFlight = undefined
       }
+    },
+
+    clear() {
+      entries.clear()
     }
   }
 }

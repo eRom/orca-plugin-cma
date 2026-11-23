@@ -6,7 +6,7 @@ import * as panel from '../panel'
 import { leaveAgentView, withoutTransientFlows } from './agent-form'
 import { formDrafts } from './form-state'
 
-const WITH_KEY = { hasKey: true, keyRejected: false, workspaceId: 'wrkspc_x', organizationName: 'Check Org' }
+const WITH_KEY = { hasKey: true, keyRejected: false, workspaceId: 'wrkspc_x', organizationName: 'Check Org', workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] }
 const FOLDER = '/Users/someone/.config/agent-claude-managed/managed-agents'
 
 const FORM: AgentForm = {

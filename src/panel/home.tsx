@@ -69,7 +69,7 @@ async function saveKey(): Promise<void> {
   // Le worker a supprimé la clé refusée ; le brouillon reste, pour être corrigé sans tout retaper.
   if (result.code === 'unauthorized') {
     // Le formulaire revient avec l'avis.
-    set(workspace, { hasKey: false, keyRejected: true, workspaceId: null, organizationName: null })
+    set(workspace, { hasKey: false, keyRejected: true, workspaceId: null, organizationName: null, workspaces: [] })
     return
   }
   throw new Error(result.error)

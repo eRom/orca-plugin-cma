@@ -24,7 +24,8 @@ const WITH_KEY = {
   hasKey: true,
   keyRejected: false,
   workspaceId: 'wrkspc_check',
-  organizationName: 'Check Org'
+  organizationName: 'Check Org',
+  workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }]
 }
 
 const session = {
@@ -71,7 +72,7 @@ const AGENT_READS = {
 
 export default defineCheck({
   'no key': {
-    requests: { 'workspace.info': { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null } }
+    requests: { 'workspace.info': { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null, workspaces: [] } }
   },
   'key saved': {
     requests: {
@@ -105,7 +106,7 @@ export default defineCheck({
     }
   },
   'rejected key': {
-    requests: { 'workspace.info': { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null } }
+    requests: { 'workspace.info': { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null, workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] } }
   },
   'new session form': newSessionScenario(),
   'new environment form': newEnvironmentScenario(),

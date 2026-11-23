@@ -1,10 +1,8 @@
 // Client Anthropic du worker : détient la clé (secret du plugin), traduit les erreurs de l'API
 // en texte lisible et en code, et lit l'identité du workspace.
 import Anthropic from '@anthropic-ai/sdk'
-import type { OrcaWorkerApi } from 'orca/worker'
 import type { ApiErrorCode, ApiResult, WorkspaceInfo } from '../protocol'
-
-export const SECRET_NAME = 'anthropic-api-key'
+import type { Workspaces } from './workspaces'
 
 const NO_KEY_MESSAGE = 'Add your Anthropic API key first.'
 
@@ -18,21 +16,21 @@ class NoKeyError extends Error {
 }
 
 export type ClientStore = {
-  /** Client construit sur la clé enregistrée, mis en cache jusqu'à `reset`. */
+  /** Client construit sur la clé du workspace actif, mis en cache jusqu'à `reset`. */
   get(): Promise<Anthropic>
-  /** Oublie le client en cache : la prochaine lecture relit le secret. */
+  /** Oublie le client en cache : la prochaine lecture relit la clé de l'actif. */
   reset(): void
   hasKey(): Promise<boolean>
 }
 
-export function createClientStore(secrets: OrcaWorkerApi['secrets']): ClientStore {
+export function createClientStore(activeKey: () => Promise<string | null>): ClientStore {
   let client: Anthropic | null = null
   return {
     async get() {
       if (client) {
         return client
       }
-      const key = await secrets.get(SECRET_NAME)
+      const key = await activeKey()
       if (!key) {
         throw new NoKeyError()
       }
@@ -43,7 +41,7 @@ export function createClientStore(secrets: OrcaWorkerApi['secrets']): ClientStor
       client = null
     },
     async hasKey() {
-      return Boolean(await secrets.get(SECRET_NAME))
+      return Boolean(await activeKey())
     }
   }
 }
@@ -160,11 +158,20 @@ export function failure(error: unknown): { ok: false; error: string; code: ApiEr
  * Identité du workspace de la clé. Seul l'appel de liste des agents décide : un 401 est l'état
  * « clé refusée », toute autre erreur est levée à l'appelant. L'id vient de l'en-tête
  * `anthropic-workspace-id` de cet appel ; le nom de l'organisation est un complément, et son
- * échec (403, 5xx, réseau) ne fait pas perdre le reste.
+ * échec (403, 5xx, réseau) ne fait pas perdre le reste. Les champs décrivent l'actif ; `workspaces`
+ * liste tous ceux qui sont associés. Un actif dont l'id était inconnu (migration) l'apprend ici.
  */
-export async function workspaceInfo(store: ClientStore): Promise<WorkspaceInfo> {
+export async function workspaceInfo(store: ClientStore, workspaces: Workspaces): Promise<WorkspaceInfo> {
+  const index = await workspaces.index()
+  // L'id lu pendant cet appel, pour l'entrée active qui ne le connaissait pas.
+  let learned: string | null = null
+  const rows = (): WorkspaceInfo['workspaces'] =>
+    index.entries.map((entry) => {
+      const active = entry.localId === index.activeLocalId
+      return { ...entry, workspaceId: active ? (entry.workspaceId ?? learned) : entry.workspaceId, active }
+    })
   if (!(await store.hasKey())) {
-    return { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null }
+    return { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null, workspaces: rows() }
   }
   try {
     const client = await store.get()
@@ -173,43 +180,36 @@ export async function workspaceInfo(store: ClientStore): Promise<WorkspaceInfo> 
       (organization) => organization.name,
       () => null
     )
-    return {
-      hasKey: true,
-      keyRejected: false,
-      workspaceId: call.response.headers.get('anthropic-workspace-id'),
-      organizationName
+    const workspaceId = call.response.headers.get('anthropic-workspace-id')
+    const active = index.entries.find((entry) => entry.localId === index.activeLocalId)
+    if (active && active.workspaceId === null && workspaceId) {
+      await workspaces.noteWorkspaceId(active.localId, workspaceId)
+      learned = workspaceId
     }
+    return { hasKey: true, keyRejected: false, workspaceId, organizationName, workspaces: rows() }
   } catch (error) {
     if (error instanceof Anthropic.AuthenticationError) {
-      return { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null }
+      return { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null, workspaces: rows() }
     }
     throw error
   }
 }
 
 /**
- * Enregistre une clé et ne la garde que si l'API l'accepte. Tout échec (401 ou autre) supprime
- * le secret avant de rendre l'erreur : le panneau ne reste jamais bloqué sur une clé inutilisable.
+ * Lit le workspace d'une clé candidate par l'appel de liste des agents (en-tête
+ * `anthropic-workspace-id`). Un 401 se dit `'rejected'` ; toute autre erreur est levée.
  */
-export async function setKey(
-  secrets: OrcaWorkerApi['secrets'],
-  store: ClientStore,
-  key: string
-): Promise<ApiResult<WorkspaceInfo>> {
-  await secrets.set(SECRET_NAME, key.trim())
-  store.reset()
-  let result: ApiResult<WorkspaceInfo>
+export async function probeKey(
+  key: string,
+  makeClient: (apiKey: string) => Anthropic = (apiKey) => new Anthropic({ apiKey })
+): Promise<{ workspaceId: string | null } | 'rejected'> {
   try {
-    const info = await workspaceInfo(store)
-    result = info.keyRejected
-      ? { ok: false, error: 'The API key was rejected (401).', code: 'unauthorized' }
-      : { ok: true, value: info }
+    const call = await makeClient(key).beta.agents.list({ limit: 1 }).withResponse()
+    return { workspaceId: call.response.headers.get('anthropic-workspace-id') }
   } catch (error) {
-    result = failure(error)
+    if (error instanceof Anthropic.AuthenticationError) {
+      return 'rejected'
+    }
+    throw error
   }
-  if (!result.ok) {
-    await secrets.delete(SECRET_NAME)
-    store.reset()
-  }
-  return result
 }

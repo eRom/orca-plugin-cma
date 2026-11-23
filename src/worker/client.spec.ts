@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { expect, test } from 'bun:test'
-import { CONFLICT_MESSAGE, createClientStore, describeError, setKey, workspaceInfo, type ClientStore } from './client'
+import { CONFLICT_MESSAGE, attempt, createClientStore, describeError, probeKey, workspaceInfo, type ClientStore } from './client'
+import type { WorkspaceIndex, Workspaces } from './workspaces'
 
 test('describeError maps API errors', () => {
   const error = new Anthropic.AuthenticationError(401, undefined, 'invalid x-api-key', new Headers())
@@ -35,40 +36,8 @@ test('describeError maps unknown errors to other', () => {
   expect(describeError(new Error('x'))).toEqual({ message: 'x', code: 'other' })
 })
 
-test('workspaceInfo without key', async () => {
-  // `mockHost` n'expose pas d'API de secrets : un faux littéral suffit, et le fait qu'il
-  // ne contienne aucune clé doit éviter tout appel réseau.
-  const store = createClientStore({ get: async () => null, set: async () => {}, delete: async () => {} })
-  expect(await workspaceInfo(store)).toEqual({
-    hasKey: false,
-    keyRejected: false,
-    workspaceId: null,
-    organizationName: null
-  })
-})
-
-// Faux secrets en mémoire qui notent leurs appels ; l'objet `api` a la forme de `orca.secrets`.
-function fakeSecrets(initial: string | null = null) {
-  const state = { value: initial, calls: [] as string[] }
-  const api = {
-    get: async () => state.value,
-    set: async (_name: string, value: string) => {
-      state.calls.push('set')
-      state.value = value
-    },
-    delete: async () => {
-      state.calls.push('delete')
-      state.value = null
-    }
-  }
-  return { state, api }
-}
-
 // Faux magasin dont le client répond selon les scénarios : liste des agents et organisation.
-function fakeStore(
-  secrets: ReturnType<typeof fakeSecrets>,
-  scenario: { agents: Error | null; organization: Error | { name: string } }
-): ClientStore {
+function fakeStore(key: string | null, scenario: { agents: Error | null; organization: Error | { name: string } }): ClientStore {
   const client = {
     beta: {
       agents: {
@@ -94,56 +63,180 @@ function fakeStore(
   return {
     get: async () => client as unknown as Anthropic,
     reset: () => {},
-    hasKey: async () => Boolean(secrets.state.value)
+    hasKey: async () => key !== null
   }
 }
 
 const unauthorized = () => new Anthropic.AuthenticationError(401, undefined, 'invalid x-api-key', new Headers())
 
-test('setKey deletes the key on 401', async () => {
-  const secrets = fakeSecrets()
-  const store = fakeStore(secrets, { agents: unauthorized(), organization: { name: 'Org' } })
-  const result = await setKey(secrets.api, store, ' sk-bad ')
-  expect(result).toEqual({ ok: false, error: 'The API key was rejected (401).', code: 'unauthorized' })
-  expect(secrets.state.value).toBe(null)
-  expect(secrets.state.calls).toEqual(['set', 'delete'])
+// Faux `Workspaces` : seulement ce que `workspaceInfo` lit et note.
+function fakeWorkspaces(entries: WorkspaceIndex['entries'], activeLocalId: string | null) {
+  const noted: string[][] = []
+  const workspaces = {
+    index: async (): Promise<WorkspaceIndex> => ({ entries, activeLocalId, migratedLocalId: null }),
+    noteWorkspaceId: async (localId: string, workspaceId: string) => {
+      noted.push([localId, workspaceId])
+      entries = entries.map((entry) => (entry.localId === localId ? { ...entry, workspaceId } : entry))
+    }
+  } as unknown as Workspaces
+  return { workspaces, noted }
+}
+
+const DEFAULT_ENTRY = { localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_test' }
+const DEFAULT_ROW = { ...DEFAULT_ENTRY, active: true }
+
+test('createClientStore reads the active key and says no_key when there is none', async () => {
+  const store = createClientStore(async () => null)
+  expect(await store.hasKey()).toBe(false)
+  expect(await attempt(store, async () => 1)).toEqual({ ok: false, code: 'no_key', error: 'Add your Anthropic API key first.' })
 })
 
-test('setKey deletes the key on a network error', async () => {
-  const secrets = fakeSecrets()
-  const store = fakeStore(secrets, {
-    agents: new Anthropic.APIConnectionError({ message: 'offline' }),
-    organization: { name: 'Org' }
+test('createClientStore caches the client until reset and rereads the active key after', async () => {
+  let reads = 0
+  let key = 'plugin-test-token-QUOKKA-a'
+  const store = createClientStore(async () => {
+    reads += 1
+    return key
   })
-  const result = await setKey(secrets.api, store, 'sk-any')
-  expect(result).toEqual({ ok: false, error: 'Could not reach api.anthropic.com.', code: 'other' })
-  expect(secrets.state.value).toBe(null)
+  const first = await store.get()
+  expect(await store.get()).toBe(first)
+  expect(reads).toBe(1)
+  key = 'plugin-test-token-QUOKKA-b'
+  store.reset()
+  expect((await store.get()) === first).toBe(false)
+  expect(reads).toBe(2)
 })
 
-test('setKey keeps a valid key', async () => {
-  const secrets = fakeSecrets()
-  const store = fakeStore(secrets, { agents: null, organization: { name: 'Org' } })
-  const result = await setKey(secrets.api, store, ' sk-good ')
-  expect(result).toEqual({
-    ok: true,
-    value: { hasKey: true, keyRejected: false, workspaceId: 'wrkspc_test', organizationName: 'Org' }
+test('workspaceInfo without key lists the workspaces and does no network call', async () => {
+  const { workspaces } = fakeWorkspaces([], null)
+  const store = createClientStore(async () => null)
+  expect(await workspaceInfo(store, workspaces)).toEqual({
+    hasKey: false,
+    keyRejected: false,
+    workspaceId: null,
+    organizationName: null,
+    workspaces: []
   })
-  expect(secrets.state.value).toBe('sk-good')
-  expect(secrets.state.calls).toEqual(['set'])
 })
 
-test('workspaceInfo survives a failing organization call', async () => {
-  const secrets = fakeSecrets('sk-good')
-  const store = fakeStore(secrets, {
-    agents: null,
-    organization: new Anthropic.PermissionDeniedError(403, undefined, 'forbidden', new Headers())
+test('workspaceInfo reports hasKey false when the key of the active entry is missing, and keeps the rows', async () => {
+  const { workspaces } = fakeWorkspaces([DEFAULT_ENTRY], 'ws_1')
+  const store = createClientStore(async () => null)
+  expect(await workspaceInfo(store, workspaces)).toEqual({
+    hasKey: false,
+    keyRejected: false,
+    workspaceId: null,
+    organizationName: null,
+    workspaces: [DEFAULT_ROW]
   })
-  expect(await workspaceInfo(store)).toEqual({
+})
+
+test('workspaceInfo marks only the active row', async () => {
+  const other = { localId: 'ws_2', name: 'Other', workspaceId: 'wrkspc_other' }
+  const { workspaces } = fakeWorkspaces([DEFAULT_ENTRY, other], 'ws_1')
+  const store = fakeStore('plugin-test-token-QUOKKA-a', { agents: null, organization: { name: 'Org' } })
+  const info = await workspaceInfo(store, workspaces)
+  expect(info.workspaces).toEqual([DEFAULT_ROW, { ...other, active: false }])
+  expect(info).toEqual({
     hasKey: true,
     keyRejected: false,
     workspaceId: 'wrkspc_test',
-    organizationName: null
+    organizationName: 'Org',
+    workspaces: [DEFAULT_ROW, { ...other, active: false }]
   })
+})
+
+test('workspaceInfo notes the workspace id read when the active entry did not know it', async () => {
+  const { workspaces, noted } = fakeWorkspaces([{ ...DEFAULT_ENTRY, workspaceId: null }], 'ws_1')
+  const store = fakeStore('plugin-test-token-QUOKKA-a', { agents: null, organization: { name: 'Org' } })
+  const info = await workspaceInfo(store, workspaces)
+  expect(noted).toEqual([['ws_1', 'wrkspc_test']])
+  expect(info.workspaces).toEqual([DEFAULT_ROW])
+})
+
+test('workspaceInfo notes nothing when the id is already known', async () => {
+  const { workspaces, noted } = fakeWorkspaces([DEFAULT_ENTRY], 'ws_1')
+  const store = fakeStore('plugin-test-token-QUOKKA-a', { agents: null, organization: { name: 'Org' } })
+  await workspaceInfo(store, workspaces)
+  expect(noted).toEqual([])
+})
+
+test('workspaceInfo notes nothing and reports a rejected key on a 401', async () => {
+  const { workspaces, noted } = fakeWorkspaces([{ ...DEFAULT_ENTRY, workspaceId: null }], 'ws_1')
+  const store = fakeStore('plugin-test-token-QUOKKA-a', { agents: unauthorized(), organization: { name: 'Org' } })
+  expect(await workspaceInfo(store, workspaces)).toEqual({
+    hasKey: true,
+    keyRejected: true,
+    workspaceId: null,
+    organizationName: null,
+    workspaces: [{ ...DEFAULT_ROW, workspaceId: null }]
+  })
+  expect(noted).toEqual([])
+})
+
+test('workspaceInfo survives a failing organization call', async () => {
+  const { workspaces } = fakeWorkspaces([DEFAULT_ENTRY], 'ws_1')
+  const store = fakeStore('plugin-test-token-QUOKKA-a', {
+    agents: null,
+    organization: new Anthropic.PermissionDeniedError(403, undefined, 'forbidden', new Headers())
+  })
+  expect(await workspaceInfo(store, workspaces)).toEqual({
+    hasKey: true,
+    keyRejected: false,
+    workspaceId: 'wrkspc_test',
+    organizationName: null,
+    workspaces: [DEFAULT_ROW]
+  })
+})
+
+test('workspaceInfo throws any error other than a 401', async () => {
+  const { workspaces } = fakeWorkspaces([DEFAULT_ENTRY], 'ws_1')
+  const store = fakeStore('plugin-test-token-QUOKKA-a', {
+    agents: new Anthropic.APIConnectionError({ message: 'offline' }),
+    organization: { name: 'Org' }
+  })
+  let thrown: unknown = null
+  await workspaceInfo(store, workspaces).catch((error: unknown) => {
+    thrown = error
+  })
+  expect(describeError(thrown).message).toBe('Could not reach api.anthropic.com.')
+})
+
+// Faux client de sondage : seul `beta.agents.list(...).withResponse()` est lu.
+function probeClient(outcome: Error | string | null) {
+  return {
+    beta: {
+      agents: {
+        list: () => ({
+          withResponse: async () => {
+            if (outcome instanceof Error) {
+              throw outcome
+            }
+            const headers = outcome === null ? new Headers() : new Headers({ 'anthropic-workspace-id': outcome })
+            return { response: { headers } }
+          }
+        })
+      }
+    }
+  } as unknown as Anthropic
+}
+
+test('probeKey reads the workspace id of the key', async () => {
+  const keys: string[] = []
+  const probe = (outcome: Error | string | null) =>
+    probeKey('plugin-test-token-QUOKKA-a', (key) => (keys.push(key), probeClient(outcome)))
+  expect(await probe('wrkspc_a')).toEqual({ workspaceId: 'wrkspc_a' })
+  expect(await probe(null)).toEqual({ workspaceId: null })
+  expect(keys).toEqual(['plugin-test-token-QUOKKA-a', 'plugin-test-token-QUOKKA-a'])
+})
+
+test('probeKey says rejected on a 401 and throws any other error', async () => {
+  expect(await probeKey('k', () => probeClient(unauthorized()))).toBe('rejected')
+  let thrown: unknown = null
+  await probeKey('k', () => probeClient(new Anthropic.APIConnectionError({ message: 'offline' }))).catch((error: unknown) => {
+    thrown = error
+  })
+  expect(describeError(thrown).code).toBe('other')
 })
 
 test('describeError shows only the API message of a standard error body', () => {

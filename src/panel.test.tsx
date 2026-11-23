@@ -6,12 +6,13 @@ const WITH_KEY = {
   hasKey: true,
   keyRejected: false,
   workspaceId: 'wrkspc_x',
-  organizationName: "Romain's Individual Org"
+  organizationName: "Romain's Individual Org",
+  workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }]
 }
 
 test('shows the key form without a key', async () => {
   const host = mockHost({
-    requests: { 'workspace.info': { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null } }
+    requests: { 'workspace.info': { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null, workspaces: [] } }
   })
   const view = await mount(panel, { host })
   assert.ok(view.find({ label: 'API key' }))
@@ -36,7 +37,7 @@ test('shows the workspace line with a key', async () => {
 test('shows the key form again when the key is rejected', async () => {
   const host = mockHost({
     requests: {
-      'workspace.info': { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null }
+      'workspace.info': { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null, workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] }
     }
   })
   const view = await mount(panel, { host })
@@ -48,7 +49,7 @@ test('shows the key form again when the key is rejected', async () => {
 test('keeps the key draft when key.set fails', async () => {
   const host = mockHost({
     requests: {
-      'workspace.info': { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null },
+      'workspace.info': { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null, workspaces: [] },
       'key.set': { ok: false, code: 'unauthorized', error: 'The API key was rejected (401).' }
     }
   })
@@ -156,7 +157,7 @@ test('re-reads the workspace when the worker reports an empty list after a rejec
         infoCalls += 1
         return infoCalls === 1
           ? WITH_KEY
-          : { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null }
+          : { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null, workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] }
       },
       'sessions.visibility': { bootId: 'boot-1', watching: null }, 'configs.list': { ok: true, value: [] },
       'sessions.list': { ok: true, value: [sessionRow({ title: 'Soon gone' })] }
@@ -202,7 +203,7 @@ test('Forget key asks for a confirmation before clearing the key', async () => {
       'sessions.list': { ok: true, value: [] },
       'key.clear': () => {
         cleared += 1
-        return { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null }
+        return { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null, workspaces: [] }
       }
     }
   })

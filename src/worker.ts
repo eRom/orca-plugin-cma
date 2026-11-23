@@ -3,7 +3,7 @@ import type { OrcaWorkerApi } from 'orca/worker'
 import type { ApiResult, ResourceRef, SessionRow, ThreadRow, WorkspaceInfo } from './protocol'
 import { createAgentAdapter, releaseArchivedDrafts } from './worker/agent-drafts'
 import { agentFormOptions, prepareAgentForm } from './worker/agent-form'
-import { SECRET_NAME, attempt, createClientStore, describeError, failure, setKey, workspaceInfo } from './worker/client'
+import { attempt, createClientStore, describeError, failure, probeKey, workspaceInfo } from './worker/client'
 import { createWriteHandlers } from './worker/config-writes'
 import { createConfigHandlers } from './worker/configs'
 import { DRAFTS_FOLDER, createDrafts, type Drafts } from './worker/drafts'
@@ -14,9 +14,26 @@ import { createPendingWrites } from './worker/pending-writes'
 import { createSessionHandlers } from './worker/session-actions'
 import { createPoller, sdkPollSource, thenSettleSessions } from './worker/session-poll'
 import { createWatcher, sdkEventSource } from './worker/stream'
+import { createWorkspaceHandlers } from './worker/workspace-handlers'
+import { createWorkspaces } from './worker/workspaces'
 
 export default async function activate(orca: OrcaWorkerApi): Promise<void> {
-  const store = createClientStore(orca.secrets)
+  // Les workspaces associés : un index sans clé et une clé par secret. Le client suit la clé de l'actif.
+  const workspaces = createWorkspaces({
+    secrets: orca.secrets,
+    probe: (key) => probeKey(key),
+    newId: () => crypto.randomUUID(),
+    log: (message) => orca.log(message)
+  })
+  const store = createClientStore(() => workspaces.activeKey())
+  // L'ancienne clé unique devient « Default » avant tout le reste ; un échec se note et le worker démarre quand même.
+  const migrated = workspaces.migrate().catch((error: unknown) => {
+    orca.log(`workspace migration failed: ${describeError(error).message}`)
+  })
+
+  // Les écritures qui attendent une confirmation : un worker relancé repart d'un registre vide, et
+  // le panneau reçoit alors `expired` (il relance l'écriture).
+  const pendingWrites = createPendingWrites(() => Date.now())
 
   // Le sondeur des sessions : alimente la liste du panneau (`sessions.changed`) et la barre d'état.
   const poller = createPoller({
@@ -68,33 +85,31 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   // Les erreurs autres qu'un 401 sont levées : on les rend en texte lisible pour le panneau.
   async function readableWorkspaceInfo(): Promise<WorkspaceInfo> {
     try {
-      return await workspaceInfo(store)
+      return await workspaceInfo(store, workspaces)
     } catch (error) {
       throw new Error(describeError(error).message)
     }
   }
 
-  orca.panels.handle('workspace.info', readableWorkspaceInfo)
-
-  orca.panels.handle('key.set', async ({ key }) => {
-    watcher.stop()
-    const result = await setKey(orca.secrets, store, key)
-    // Une clé acceptée relance le sondage ; une clé refusée a été supprimée : plus rien à sonder.
-    if (result.ok) {
-      poller.start()
-    } else {
-      poller.stop()
-    }
-    return result
+  // Les workspaces : toute bascule arrête le suivi, vide les écritures en attente et relance le sondeur.
+  const workspaceHandlers = createWorkspaceHandlers({
+    workspaces,
+    store,
+    watcher,
+    pendingWrites,
+    poller,
+    info: readableWorkspaceInfo,
+    ready: migrated
   })
-
-  orca.panels.handle('key.clear', async () => {
-    watcher.stop()
-    poller.stop()
-    await orca.secrets.delete(SECRET_NAME)
-    store.reset()
-    return { hasKey: false, keyRejected: false, workspaceId: null, organizationName: null }
-  })
+  orca.panels.handle('workspace.info', workspaceHandlers.info)
+  orca.panels.handle('workspaces.add', workspaceHandlers.add)
+  orca.panels.handle('workspaces.rename', workspaceHandlers.rename)
+  orca.panels.handle('workspaces.replaceKey', workspaceHandlers.replaceKey)
+  orca.panels.handle('workspaces.remove', workspaceHandlers.remove)
+  orca.panels.handle('workspaces.activate', workspaceHandlers.activate)
+  // Provisoire : le panneau d'avant les workspaces parle encore `key.set` / `key.clear`.
+  orca.panels.handle('key.set', workspaceHandlers.setKey)
+  orca.panels.handle('key.clear', workspaceHandlers.clearKey)
 
   orca.panels.handle('session.watch', ({ sessionId }) => attempt(store, async () => watcher.watch(sessionId)))
 
@@ -173,9 +188,6 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   const thenRefreshSessions = (handler: (ref: ResourceRef) => Promise<ApiResult<null>>) =>
     thenSettleSessions(handler, poller, (message) => orca.log(message))
 
-  // Les écritures qui attendent une confirmation : un worker relancé repart d'un registre vide, et
-  // le panneau reçoit alors `expired` (il relance l'écriture).
-  const pendingWrites = createPendingWrites(() => Date.now())
   orca.panels.handle('write.commit', ({ token, force }) => pendingWrites.commit(token, force))
 
   // Les brouillons : un fichier par agent ou mémoire, édité dans l'éditeur d'Orca. Les adaptateurs
@@ -223,6 +235,8 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   orca.panels.handle('draft.prepare', drafts.prepare)
   orca.panels.handle('workspace.back', ({ workspaceId }) => drafts.back(workspaceId))
 
+  // Le premier tour du sondeur attend la migration : sans elle, il lirait un index encore vide.
+  await migrated
   poller.start()
   orca.log('agent-claude-managed worker ready')
 }

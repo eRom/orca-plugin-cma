@@ -9,7 +9,8 @@ const WITH_KEY = {
   hasKey: true,
   keyRejected: false,
   workspaceId: 'wrkspc_x',
-  organizationName: 'Check Org'
+  organizationName: 'Check Org',
+  workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }]
 }
 
 const OPEN_STREAM: StreamState = { sessionId: 's1', phase: 'open', since: 0, reconnects: 0, error: null }
@@ -348,7 +349,7 @@ test('loads a restored session once a rejected key is replaced', async () => {
     requests: requests([message('m1', 'Back again')], {
       'workspace.info': () => {
         infoCalls += 1
-        return infoCalls === 1 ? { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null } : WITH_KEY
+        return infoCalls === 1 ? { hasKey: true, keyRejected: true, workspaceId: null, organizationName: null, workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] } : WITH_KEY
       },
       'key.set': { ok: true, value: WITH_KEY },
       'session.watch': (input: unknown) => {
