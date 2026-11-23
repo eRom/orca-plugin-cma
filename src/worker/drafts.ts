@@ -23,6 +23,12 @@ export function slugify(name: string): string {
   return slug === '' ? 'item' : slug
 }
 
+/** Le modèle « New agent » d'un workspace : un fichier par workspace (`localId`), pour qu'aucun ne reprenne le brouillon d'un autre. */
+export const newAgentFile = (localId: string): string => `agents/new-agent--${localId}.yaml`
+
+/** Le nom fixe du modèle « New agent » d'avant les workspaces. */
+const LEGACY_NEW_AGENT_FILE = 'agents/new-agent.yaml'
+
 /** Ce que l'écriture devra vérifier : la version de l'agent, l'empreinte de la mémoire, ou rien (création). */
 export type DraftBase = { version: number } | { sha256: string } | null
 
@@ -218,14 +224,40 @@ export function createDrafts(deps: {
   /** Horodatage sûr dans un nom de fichier. */
   const stamp = (): string => now().toISOString().replace(/[:.]/g, '-')
 
-  /** Une entrée écrite avant les workspaces n'a pas de `workspace` : elle revient à l'entrée migrée. */
-  async function withWorkspaces(registry: Registry): Promise<Registry> {
+  /**
+   * Une entrée écrite avant les workspaces n'a pas de `workspace` : elle revient à l'entrée migrée.
+   * `convert` (les opérations sérialisées seulement, car cela touche au disque) : le modèle « New agent » d'avant, au
+   * nom fixe, prend le nom du workspace migré. Son fichier est renommé (les modifications non appliquées survivent) et
+   * le registre est réécrit tout de suite, sinon l'ancienne entrée reviendrait à la lecture suivante. Si le fichier
+   * du workspace existe déjà, l'ancien reste sur disque et seule son entrée est retirée.
+   */
+  async function withWorkspaces(registry: Registry, convert = false): Promise<Registry> {
     let legacy: string | null | undefined
-    for (const entry of Object.values(registry.entries)) {
-      if (typeof entry.workspace !== 'string') {
-        legacy ??= await deps.workspace.legacy()
-        entry.workspace = legacy ?? ''
+    let changed = false
+    for (const [file, entry] of Object.entries(registry.entries)) {
+      if (typeof entry.workspace === 'string') {
+        continue
       }
+      legacy ??= await deps.workspace.legacy()
+      entry.workspace = legacy ?? ''
+      if (!convert || legacy === null || file.toLowerCase() !== LEGACY_NEW_AGENT_FILE || entry.ref.kind !== 'agent' || entry.ref.agentId !== null) {
+        continue
+      }
+      const target = newAgentFile(legacy)
+      delete registry.entries[file]
+      if ((await readOrNull(join(folder, target))) !== null) {
+        log(`legacy new agent draft ${file} left on disk: ${target} already exists`)
+      } else {
+        if ((await readOrNull(join(folder, file))) !== null) {
+          await mkdir(dirname(join(folder, target)), { recursive: true })
+          await rename(join(folder, file), join(folder, target))
+        }
+        registry.entries[target] = entry
+      }
+      changed = true
+    }
+    if (changed) {
+      await writeRegistry(registry)
     }
     return registry
   }
@@ -245,7 +277,7 @@ export function createDrafts(deps: {
       log(`drafts registry unreadable (${messageOf(error)}); moved to ${aside}`)
       return { entries: {}, lastReturnTo: null }
     }
-    return withWorkspaces(registry)
+    return withWorkspaces(registry, true)
   }
 
   const writeRegistry = (registry: Registry): Promise<void> => writeAtomic(registryPath, JSON.stringify(registry, null, 2))

@@ -608,3 +608,46 @@ test('archiving an agent releases the clean draft of the active workspace only',
   expect(existsSync(join(folder, EXISTING_FILE))).toBe(false)
   cleanup()
 })
+
+/** Un registre d'avant les workspaces : le modèle « New agent » sous son ancien nom fixe, sans `workspace`. */
+function downgradeToLegacyTemplate(folder: string, read: (file: string) => string): void {
+  const registryFile = join(folder, REGISTRY_FILE)
+  const registry = JSON.parse(readFileSync(registryFile, 'utf8')) as { entries: Record<string, { workspace?: string }> }
+  const entry = registry.entries[NEW_FILE]
+  if (!entry) throw new Error('no template entry')
+  delete entry.workspace
+  delete registry.entries[NEW_FILE]
+  registry.entries['agents/new-agent.yaml'] = entry
+  writeFileSync(join(folder, 'agents/new-agent.yaml'), read(NEW_FILE))
+  rmSync(join(folder, NEW_FILE))
+  writeFileSync(registryFile, JSON.stringify(registry))
+}
+
+test('a template from before the workspaces moves to the file of the migrated workspace and keeps its unapplied edits', async () => {
+  const { drafts, folder, read, registry, edit } = setup()
+  await drafts.open(NEW)
+  edit(NEW_FILE, 'name: Untitled agent', 'name: Edited before upgrade')
+  downgradeToLegacyTemplate(folder, read)
+  const state = await drafts.state(NEW)
+  expect(state.ok && state.value?.file).toBe(NEW_FILE)
+  expect(state.ok && state.value?.unapplied).toBe(true)
+  expect(read(NEW_FILE).includes('name: Edited before upgrade')).toBe(true)
+  expect(existsSync(join(folder, 'agents/new-agent.yaml'))).toBe(false)
+  expect(Object.keys(registry().entries)).toEqual([NEW_FILE])
+  cleanup()
+})
+
+test('a template from before the workspaces yields to a per-workspace file that already exists, and says so', async () => {
+  const { drafts, folder, read, registry, logs } = setup()
+  await drafts.open(NEW)
+  downgradeToLegacyTemplate(folder, read)
+  writeFileSync(join(folder, NEW_FILE), 'name: Already here\n')
+  const state = await drafts.state(NEW)
+  expect(state).toEqual({ ok: true, value: null })
+  // L'ancien fichier reste sur disque, seule son entrée est retirée du registre.
+  expect(existsSync(join(folder, 'agents/new-agent.yaml'))).toBe(true)
+  expect(read(NEW_FILE)).toBe('name: Already here\n')
+  expect(Object.keys(registry().entries)).toEqual([])
+  expect(logs.some((message) => message.includes('agents/new-agent.yaml') && message.includes(NEW_FILE))).toBe(true)
+  cleanup()
+})

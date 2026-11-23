@@ -757,7 +757,7 @@ test('a registry entry without workspace belongs to the migrated workspace', asy
   cleanup()
 })
 
-test('discard of a draft of another workspace says so and leave its file untouched', async () => {
+test('discard of a draft of another workspace says so and leaves its file untouched', async () => {
   const { drafts, folder, live, space } = setup()
   await drafts.open(AGENT)
   writeFileSync(join(folder, FILE), 'name: My edit\n')

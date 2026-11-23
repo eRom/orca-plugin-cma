@@ -15,12 +15,11 @@ import {
 } from './agent-yaml'
 import { CONFLICT_MESSAGE, failure, type ClientStore } from './client'
 import { diffDocuments } from './diff'
-import { slugify, type DraftAdapter, type Drafts } from './drafts'
+import { newAgentFile, slugify, type DraftAdapter, type Drafts } from './drafts'
+
+export { newAgentFile }
 
 type AgentRef = Extract<DraftRef, { kind: 'agent' }>
-
-/** Le modèle « New agent » d'un workspace : un fichier par workspace (`localId`), pour qu'aucun ne reprenne le brouillon d'un autre. */
-export const newAgentFile = (localId: string): string => `agents/new-agent--${localId}.yaml`
 
 const NEW_AGENT_REF: AgentRef = { kind: 'agent', agentId: null }
 
