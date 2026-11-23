@@ -597,6 +597,32 @@ test('an agent created under B resets the template of B and leaves the template 
   cleanup()
 })
 
+test('a creation in flight while the active workspace changes rewrites nothing and says so in the log', async () => {
+  const { drafts, apply, read, edit, space, api, logs, registry, folder } = setup()
+  // B a son propre modèle, édité mais pas encore envoyé.
+  space.state.active = 'ws-b'
+  await drafts.open(NEW)
+  edit(newAgentFile('ws-b'), 'name: Untitled agent', 'name: Unsaved in B')
+  // La création part depuis A ; pendant l'envoi, Romain bascule sur B.
+  space.state.active = 'ws-a'
+  await drafts.open(NEW)
+  edit(newAgentFile('ws-a'), 'name: Untitled agent', 'name: From A')
+  api.state.duringSend = () => {
+    space.state.active = 'ws-b'
+  }
+  const result = await apply(NEW)
+  // L'agent est bien créé : l'envoi est fait, c'est la réécriture des fichiers qui s'abstient.
+  expect(result).toEqual({ ok: true, value: { label: 'Applied, v1', id: 'agent_new' } })
+  expect(read(newAgentFile('ws-b')).includes('name: Unsaved in B')).toBe(true)
+  expect(read(newAgentFile('ws-a')).includes('name: From A')).toBe(true)
+  expect(existsSync(join(folder, 'agents/from-a--agent_new.yaml'))).toBe(false)
+  expect(Object.keys(registry().entries).some((file) => file.includes('agent_new'))).toBe(false)
+  expect(logs.filter((message) => message.includes('active workspace changed during the send'))).toEqual([
+    'agent created in workspace ws-a, but the active workspace changed during the send: drafts left as they were'
+  ])
+  cleanup()
+})
+
 test('archiving an agent releases the clean draft of the active workspace only', async () => {
   const { drafts, folder, space } = setup()
   await drafts.open(EXISTING)

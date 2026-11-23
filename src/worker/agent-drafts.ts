@@ -153,12 +153,19 @@ export function createAgentAdapter(
    * L'envoi réussi, le fichier reprend ce que l'API a gardé. Rien ici ne fait échouer l'écriture, déjà faite :
    * un souci se journalise et le brouillon reste tel qu'il est (non appliqué).
    */
-  async function afterSend(ref: AgentRef, agent: BetaManagedAgentsAgent, sent: string): Promise<void> {
+  async function afterSend(ref: AgentRef, agent: BetaManagedAgentsAgent, sent: string, startedIn: string | null): Promise<void> {
     try {
       const created: AgentRef = { kind: 'agent', agentId: agent.id }
       const written = yamlOf(agent)
       if (ref.agentId !== null) {
         await drafts().rewrite(created, written, { version: agent.version }, sent)
+        return
+      }
+      // `rewrite` et `file` lisent le workspace actif à l'instant : si Romain a basculé pendant l'envoi, réécrire
+      // remettrait à zéro le modèle du nouveau workspace et rangerait le fichier de l'agent sous le mauvais.
+      const current = await activeWorkspace()
+      if (current !== startedIn) {
+        log(`agent created in workspace ${startedIn}, but the active workspace changed during the send: drafts left as they were`)
         return
       }
       // Une création : le fichier canonique de l'agent reprend le workspace de retour du modèle (le focus d'Orca,
@@ -223,11 +230,13 @@ export function createAgentAdapter(
       if (changes.length === 0) {
         return { ok: false, code: 'nothing_to_apply', error: 'Nothing to apply: the file matches the version you opened.' }
       }
+      // Le workspace où la création est préparée : l'envoi doit le retrouver pour réécrire les bons fichiers.
+      const startedIn = ref.agentId === null ? await activeWorkspace() : null
       const commit = async (force: boolean): Promise<ApiResult<Committed>> => {
         try {
           const client = await store.get()
           const agent = await sendAgent(client, ref.agentId, version, before, after, force)
-          await afterSend(ref, agent, text)
+          await afterSend(ref, agent, text, startedIn)
           return { ok: true, value: { label: `Applied, v${agent.version}`, id: agent.id } }
         } catch (error) {
           if (ref.agentId !== null && version !== null && isVersionRefusal(error)) {
