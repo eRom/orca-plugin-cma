@@ -14,8 +14,8 @@
   "capabilities": [{ "kind": "secrets:own" }, { "kind": "workspace:read" }, { "kind": "workspace:write" }],
   "contributes": {
     "panels": [
-      { "id": "managed", "title": "Claude Managed Agents", "icon": "bot", "entry": "src/panel.tsx", "ui": "components" }
+      { "id": "managed", "title": "Claude Managed Agents", "icon": "cloud", "entry": "src/panel.tsx", "ui": "components" }
     ],
-    "statusBarItems": [{ "id": "approvals", "icon": "bot", "text": "Managed", "tooltip": "Claude Managed Agents" }]
+    "statusBarItems": [{ "id": "approvals", "icon": "cloud", "text": "Managed", "tooltip": "Claude Managed Agents" }]
   }
 }
