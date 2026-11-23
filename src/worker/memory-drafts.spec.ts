@@ -9,6 +9,7 @@ import { INVALID_MEMORY_PATH, isSafeMemoryPath } from '../shared/memory-path'
 import { CONFLICT_MESSAGE, type ClientStore } from './client'
 import { REGISTRY_FILE, createDrafts, type Drafts } from './drafts'
 import type { EditorHost } from './editor-host'
+import { fakeWorkspace } from './fake-workspace'
 import { createMemoryAdapter, createMemoryRename, memoryFile, releaseDeletedDrafts } from './memory-drafts'
 import { createPendingWrites } from './pending-writes'
 
@@ -196,6 +197,7 @@ function setup() {
     folder,
     host: fake.host,
     adapters: { memory: adapter },
+    workspace: fakeWorkspace().deps,
     pending,
     now: () => new Date('2026-11-22T10:00:00.000Z'),
     log: (message) => logs.push(message)

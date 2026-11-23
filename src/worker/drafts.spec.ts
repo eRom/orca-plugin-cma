@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { ApiResult, DraftRef, PreparedWrite } from '../protocol'
 import { REGISTRY_FILE, createDrafts, sameRef, slugify, type DraftAdapter, type DraftBase } from './drafts'
 import type { EditorHost } from './editor-host'
+import { fakeWorkspace } from './fake-workspace'
 import { createPendingWrites } from './pending-writes'
 
 type AgentRef = Extract<DraftRef, { kind: 'agent' }>
@@ -76,16 +77,18 @@ function setup(options: { workspace?: boolean; adapters?: boolean; file?: (ref: 
   }
   const pending = createPendingWrites(() => 0)
   const clock = { at: new Date('2026-11-22T10:00:00.000Z') }
+  const space = fakeWorkspace()
   const build = () =>
     createDrafts({
       folder,
       host: fake.host,
       adapters: options.adapters === false ? {} : { agent: adapter },
+      workspace: space.deps,
       pending,
       now: () => clock.at,
       log: (message) => logs.push(message)
     })
-  return { folder, fake, live, prepared, logs, drafts: build(), build, clock }
+  return { folder, fake, live, prepared, logs, drafts: build(), build, clock, space }
 }
 
 test('slugify lowercases, collapses separators, trims dashes and caps at 40 characters', () => {
@@ -213,7 +216,7 @@ test('open rejects a file path that escapes the drafts folder', async () => {
     }
   }
   const fake = fakeHost(folder)
-  const drafts = createDrafts({ folder, host: fake.host, adapters: { agent: escaping }, pending: createPendingWrites(() => 0), now: () => new Date(), log: () => {} })
+  const drafts = createDrafts({ folder, host: fake.host, adapters: { agent: escaping }, workspace: fakeWorkspace().deps, pending: createPendingWrites(() => 0), now: () => new Date(), log: () => {} })
   const result = await drafts.open(AGENT)
   expect(result).toEqual({ ok: false, code: 'other', error: 'The draft path is outside the drafts folder.' })
   expect(fake.calls).toEqual([])
@@ -490,7 +493,7 @@ test('an adapter check refuses a ref as invalid before any file or live read, on
       throw new Error('unreachable')
     }
   }
-  const drafts = createDrafts({ folder, host: fake.host, adapters: { agent: checked }, pending: createPendingWrites(() => 0), now: () => new Date(), log: () => {} })
+  const drafts = createDrafts({ folder, host: fake.host, adapters: { agent: checked }, workspace: fakeWorkspace().deps, pending: createPendingWrites(() => 0), now: () => new Date(), log: () => {} })
   const refused = { ok: false, code: 'invalid', error: 'Nope.' }
   expect(await drafts.open(AGENT)).toEqual(refused)
   expect(await drafts.state(AGENT)).toEqual(refused)
@@ -541,7 +544,7 @@ test('find from inside an adapter does not deadlock the draft queue, and ignores
       throw new Error('unreachable')
     }
   }
-  holder.drafts = createDrafts({ folder, host: fake.host, adapters: { agent: probing }, pending: createPendingWrites(() => 0), now: () => new Date(), log: () => {} })
+  holder.drafts = createDrafts({ folder, host: fake.host, adapters: { agent: probing }, workspace: fakeWorkspace().deps, pending: createPendingWrites(() => 0), now: () => new Date(), log: () => {} })
   expect((await holder.drafts.open(AGENT)).ok).toBe(true)
   writeFileSync(join(folder, REGISTRY_FILE), '{ not json')
   expect(await holder.drafts.find(() => true)).toEqual([])
@@ -612,7 +615,7 @@ test('state answers null without asking the adapter for a file when no registere
       throw new Error('unreachable')
     }
   }
-  const drafts = createDrafts({ folder, host: fake.host, adapters: { agent: offline }, pending: createPendingWrites(() => 0), now: () => new Date(), log: () => {} })
+  const drafts = createDrafts({ folder, host: fake.host, adapters: { agent: offline }, workspace: fakeWorkspace().deps, pending: createPendingWrites(() => 0), now: () => new Date(), log: () => {} })
   expect(await drafts.state(AGENT)).toEqual({ ok: true, value: null })
   expect(asked.count).toBe(0)
   cleanup()
@@ -681,5 +684,128 @@ test('release of a draft whose file is already gone still drops its entry', asyn
   rmSync(join(folder, FILE))
   expect(await drafts.release(() => true)).toEqual({ released: [FILE], kept: [] })
   expect(await drafts.state(AGENT)).toEqual({ ok: true, value: null })
+  cleanup()
+})
+
+// Brouillons et workspaces : chaque brouillon appartient au workspace où il a été ouvert (`localId`).
+const SECOND: AgentRef = { kind: 'agent', agentId: 'agent_2' }
+const registryOf = (folder: string) =>
+  JSON.parse(readFileSync(join(folder, REGISTRY_FILE), 'utf8')) as { entries: Record<string, { workspace?: string; ref: DraftRef }> }
+
+test('a draft opened under A is stamped with A', async () => {
+  const { drafts, folder } = setup()
+  await drafts.open(AGENT)
+  expect(registryOf(folder).entries[FILE]?.workspace).toBe('ws-a')
+  cleanup()
+})
+
+test('state hides a draft of another workspace', async () => {
+  const { drafts, folder, space } = setup()
+  await drafts.open(AGENT)
+  writeFileSync(join(folder, FILE), 'name: My edit\n')
+  space.state.active = 'ws-b'
+  expect(await drafts.state(AGENT)).toEqual({ ok: true, value: null })
+  space.state.active = 'ws-a'
+  const back = await drafts.state(AGENT)
+  expect(back.ok && back.value?.file).toBe(FILE)
+  expect(back.ok && back.value?.unapplied).toBe(true)
+  expect(readFileSync(join(folder, FILE), 'utf8')).toBe('name: My edit\n')
+  cleanup()
+})
+
+test('prepare refuses a draft of another workspace without calling the API', async () => {
+  const { drafts, folder, prepared, space } = setup()
+  space.state.names['ws-a'] = 'Orca-claude'
+  await drafts.open(AGENT)
+  writeFileSync(join(folder, FILE), 'name: My edit\n')
+  space.state.active = 'ws-b'
+  expect(await drafts.prepare(AGENT)).toEqual({
+    ok: false,
+    code: 'other',
+    error: 'This draft belongs to Orca-claude. Switch to it to apply.'
+  })
+  expect(prepared.length).toBe(0)
+  space.state.active = 'ws-a'
+  expect((await drafts.prepare(AGENT)).ok).toBe(true)
+  expect(prepared.length).toBe(1)
+  cleanup()
+})
+
+test('prepare says a draft belongs to a removed workspace when its name is unknown', async () => {
+  const { drafts, folder, prepared, space } = setup()
+  await drafts.open(AGENT)
+  writeFileSync(join(folder, FILE), 'name: My edit\n')
+  delete space.state.names['ws-a']
+  space.state.active = 'ws-b'
+  expect(await drafts.prepare(AGENT)).toEqual({ ok: false, code: 'other', error: 'This draft belongs to a workspace that was removed.' })
+  expect(prepared.length).toBe(0)
+  cleanup()
+})
+
+test('a registry entry without workspace belongs to the migrated workspace', async () => {
+  const { drafts, folder, build, space } = setup()
+  await drafts.open(AGENT)
+  const registry = registryOf(folder)
+  delete registry.entries[FILE]?.workspace
+  writeFileSync(join(folder, REGISTRY_FILE), JSON.stringify(registry))
+  space.state.legacy = 'ws-b'
+  space.state.active = 'ws-a'
+  expect(await build().state(AGENT)).toEqual({ ok: true, value: null })
+  space.state.active = 'ws-b'
+  const state = await build().state(AGENT)
+  expect(state.ok && state.value?.file).toBe(FILE)
+  cleanup()
+})
+
+test('discard of a draft of another workspace says so and leave its file untouched', async () => {
+  const { drafts, folder, live, space } = setup()
+  await drafts.open(AGENT)
+  writeFileSync(join(folder, FILE), 'name: My edit\n')
+  space.state.active = 'ws-b'
+  live.text = 'name: Live again\n'
+  expect(await drafts.discard(AGENT)).toEqual({ ok: false, code: 'other', error: 'This draft belongs to Default. Switch to it to discard.' })
+  expect(readFileSync(join(folder, FILE), 'utf8')).toBe('name: My edit\n')
+  expect(registryOf(folder).entries[FILE]?.workspace).toBe('ws-a')
+  cleanup()
+})
+
+test('release and find only see the drafts of the active workspace', async () => {
+  const { drafts, folder, space } = setup()
+  await drafts.open(AGENT)
+  space.state.active = 'ws-b'
+  await drafts.open(SECOND)
+  expect((await drafts.find(() => true)).map((found) => found.file)).toEqual(['agents/agent_2.yaml'])
+  expect(await drafts.release(() => true)).toEqual({ released: ['agents/agent_2.yaml'], kept: [] })
+  // Le brouillon propre de A reste, fichier et entrée : B n'y touche pas.
+  expect(existsSync(join(folder, FILE))).toBe(true)
+  expect(Object.keys(registryOf(folder).entries)).toEqual([FILE])
+  space.state.active = 'ws-a'
+  expect((await drafts.find(() => true)).map((found) => found.file)).toEqual([FILE])
+  cleanup()
+})
+
+test('a clean draft of another workspace is never replaced by a draft that wants its file name', async () => {
+  const other: AgentRef = { kind: 'agent', agentId: 'agent_other' }
+  const { drafts, folder, space } = setup({ file: () => 'agents/shared.yaml' })
+  await drafts.open(AGENT)
+  space.state.active = 'ws-b'
+  expect(await drafts.open(other)).toEqual({ ok: false, code: 'other', error: 'Another draft already uses this file name.' })
+  expect(existsSync(join(folder, 'agents/shared.yaml'))).toBe(true)
+  expect(registryOf(folder).entries['agents/shared.yaml']?.workspace).toBe('ws-a')
+  cleanup()
+})
+
+test('without an active workspace, open, discard and prepare answer as without a key and state answers null', async () => {
+  const { drafts, folder, live, space } = setup()
+  await drafts.open(AGENT)
+  space.state.active = null
+  const noKey = { ok: false, code: 'no_key', error: 'Add your Anthropic API key first.' }
+  expect(await drafts.open(AGENT)).toEqual(noKey)
+  expect(await drafts.discard(AGENT)).toEqual(noKey)
+  expect(await drafts.prepare(AGENT)).toEqual(noKey)
+  expect(await drafts.state(AGENT)).toEqual({ ok: true, value: null })
+  expect(await drafts.find(() => true)).toEqual([])
+  expect(live.reads).toBe(1)
+  expect(existsSync(join(folder, FILE))).toBe(true)
   cleanup()
 })

@@ -193,12 +193,19 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
 
   // Les brouillons : un fichier par agent ou mémoire, édité dans l'éditeur d'Orca. Les adaptateurs
   // reçoivent `drafts` par une fonction : ils servent à le construire.
+  const activeLocalId = async (): Promise<string | null> => (await workspaces.index()).activeLocalId
   const drafts: Drafts = createDrafts({
     folder: DRAFTS_FOLDER,
     host: createEditorHost(orca.host),
     adapters: {
-      agent: createAgentAdapter(store, () => drafts, (message) => orca.log(message)),
+      agent: createAgentAdapter(store, () => drafts, activeLocalId, (message) => orca.log(message)),
       memory: createMemoryAdapter(store, () => drafts, (message) => orca.log(message))
+    },
+    // Un brouillon appartient au workspace où il a été ouvert ; les entrées d'avant les workspaces reviennent à l'entrée migrée.
+    workspace: {
+      active: activeLocalId,
+      legacy: async () => (await workspaces.index()).migratedLocalId,
+      nameOf: (localId) => workspaces.nameOf(localId)
     },
     pending: pendingWrites,
     now: () => new Date(),

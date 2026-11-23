@@ -6,10 +6,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DraftRef } from '../protocol'
 import { NEW_AGENT_YAML, agentToDocument, renderAgentYaml, type AgentDocument } from './agent-yaml'
-import { NEW_AGENT_FILE, agentFile, createAgentAdapter, releaseArchivedDrafts, sendAgent } from './agent-drafts'
+import { agentFile, createAgentAdapter, newAgentFile, releaseArchivedDrafts, sendAgent } from './agent-drafts'
 import type { ClientStore } from './client'
 import { REGISTRY_FILE, createDrafts, type Drafts } from './drafts'
 import type { EditorHost } from './editor-host'
+import { fakeWorkspace } from './fake-workspace'
 import { createPendingWrites } from './pending-writes'
 
 type AgentRef = Extract<DraftRef, { kind: 'agent' }>
@@ -20,6 +21,7 @@ const fixture = JSON.parse(readFileSync(new URL('./fixtures/agent.json', import.
 const EXISTING: AgentRef = { kind: 'agent', agentId: 'agent_1' }
 const NEW: AgentRef = { kind: 'agent', agentId: null }
 const EXISTING_FILE = 'agents/incident-commander--agent_1.yaml'
+const NEW_FILE = newAgentFile('ws-a')
 
 /** Le corps réel d'un refus de version, capturé le 22/11 (docs/superpowers/runs/lot2/t12-version-probe.log). */
 const VERSION_REFUSAL_BODY = {
@@ -158,11 +160,19 @@ function setup() {
   const pending = createPendingWrites(() => 0)
   const logs: string[] = []
   const holder: { drafts?: Drafts } = {}
-  const adapter = createAgentAdapter(api.store, () => holder.drafts as Drafts, (message) => logs.push(message), () => new Date('2026-11-22T10:00:00.000Z'))
+  const space = fakeWorkspace()
+  const adapter = createAgentAdapter(
+    api.store,
+    () => holder.drafts as Drafts,
+    space.deps.active,
+    (message) => logs.push(message),
+    () => new Date('2026-11-22T10:00:00.000Z')
+  )
   const drafts = createDrafts({
     folder,
     host: fake.host,
     adapters: { agent: adapter },
+    workspace: space.deps,
     pending,
     now: () => new Date('2026-11-22T10:00:00.000Z'),
     log: (message) => logs.push(message)
@@ -190,15 +200,15 @@ function setup() {
     await client.beta.agents.update('agent_1', patch)
     api.calls.pop()
   }
-  return { folder, fake, api, pending, logs, drafts, apply, registry, read, edit, elsewhere }
+  return { folder, fake, api, pending, logs, drafts, apply, registry, read, edit, elsewhere, space }
 }
 
 const only = (calls: Call[], method: string): Call[] => calls.filter((call) => call.method === method)
 
-test('agentFile names the file by slug and id, and the new agent has a fixed file', () => {
+test('agentFile names the file by slug and id, and the new agent has one file per workspace', () => {
   expect(agentFile('Incident commander', 'agent_1')).toBe(EXISTING_FILE)
   expect(agentFile('Weird & Name!!', 'agent_2')).toBe('agents/weird-name--agent_2.yaml')
-  expect(NEW_AGENT_FILE).toBe('agents/new-agent.yaml')
+  expect(newAgentFile('ws-a')).toBe('agents/new-agent--ws-a.yaml')
 })
 
 test('open writes the live agent as YAML under its slug and id, with the header, and records the version as the base', async () => {
@@ -216,9 +226,9 @@ test('open writes the live agent as YAML under its slug and id, with the header,
 test('open of a new agent writes the blank template, with no base, and has nothing to apply until it is edited', async () => {
   const { drafts, read, registry, apply, api } = setup()
   const result = await drafts.open(NEW)
-  expect(result.ok && result.value.file).toBe(NEW_AGENT_FILE)
-  expect(read(NEW_AGENT_FILE)).toBe(NEW_AGENT_YAML)
-  expect(registry().entries[NEW_AGENT_FILE]?.base).toBe(null)
+  expect(result.ok && result.value.file).toBe(NEW_FILE)
+  expect(read(NEW_FILE)).toBe(NEW_AGENT_YAML)
+  expect(registry().entries[NEW_FILE]?.base).toBe(null)
   expect(await apply(NEW)).toEqual({ ok: false, code: 'nothing_to_apply', error: 'Nothing to apply: save the file first (⌘S).' })
   expect(api.calls).toEqual([])
   cleanup()
@@ -454,7 +464,7 @@ test('a metadata key removed in the file leaves as a null patch, never as metada
 test('creating from the template sends the document, writes the canonical file and puts the template back', async () => {
   const { drafts, apply, edit, read, registry, api, fake } = setup()
   await drafts.open(NEW)
-  edit(NEW_AGENT_FILE, 'name: Untitled agent', 'name: My agent')
+  edit(NEW_FILE, 'name: Untitled agent', 'name: My agent')
   fake.calls.length = 0
   const committed = await apply(NEW)
   expect(committed).toEqual({ ok: true, value: { label: 'Applied, v1', id: 'agent_new' } })
@@ -471,7 +481,7 @@ test('creating from the template sends the document, writes the canonical file a
   expect(registry().entries[canonical]?.ref).toEqual({ kind: 'agent', agentId: 'agent_new' })
   expect(registry().entries[canonical]?.base).toEqual({ version: 1 })
   // Le modèle revient à son état d'origine, propre.
-  expect(read(NEW_AGENT_FILE)).toBe(NEW_AGENT_YAML)
+  expect(read(NEW_FILE)).toBe(NEW_AGENT_YAML)
   const state = await drafts.state(NEW)
   expect(state.ok && state.value?.unapplied).toBe(false)
   // Le fichier canonique s'ouvre dans l'éditeur.
@@ -491,7 +501,7 @@ test('the canonical file inherits the return workspace of the template entry, no
   // Au moment de l'envoi, le focus est celui des brouillons.
   fake.focus.workspaceId = 'ws-drafts'
   fake.focus.name = 'managed-agents'
-  edit(NEW_AGENT_FILE, 'name: Untitled agent', 'name: My agent')
+  edit(NEW_FILE, 'name: Untitled agent', 'name: My agent')
   expect((await apply(NEW)).ok).toBe(true)
   expect(registry().entries['agents/my-agent--agent_new.yaml']?.returnTo).toEqual({ workspaceId: 'ws-A', name: 'project-a' })
   cleanup()
@@ -500,12 +510,12 @@ test('the canonical file inherits the return workspace of the template entry, no
 test('a template saved again during the creation keeps its newer text, and the canonical file is still written', async () => {
   const { drafts, apply, edit, read, folder, api } = setup()
   await drafts.open(NEW)
-  edit(NEW_AGENT_FILE, 'name: Untitled agent', 'name: My agent')
+  edit(NEW_FILE, 'name: Untitled agent', 'name: My agent')
   // Romain sauvegarde autre chose pendant l'envoi.
-  api.state.duringSend = () => writeFileSync(join(folder, NEW_AGENT_FILE), `${read(NEW_AGENT_FILE)}# later thought\n`)
+  api.state.duringSend = () => writeFileSync(join(folder, NEW_FILE), `${read(NEW_FILE)}# later thought\n`)
   const committed = await apply(NEW)
   expect(committed.ok).toBe(true)
-  expect(read(NEW_AGENT_FILE).includes('# later thought')).toBe(true)
+  expect(read(NEW_FILE).includes('# later thought')).toBe(true)
   expect(existsSync(join(folder, 'agents/my-agent--agent_new.yaml'))).toBe(true)
   const state = await drafts.state(NEW)
   expect(state.ok && state.value?.unapplied).toBe(true)
@@ -536,16 +546,16 @@ test('m4: archiving an agent releases its clean draft, keeps and logs an unappli
   await drafts.open(NEW)
   await releaseArchivedDrafts({ kind: 'agent', id: 'agent_1' }, () => drafts, (message) => logs.push(message))
   expect(existsSync(join(folder, EXISTING_FILE))).toBe(false)
-  expect(Object.keys(registry().entries).sort()).toEqual([NEW_AGENT_FILE, 'agents/second--agent_2.yaml'])
+  expect(Object.keys(registry().entries).sort()).toEqual([NEW_FILE, 'agents/second--agent_2.yaml'])
   // Un brouillon modifié et non appliqué reste, et le journal le dit.
   edit('agents/second--agent_2.yaml', 'Be decisive.', 'Be calm.')
   await releaseArchivedDrafts({ kind: 'agent', id: 'agent_2' }, () => drafts, (message) => logs.push(message))
   expect(existsSync(join(folder, 'agents/second--agent_2.yaml'))).toBe(true)
   expect(logs.some((message) => message.includes('agent draft kept') && message.includes('agents/second--agent_2.yaml'))).toBe(true)
   // Le modèle du nouvel agent n'est jamais celui d'un agent archivé ; un autre type de ressource est sans effet.
-  expect(existsSync(join(folder, NEW_AGENT_FILE))).toBe(true)
+  expect(existsSync(join(folder, NEW_FILE))).toBe(true)
   await releaseArchivedDrafts({ kind: 'environment', id: 'env_1' }, () => drafts, (message) => logs.push(message))
-  expect(Object.keys(registry().entries).sort()).toEqual([NEW_AGENT_FILE, 'agents/second--agent_2.yaml'])
+  expect(Object.keys(registry().entries).sort()).toEqual([NEW_FILE, 'agents/second--agent_2.yaml'])
   cleanup()
 })
 
@@ -554,5 +564,47 @@ test('m4: a draft that cannot be released does not make the archive fail, and sa
   const broken = { ...drafts, release: async () => Promise.reject(new Error('disk full')) } as unknown as Drafts
   await releaseArchivedDrafts({ kind: 'agent', id: 'agent_1' }, () => broken, (message) => logs.push(message))
   expect(logs.some((message) => message.includes('agent drafts not released') && message.includes('disk full'))).toBe(true)
+  cleanup()
+})
+
+test('new agent draft is per workspace', async () => {
+  const { drafts, read, registry, edit, space, folder } = setup()
+  await drafts.open(NEW)
+  edit(newAgentFile('ws-a'), 'name: Untitled agent', 'name: My agent')
+  space.state.active = 'ws-b'
+  // B ne voit pas le modèle de A, et son ouverture écrit un second fichier sans toucher au premier.
+  expect(await drafts.state(NEW)).toEqual({ ok: true, value: null })
+  const second = await drafts.open(NEW)
+  expect(second.ok && second.value.file).toBe(newAgentFile('ws-b'))
+  expect(read(newAgentFile('ws-b'))).toBe(NEW_AGENT_YAML)
+  expect(read(newAgentFile('ws-a')).includes('name: My agent')).toBe(true)
+  expect(Object.keys(registry().entries).sort()).toEqual(['agents/new-agent--ws-a.yaml', 'agents/new-agent--ws-b.yaml'])
+  expect(readdirSync(join(folder, 'agents')).sort()).toEqual(['new-agent--ws-a.yaml', 'new-agent--ws-b.yaml'])
+  cleanup()
+})
+
+test('an agent created under B resets the template of B and leaves the template of A as it is', async () => {
+  const { drafts, apply, read, edit, space } = setup()
+  await drafts.open(NEW)
+  edit(newAgentFile('ws-a'), 'name: Untitled agent', 'name: From A')
+  space.state.active = 'ws-b'
+  await drafts.open(NEW)
+  edit(newAgentFile('ws-b'), 'name: Untitled agent', 'name: From B')
+  const result = await apply(NEW)
+  expect(result.ok).toBe(true)
+  expect(read(newAgentFile('ws-b'))).toBe(NEW_AGENT_YAML)
+  expect(read(newAgentFile('ws-a')).includes('name: From A')).toBe(true)
+  cleanup()
+})
+
+test('archiving an agent releases the clean draft of the active workspace only', async () => {
+  const { drafts, folder, space } = setup()
+  await drafts.open(EXISTING)
+  space.state.active = 'ws-b'
+  await releaseArchivedDrafts({ kind: 'agent', id: 'agent_1' }, () => drafts)
+  expect(existsSync(join(folder, EXISTING_FILE))).toBe(true)
+  space.state.active = 'ws-a'
+  await releaseArchivedDrafts({ kind: 'agent', id: 'agent_1' }, () => drafts)
+  expect(existsSync(join(folder, EXISTING_FILE))).toBe(false)
   cleanup()
 })

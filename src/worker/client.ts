@@ -4,7 +4,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import type { ApiErrorCode, ApiResult, WorkspaceInfo } from '../protocol'
 import type { Workspaces } from './workspaces'
 
-const NO_KEY_MESSAGE = 'Add your Anthropic API key first.'
+export const NO_KEY_MESSAGE = 'Add your Anthropic API key first.'
 
 export const CONFLICT_MESSAGE = 'Changed elsewhere since you opened it.'
 

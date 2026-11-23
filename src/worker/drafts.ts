@@ -6,7 +6,7 @@ import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { ApiErrorCode, ApiResult, DraftInfo, DraftRef, DraftsStatus, PreparedWrite } from '../protocol'
-import { failure } from './client'
+import { NO_KEY_MESSAGE, failure } from './client'
 import type { EditorHost } from './editor-host'
 import type { PendingWrites } from './pending-writes'
 
@@ -83,12 +83,24 @@ export type Drafts = {
 
 export type ReturnTo = { workspaceId: string; name: string }
 
+/**
+ * Les workspaces Anthropic vus par les brouillons : un brouillon appartient à celui où il a été ouvert (son `localId`).
+ * `legacy` : le workspace issu de la migration, auquel reviennent les entrées d'avant les workspaces.
+ */
+export type DraftsWorkspace = {
+  active(): Promise<string | null>
+  legacy(): Promise<string | null>
+  nameOf(localId: string): Promise<string | null>
+}
+
 type RegistryEntry = {
   ref: DraftRef
   base: DraftBase
   writtenSha256: string
   writtenAt: string
   returnTo: ReturnTo | null
+  /** Le `localId` du workspace où le brouillon a été ouvert. */
+  workspace: string
 }
 
 type Registry = {
@@ -184,6 +196,7 @@ export function createDrafts(deps: {
   folder: string
   host: EditorHost
   adapters: { agent?: DraftAdapter<AgentRef>; memory?: DraftAdapter<MemoryRef> }
+  workspace: DraftsWorkspace
   pending: PendingWrites
   now: () => Date
   log: (message: string) => void
@@ -205,13 +218,26 @@ export function createDrafts(deps: {
   /** Horodatage sûr dans un nom de fichier. */
   const stamp = (): string => now().toISOString().replace(/[:.]/g, '-')
 
+  /** Une entrée écrite avant les workspaces n'a pas de `workspace` : elle revient à l'entrée migrée. */
+  async function withWorkspaces(registry: Registry): Promise<Registry> {
+    let legacy: string | null | undefined
+    for (const entry of Object.values(registry.entries)) {
+      if (typeof entry.workspace !== 'string') {
+        legacy ??= await deps.workspace.legacy()
+        entry.workspace = legacy ?? ''
+      }
+    }
+    return registry
+  }
+
   async function readRegistry(): Promise<Registry> {
     const raw = await readOrNull(registryPath)
     if (raw === null) {
       return { entries: {}, lastReturnTo: null }
     }
+    let registry: Registry
     try {
-      return parseRegistry(raw)
+      registry = parseRegistry(raw)
     } catch (error) {
       // Un registre illisible est mis de côté, jamais jeté : Romain peut y retrouver ce qu'il suivait.
       const aside = `${registryPath}.corrupt-${stamp()}`
@@ -219,6 +245,7 @@ export function createDrafts(deps: {
       log(`drafts registry unreadable (${messageOf(error)}); moved to ${aside}`)
       return { entries: {}, lastReturnTo: null }
     }
+    return withWorkspaces(registry)
   }
 
   const writeRegistry = (registry: Registry): Promise<void> => writeAtomic(registryPath, JSON.stringify(registry, null, 2))
@@ -259,7 +286,8 @@ export function createDrafts(deps: {
     file: string,
     text: string,
     base: DraftBase,
-    returnTo: ReturnTo | null
+    returnTo: ReturnTo | null,
+    workspace: string
   ): Promise<RegistryEntry> {
     await writeAtomic(join(folder, file), text)
     const entry: RegistryEntry = {
@@ -267,7 +295,8 @@ export function createDrafts(deps: {
       base,
       writtenSha256: sha256(text),
       writtenAt: now().toISOString(),
-      returnTo
+      returnTo,
+      workspace
     }
     registry.entries[file] = entry
     await writeRegistry(registry)
@@ -308,11 +337,16 @@ export function createDrafts(deps: {
     registry: Registry,
     file: string,
     ref: DraftRef,
+    active: string,
     replaces: (other: DraftRef) => boolean = () => false
   ): Promise<{ file: string; known: RegistryEntry | undefined; replaced: boolean } | typeof NAME_TAKEN> {
     const slot = slotOf(registry, file)
     if (!slot) {
       return { file, known: undefined, replaced: false }
+    }
+    // Le brouillon d'un autre workspace n'est jamais repris ni remplacé, propre ou non.
+    if (slot.entry.workspace !== active) {
+      return NAME_TAKEN
     }
     if (sameRef(slot.entry.ref, ref)) {
       return { file: slot.key, known: slot.entry, replaced: false }
@@ -324,18 +358,43 @@ export function createDrafts(deps: {
     return { file: slot.key, known: undefined, replaced: true }
   }
 
+  /**
+   * Le refus d'un brouillon qui appartient à un autre workspace que l'actif, ou null. Posé avant de chercher le fichier :
+   * l'adaptateur peut le demander au réseau, avec la clé de l'actif. Le brouillon de création d'agent est un fichier par
+   * workspace : une référence sans id n'est jamais celle d'un autre.
+   */
+  async function foreignRefusal(
+    adapter: DraftAdapter<DraftRef>,
+    registry: Registry,
+    ref: DraftRef,
+    active: string,
+    verb: 'apply' | 'discard'
+  ): Promise<ReturnType<typeof refuse> | null> {
+    if (adapter.check?.(ref) || (ref.kind === 'agent' && ref.agentId === null)) {
+      return null
+    }
+    const owners = Object.values(registry.entries).filter((entry) => sameRef(entry.ref, ref))
+    if (owners.length === 0 || owners.some((entry) => entry.workspace === active)) {
+      return null
+    }
+    const name = await deps.workspace.nameOf(owners[0].workspace)
+    return refuse('other', name === null ? 'This draft belongs to a workspace that was removed.' : `This draft belongs to ${name}. Switch to it to ${verb}.`)
+  }
+
   return {
     async find(match) {
       let entries: Registry['entries']
+      let active: string | null
       try {
         const raw = await readOrNull(registryPath)
-        entries = raw === null ? {} : parseRegistry(raw).entries
+        entries = raw === null ? {} : (await withWorkspaces(parseRegistry(raw))).entries
+        active = await deps.workspace.active()
       } catch {
         return []
       }
       const found: { ref: DraftRef; file: string; unapplied: boolean }[] = []
       for (const [file, entry] of Object.entries(entries)) {
-        if (!match(entry.ref)) {
+        if (entry.workspace !== active || !match(entry.ref)) {
           continue
         }
         const content = await readOrNull(join(folder, file)).catch(() => null)
@@ -346,12 +405,14 @@ export function createDrafts(deps: {
 
     release: (match, becomes) =>
       serial(async () => {
+        const active = await deps.workspace.active()
         const registry = await readRegistry()
         const released: string[] = []
         const kept: string[] = []
         let converted = false
         for (const [file, entry] of Object.entries(registry.entries)) {
-          if (!match(entry.ref)) {
+          // Les brouillons d'un autre workspace ne sont ni lus ni touchés.
+          if (entry.workspace !== active || !match(entry.ref)) {
             continue
           }
           const content = await readOrNull(join(folder, file))
@@ -389,6 +450,10 @@ export function createDrafts(deps: {
           return NOT_AVAILABLE
         }
         try {
+          const active = await deps.workspace.active()
+          if (active === null) {
+            return refuse('no_key', NO_KEY_MESSAGE)
+          }
           let workspace: { id: string; name: string } | null
           try {
             workspace = await findWorkspace()
@@ -405,7 +470,7 @@ export function createDrafts(deps: {
           const registry = await readRegistry()
           // Deux brouillons sur un même nom de fichier (noms qui se ressemblent, casse comprise) : le second ne reprend
           // rien du premier, sauf si celui-ci est propre (périmé). Le fichier garde la casse sous laquelle il a été écrit.
-          const claimed = await claim(registry, located.file, ref)
+          const claimed = await claim(registry, located.file, ref, active)
           if (!('file' in claimed)) {
             return claimed
           }
@@ -442,7 +507,7 @@ export function createDrafts(deps: {
             if (live.recordedGone) {
               delete registry.entries[file]
             }
-            entry = await writeDraft(registry, ref, file, live.text, live.base, returnTo)
+            entry = await writeDraft(registry, ref, file, live.text, live.base, returnTo, active)
           }
 
           try {
@@ -471,7 +536,12 @@ export function createDrafts(deps: {
           if (problem) {
             return refuse('invalid', problem)
           }
-          const slot = Object.entries((await readRegistry()).entries).find(([, entry]) => sameRef(entry.ref, ref))
+          // Un brouillon d'un autre workspace n'existe pas ici : ni listé, ni appliqué.
+          const active = await deps.workspace.active()
+          if (active === null) {
+            return { ok: true, value: null }
+          }
+          const slot = Object.entries((await readRegistry()).entries).find(([, entry]) => entry.workspace === active && sameRef(entry.ref, ref))
           if (!slot) {
             return { ok: true, value: null }
           }
@@ -488,12 +558,21 @@ export function createDrafts(deps: {
           return NOT_AVAILABLE
         }
         try {
+          const active = await deps.workspace.active()
+          if (active === null) {
+            return refuse('no_key', NO_KEY_MESSAGE)
+          }
+          const registry = await readRegistry()
+          const foreign = await foreignRefusal(adapter, registry, ref, active, 'apply')
+          if (foreign) {
+            return foreign
+          }
           const located = await locate(adapter, ref)
           if (!('file' in located)) {
             return located
           }
-          const slot = slotOf(await readRegistry(), located.file)
-          const entry = slot && sameRef(slot.entry.ref, ref) ? slot.entry : undefined
+          const slot = slotOf(registry, located.file)
+          const entry = slot && slot.entry.workspace === active && sameRef(slot.entry.ref, ref) ? slot.entry : undefined
           const content = await readOrNull(join(folder, slot?.key ?? located.file))
           if (!entry || content === null) {
             return FILE_GONE
@@ -514,13 +593,21 @@ export function createDrafts(deps: {
           return NOT_AVAILABLE
         }
         try {
+          const active = await deps.workspace.active()
+          if (active === null) {
+            return refuse('no_key', NO_KEY_MESSAGE)
+          }
+          const registry = await readRegistry()
+          const foreign = await foreignRefusal(adapter, registry, ref, active, 'discard')
+          if (foreign) {
+            return foreign
+          }
           const located = await locate(adapter, ref)
           if (!('file' in located)) {
             return located
           }
-          const registry = await readRegistry()
           // Écraser le fichier d'un autre brouillon non appliqué perdrait son travail : on refuse.
-          const claimed = await claim(registry, located.file, ref)
+          const claimed = await claim(registry, located.file, ref, active)
           if (!('file' in claimed)) {
             return claimed
           }
@@ -529,7 +616,7 @@ export function createDrafts(deps: {
           if (live.recordedGone) {
             delete registry.entries[file]
           }
-          const entry = await writeDraft(registry, ref, file, live.text, live.base, known?.returnTo ?? registry.lastReturnTo)
+          const entry = await writeDraft(registry, ref, file, live.text, live.base, known?.returnTo ?? registry.lastReturnTo, active)
           const info = await describe(ref, file, entry)
           return info ? { ok: true, value: info } : FILE_GONE
         } catch (error) {
@@ -553,6 +640,10 @@ export function createDrafts(deps: {
           if (!adapter) {
             throw new Error('no adapter for this draft kind')
           }
+          const active = await deps.workspace.active()
+          if (active === null) {
+            throw new Error(NO_KEY_MESSAGE)
+          }
           const located = await locate(adapter, ref)
           if (!('file' in located)) {
             throw new Error(located.error)
@@ -562,7 +653,7 @@ export function createDrafts(deps: {
           // n'y garde qu'une mémoire), propre ou non : ce qu'elle tenait est ce qui vient d'être envoyé.
           const supersedes = (other: DraftRef): boolean =>
             ref.kind === 'memory' && other.kind === 'memory' && other.memoryStoreId === ref.memoryStoreId && other.path === ref.path
-          const claimed = await claim(registry, located.file, ref, supersedes)
+          const claimed = await claim(registry, located.file, ref, active, supersedes)
           if (!('file' in claimed)) {
             throw new Error(claimed.error)
           }
@@ -570,7 +661,7 @@ export function createDrafts(deps: {
           const returnTo = known?.returnTo ?? inheritedReturnTo ?? registry.lastReturnTo
           const onDisk = await readOrNull(join(folder, file))
           if (onDisk === null || sha256(onDisk) === sha256(sent)) {
-            await writeDraft(registry, ref, file, text, base, returnTo)
+            await writeDraft(registry, ref, file, text, base, returnTo, active)
             return true
           }
           // Romain a sauvegardé autre chose pendant l'envoi : son fichier reste, et ce qu'il contient
@@ -580,7 +671,8 @@ export function createDrafts(deps: {
             base,
             writtenSha256: sha256(text),
             writtenAt: now().toISOString(),
-            returnTo
+            returnTo,
+            workspace: active
           }
           await writeRegistry(registry)
           return true

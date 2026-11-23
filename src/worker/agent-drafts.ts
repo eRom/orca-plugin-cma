@@ -1,6 +1,6 @@
 // Les agents dans l'éditeur : un brouillon YAML par agent (`agents/<nom>--<id>.yaml`), lu à l'état actuel,
 // envoyé avec la version lue comme garde (une version changée ailleurs devient `conflict`), puis réécrit avec
-// ce que l'API a gardé. « New agent » part d'un modèle fixe (`agents/new-agent.yaml`) et, une fois créé,
+// ce que l'API a gardé. « New agent » part d'un modèle par workspace (`agents/new-agent--<localId>.yaml`) et, une fois créé,
 // l'agent a son fichier canonique, ouvert dans l'éditeur ; le modèle revient à son état d'origine.
 import Anthropic from '@anthropic-ai/sdk'
 import type { AgentCreateParams, AgentUpdateParams, BetaManagedAgentsAgent } from '@anthropic-ai/sdk/resources/beta/agents/agents'
@@ -19,7 +19,8 @@ import { slugify, type DraftAdapter, type Drafts } from './drafts'
 
 type AgentRef = Extract<DraftRef, { kind: 'agent' }>
 
-export const NEW_AGENT_FILE = 'agents/new-agent.yaml'
+/** Le modèle « New agent » d'un workspace : un fichier par workspace (`localId`), pour qu'aucun ne reprenne le brouillon d'un autre. */
+export const newAgentFile = (localId: string): string => `agents/new-agent--${localId}.yaml`
 
 const NEW_AGENT_REF: AgentRef = { kind: 'agent', agentId: null }
 
@@ -132,6 +133,7 @@ export async function releaseArchivedDrafts(ref: ResourceRef, drafts: () => Draf
 export function createAgentAdapter(
   store: ClientStore,
   drafts: () => Drafts,
+  activeWorkspace: () => Promise<string | null>,
   log: (message: string) => void = () => {},
   now: () => Date = () => new Date()
 ): DraftAdapter<AgentRef> {
@@ -178,7 +180,12 @@ export function createAgentAdapter(
   return {
     async file(ref) {
       if (ref.agentId === null) {
-        return NEW_AGENT_FILE
+        // `Drafts` refuse avant d'appeler l'adaptateur quand aucun workspace n'est actif.
+        const active = await activeWorkspace()
+        if (active === null) {
+          throw new Error('No active workspace.')
+        }
+        return newAgentFile(active)
       }
       const known = await registeredFile(ref.agentId)
       if (known !== null) {
