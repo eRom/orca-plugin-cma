@@ -1,6 +1,6 @@
 // Les agents dans l'éditeur : un brouillon YAML par agent (`agents/<nom>--<id>.yaml`), lu à l'état actuel,
 // envoyé avec la version lue comme garde (une version changée ailleurs devient `conflict`), puis réécrit avec
-// ce que l'API a gardé. « New agent » part d'un modèle par workspace (`agents/new-agent--<localId>.yaml`) et, une fois créé,
+// ce que l'API a gardé. « New agent » part d'un modèle par workspace (`agents/new-agent--<8 premiers caractères du localId>.yaml`) et, une fois créé,
 // l'agent a son fichier canonique, ouvert dans l'éditeur ; le modèle revient à son état d'origine.
 import Anthropic from '@anthropic-ai/sdk'
 import type { AgentCreateParams, AgentUpdateParams, BetaManagedAgentsAgent } from '@anthropic-ai/sdk/resources/beta/agents/agents'

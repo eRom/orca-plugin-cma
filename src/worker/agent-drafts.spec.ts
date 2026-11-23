@@ -677,3 +677,82 @@ test('a template from before the workspaces yields to a per-workspace file that 
   expect(logs.some((message) => message.includes('agents/new-agent.yaml') && message.includes(NEW_FILE))).toBe(true)
   cleanup()
 })
+
+const LONG_ID = '3f2b8c1e-91d4-4a7b-8e55-0c6d2a9b7f10'
+const LONG_OLD_FILE = `agents/new-agent--${LONG_ID}.yaml`
+const LONG_NEW_FILE = 'agents/new-agent--3f2b8c1e.yaml'
+
+/** Un registre d'avant les noms courts : le modèle « New agent » d'un workspace sous son localId complet. */
+function downgradeToFullIdTemplate(folder: string, read: (file: string) => string): void {
+  const registryFile = join(folder, REGISTRY_FILE)
+  const registry = JSON.parse(readFileSync(registryFile, 'utf8')) as { entries: Record<string, unknown> }
+  const entry = registry.entries[LONG_NEW_FILE]
+  if (!entry) throw new Error('no template entry')
+  delete registry.entries[LONG_NEW_FILE]
+  registry.entries[LONG_OLD_FILE] = entry
+  writeFileSync(join(folder, LONG_OLD_FILE), read(LONG_NEW_FILE))
+  rmSync(join(folder, LONG_NEW_FILE))
+  writeFileSync(registryFile, JSON.stringify(registry))
+}
+
+test('newAgentFile keeps only the first 8 characters of the workspace id', () => {
+  expect(newAgentFile(LONG_ID)).toBe(LONG_NEW_FILE)
+  expect(newAgentFile('ws-a')).toBe('agents/new-agent--ws-a.yaml')
+})
+
+test('a template named with the full workspace id moves to the short name and keeps its unapplied edits', async () => {
+  const { drafts, folder, read, registry, edit, space } = setup()
+  space.state.active = LONG_ID
+  await drafts.open(NEW)
+  edit(LONG_NEW_FILE, 'name: Untitled agent', 'name: Edited before rename')
+  downgradeToFullIdTemplate(folder, read)
+  const state = await drafts.state(NEW)
+  expect(state.ok && state.value?.file).toBe(LONG_NEW_FILE)
+  expect(state.ok && state.value?.unapplied).toBe(true)
+  expect(read(LONG_NEW_FILE).includes('name: Edited before rename')).toBe(true)
+  expect(existsSync(join(folder, LONG_OLD_FILE))).toBe(false)
+  expect(Object.keys(registry().entries)).toEqual([LONG_NEW_FILE])
+  cleanup()
+})
+
+test('a template named with the full workspace id yields to a short-named file that already exists, and says so', async () => {
+  const { drafts, folder, read, registry, logs, space } = setup()
+  space.state.active = LONG_ID
+  await drafts.open(NEW)
+  downgradeToFullIdTemplate(folder, read)
+  writeFileSync(join(folder, LONG_NEW_FILE), 'name: Already here\n')
+  const state = await drafts.state(NEW)
+  expect(state).toEqual({ ok: true, value: null })
+  // L'ancien fichier reste sur disque, seule son entrée est retirée du registre.
+  expect(existsSync(join(folder, LONG_OLD_FILE))).toBe(true)
+  expect(read(LONG_NEW_FILE)).toBe('name: Already here\n')
+  expect(Object.keys(registry().entries)).toEqual([])
+  expect(logs.some((message) => message.includes(LONG_OLD_FILE) && message.includes(LONG_NEW_FILE))).toBe(true)
+  cleanup()
+})
+
+test('a short template name, and a long one that is not the workspace id, are left alone', async () => {
+  const { drafts, folder, registry, edit, read, space } = setup()
+  await drafts.open(NEW)
+  edit(NEW_FILE, 'name: Untitled agent', 'name: Short stays')
+  // Un second fichier à nom long mais sans lien avec le workspace de l'entrée : il n'est pas touché.
+  space.state.active = LONG_ID
+  await drafts.open(NEW)
+  const registryFile = join(folder, REGISTRY_FILE)
+  const raw = JSON.parse(readFileSync(registryFile, 'utf8')) as { entries: Record<string, { workspace: string }> }
+  const entry = raw.entries[LONG_NEW_FILE]
+  if (!entry) throw new Error('no template entry')
+  delete raw.entries[LONG_NEW_FILE]
+  entry.workspace = 'another-workspace-id'
+  raw.entries[LONG_OLD_FILE] = entry
+  writeFileSync(join(folder, LONG_OLD_FILE), read(LONG_NEW_FILE))
+  rmSync(join(folder, LONG_NEW_FILE))
+  writeFileSync(registryFile, JSON.stringify(raw))
+  space.state.active = 'ws-a'
+  const state = await drafts.state(NEW)
+  expect(state.ok && state.value?.file).toBe(NEW_FILE)
+  expect(Object.keys(registry().entries).sort()).toEqual([LONG_OLD_FILE, NEW_FILE])
+  expect(existsSync(join(folder, LONG_OLD_FILE))).toBe(true)
+  expect(read(NEW_FILE).includes('name: Short stays')).toBe(true)
+  cleanup()
+})

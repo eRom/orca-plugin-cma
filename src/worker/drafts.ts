@@ -23,8 +23,17 @@ export function slugify(name: string): string {
   return slug === '' ? 'item' : slug
 }
 
-/** Le modèle « New agent » d'un workspace : un fichier par workspace (`localId`), pour qu'aucun ne reprenne le brouillon d'un autre. */
-export const newAgentFile = (localId: string): string => `agents/new-agent--${localId}.yaml`
+/** Longueur du `localId` gardée dans le nom du modèle : l'onglet de l'éditeur n'affiche pas un UUID entier. */
+const NEW_AGENT_ID_LENGTH = 8
+
+/**
+ * Le modèle « New agent » d'un workspace : un fichier par workspace (`localId`), pour qu'aucun ne reprenne le
+ * brouillon d'un autre. Le nom ne porte que les premiers caractères du `localId` (un UUID aléatoire).
+ */
+export const newAgentFile = (localId: string): string => `agents/new-agent--${localId.slice(0, NEW_AGENT_ID_LENGTH)}.yaml`
+
+/** Les modèles nommés avec le `localId` entier (avant les noms courts) : le groupe capturé est ce `localId`. */
+const FULL_ID_NEW_AGENT_FILE = /^agents\/new-agent--(.+)\.yaml$/
 
 /** Le nom fixe du modèle « New agent » d'avant les workspaces. */
 const LEGACY_NEW_AGENT_FILE = 'agents/new-agent.yaml'
@@ -230,23 +239,16 @@ export function createDrafts(deps: {
    * nom fixe, prend le nom du workspace migré. Son fichier est renommé (les modifications non appliquées survivent) et
    * le registre est réécrit tout de suite, sinon l'ancienne entrée reviendrait à la lecture suivante. Si le fichier
    * du workspace existe déjà, l'ancien reste sur disque et seule son entrée est retirée.
+   * Même geste, aussi sous `convert`, pour un modèle nommé avec le `localId` entier (avant les noms courts).
    */
   async function withWorkspaces(registry: Registry, convert = false): Promise<Registry> {
     let legacy: string | null | undefined
     let changed = false
-    for (const [file, entry] of Object.entries(registry.entries)) {
-      if (typeof entry.workspace === 'string') {
-        continue
-      }
-      legacy ??= await deps.workspace.legacy()
-      entry.workspace = legacy ?? ''
-      if (!convert || legacy === null || file.toLowerCase() !== LEGACY_NEW_AGENT_FILE || entry.ref.kind !== 'agent' || entry.ref.agentId !== null) {
-        continue
-      }
-      const target = newAgentFile(legacy)
+    /** Déplace le modèle `file` vers `target` (fichier compris), ou le laisse sur disque si `target` existe déjà. */
+    const moveTemplate = async (file: string, entry: RegistryEntry, target: string, label: string): Promise<void> => {
       delete registry.entries[file]
       if ((await readOrNull(join(folder, target))) !== null) {
-        log(`legacy new agent draft ${file} left on disk: ${target} already exists`)
+        log(`${label} ${file} left on disk: ${target} already exists`)
       } else {
         if ((await readOrNull(join(folder, file))) !== null) {
           await mkdir(dirname(join(folder, target)), { recursive: true })
@@ -255,6 +257,22 @@ export function createDrafts(deps: {
         registry.entries[target] = entry
       }
       changed = true
+    }
+    for (const [file, entry] of Object.entries(registry.entries)) {
+      if (typeof entry.workspace === 'string') {
+        // Un modèle nommé avec le `localId` entier du workspace de l'entrée prend le nom court.
+        const fullId = convert && entry.ref.kind === 'agent' && entry.ref.agentId === null ? FULL_ID_NEW_AGENT_FILE.exec(file)?.[1] : undefined
+        if (fullId !== undefined && fullId.length > NEW_AGENT_ID_LENGTH && entry.workspace === fullId) {
+          await moveTemplate(file, entry, newAgentFile(fullId), 'new agent draft')
+        }
+        continue
+      }
+      legacy ??= await deps.workspace.legacy()
+      entry.workspace = legacy ?? ''
+      if (!convert || legacy === null || file.toLowerCase() !== LEGACY_NEW_AGENT_FILE || entry.ref.kind !== 'agent' || entry.ref.agentId !== null) {
+        continue
+      }
+      await moveTemplate(file, entry, newAgentFile(legacy), 'legacy new agent draft')
     }
     if (changed) {
       await writeRegistry(registry)
