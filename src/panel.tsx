@@ -3,7 +3,7 @@
 import { Callout, plugin, read, set, Spinner, Stack, Text, type PanelContext } from 'orca'
 import { POLL_VISIBLE_MS } from './protocol'
 import { AgentFormView } from './panel/agent-form'
-import { loadConfigs } from './panel/config-state'
+import { loadConfigTab } from './panel/config-state'
 import { ConfigDetailView, MemoryView, restoreConfigView } from './panel/config-views'
 import { setupDrafts } from './panel/drafts'
 import { EnvironmentFormView } from './panel/environment-form'
@@ -15,7 +15,6 @@ import { CredentialFormView, VaultFormView } from './panel/vault-forms'
 import { clipBytes } from './shared/text'
 import {
   ERROR_TEXT_LIMIT_BYTES,
-  homeTab,
   loadSessions,
   loadWorkspace,
   nav,
@@ -66,7 +65,7 @@ export function setup(ctx: PanelContext): void {
     // La pile persistée peut garder une session ou une configuration ouverte : on la rouvre, si une clé utilisable l'autorise.
     const reopen =
       info?.hasKey && !info.keyRejected
-        ? Promise.all([restoreOpenSession(), restoreNewSession(), restoreConfigView(), loadConfigs(read(homeTab))])
+        ? Promise.all([restoreOpenSession(), restoreNewSession(), restoreConfigView(), loadConfigTab()])
         : Promise.resolve()
     await Promise.all([loadSessions(), reopen])
     // Un ping une fois la vue restaurée : il vérifie que le worker suit bien ce que le panneau montre.

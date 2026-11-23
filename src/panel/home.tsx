@@ -1,5 +1,5 @@
-// Accueil du panneau : les sections « Anthropic workspace » (clé et identité), « Configurations »
-// (4 onglets en lecture seule) et « Sessions ».
+// Accueil du panneau : la section repliable « Anthropic workspace » (clé et identité), puis une barre de
+// cinq onglets (Sessions, Agents, Envs, Memory, Vaults) et la liste de l'onglet choisi.
 import {
   atom,
   Badge,
@@ -8,6 +8,7 @@ import {
   Callout,
   Collapsible,
   EmptyState,
+  IconButton,
   Input,
   Link,
   List,
@@ -22,10 +23,11 @@ import {
   update,
   type IconName
 } from 'orca'
+import type { ConfigKind, SessionRow } from '../protocol'
 import { formatMoney } from '../shared/money'
 import { badgeLabel, badgeTone, sortSessions } from '../shared/sessions'
 import { clipBytes } from '../shared/text'
-import { configErrors, configRows, loadConfigs, openConfig, openNewAgent, RENDER_ROW_CAP, resetConfigs } from './config-state'
+import { configErrors, configRows, loadConfigs, loadConfigTab, openConfig, openNewAgent, RENDER_ROW_CAP, resetConfigs } from './config-state'
 import { filterRows, restoreConfigView } from './config-views'
 import { openNewConfig } from './environment-form'
 import { openNewSession, restoreNewSession } from './new-session'
@@ -36,11 +38,16 @@ import { ERROR_TEXT_LIMIT_BYTES, homeFilter, homeTab, loadSessions, run, section
 const ROW_TITLE_LIMIT_BYTES = 200
 const ROW_DESCRIPTION_LIMIT_BYTES = 300
 
-const CONFIG_TABS: { value: HomeTab; label: string; noun: string; icon: IconName }[] = [
+const CONFIG_TABS: { value: ConfigKind; label: string; noun: string; icon: IconName }[] = [
   { value: 'agent', label: 'Agents', noun: 'agents', icon: 'bot' },
   { value: 'environment', label: 'Envs', noun: 'environments', icon: 'database' },
   { value: 'memory_store', label: 'Memory', noun: 'memory stores', icon: 'layers' },
   { value: 'vault', label: 'Vaults', noun: 'vaults', icon: 'plug' }
+]
+
+const HOME_TABS: { value: HomeTab; label: string; icon: IconName }[] = [
+  { value: 'sessions', label: 'Sessions', icon: 'activity' },
+  ...CONFIG_TABS
 ]
 
 const keyDraft = atom('')
@@ -56,7 +63,7 @@ async function saveKey(): Promise<void> {
     resetConfigs()
     await loadSessions()
     // Une vue de session restée au sommet de la pile (clé absente ou refusée au démarrage) n'a jamais chargé son fil.
-    await Promise.all([restoreOpenSession(), restoreNewSession(), restoreConfigView(), loadConfigs(read(homeTab))])
+    await Promise.all([restoreOpenSession(), restoreNewSession(), restoreConfigView(), loadConfigTab()])
     return
   }
   // Le worker a supprimé la clé refusée ; le brouillon reste, pour être corrigé sans tout retaper.
@@ -133,6 +140,46 @@ function WorkspaceLine() {
   )
 }
 
+/** Libellé du bouton « + » de chaque onglet : il nomme l'action pour les lecteurs d'écran et dans l'infobulle. */
+const NEW_LABELS: Record<ConfigKind, string> = {
+  agent: 'New agent',
+  environment: 'New environment',
+  memory_store: 'New memory store',
+  vault: 'New vault'
+}
+
+function openNew(kind: ConfigKind): void {
+  if (kind === 'agent') openNewAgent()
+  else openNewConfig(kind)
+}
+
+/**
+ * Le filtre de l'onglet et, à sa droite, le bouton « + » de création. Composé en natif : `SearchBar` du kit
+ * dessine ses actions en `ghost sm`, trop discrètes pour la seule action de création de l'onglet.
+ */
+function FilterRow({ noun, newLabel, onNew }: { noun: string; newLabel: string; onNew: () => void }) {
+  return (
+    <Row gap="sm" align="center">
+      {[
+        // Même arbre à chaque rendu : le champ garde le focus pendant la frappe.
+        <Box key="field" grow minWidth={0}>
+          <Input
+            label="Filter"
+            labelHidden
+            type="search"
+            placeholder={`Filter ${noun}`}
+            value={read(homeFilter)}
+            onChange={(value) => set(homeFilter, value)}
+          />
+        </Box>,
+        <Box key="new" shrink={false}>
+          <IconButton icon="add" label={newLabel} variant="outline" onPress={onNew} />
+        </Box>
+      ]}
+    </Row>
+  )
+}
+
 function ConfigList({ tab }: { tab: (typeof CONFIG_TABS)[number] }) {
   const rows = read(configRows)[tab.value]
   const failure = read(configErrors)[tab.value] ?? null
@@ -140,34 +187,7 @@ function ConfigList({ tab }: { tab: (typeof CONFIG_TABS)[number] }) {
   const shown = rows ? filterRows(rows, query) : []
   return (
     <Stack gap="sm">
-      {tab.value === 'agent' ? (
-        <Button icon="add" onPress={openNewAgent}>
-          New agent
-        </Button>
-      ) : null}
-      {tab.value === 'environment' ? (
-        <Button icon="add" onPress={() => openNewConfig('environment')}>
-          New environment
-        </Button>
-      ) : null}
-      {tab.value === 'memory_store' ? (
-        <Button icon="add" onPress={() => openNewConfig('memory_store')}>
-          New memory store
-        </Button>
-      ) : null}
-      {tab.value === 'vault' ? (
-        <Button icon="add" onPress={() => openNewConfig('vault')}>
-          New vault
-        </Button>
-      ) : null}
-      <Input
-        label="Filter"
-        labelHidden
-        type="search"
-        placeholder={`Filter ${tab.noun}`}
-        value={query}
-        onChange={(value) => set(homeFilter, value)}
-      />
+      <FilterRow noun={tab.noun} newLabel={NEW_LABELS[tab.value]} onNew={() => openNew(tab.value)} />
       {failure ? (
         <Callout tone="danger" title="Could not load the list">
           <Stack gap="sm">
@@ -210,79 +230,77 @@ function ConfigList({ tab }: { tab: (typeof CONFIG_TABS)[number] }) {
   )
 }
 
-function ConfigurationsSection() {
-  const current = read(homeTab)
-  return (
-    <Collapsible
-      title="Configurations"
-      open={read(sectionsOpen).configurations}
-      onChange={(next) => update(sectionsOpen, (state) => ({ ...state, configurations: next }))}
-    >
-      <Stack gap="sm">
-        {/* Les `Tabs` d'Orca ne passent jamais à la ligne (coupés dès 312 px) : une rangée de boutons le fait. */}
-        <Box direction="row" wrap gap="xs" padding="xs" radius="lg" background="muted">
-          {CONFIG_TABS.map((tab) => (
-            <Button
-              key={tab.value}
-              size="sm"
-              icon={tab.icon}
-              variant={tab.value === current ? 'solid' : 'ghost'}
-              // Un bouton plein neutre se fond dans la pastille : l'accent marque le type actif.
-              {...(tab.value === current ? { tone: 'accent' as const } : {})}
-              onPress={() => {
-                set(homeTab, tab.value)
-                // Les lignes déjà lues restent affichées pendant la relecture.
-                run(() => loadConfigs(tab.value))
-              }}
-            >
-              {tab.label}
-            </Button>
-          ))}
-        </Box>
-        {CONFIG_TABS.filter((tab) => tab.value === current).map((tab) => (
-          <ConfigList key={tab.value} tab={tab} />
-        ))}
-      </Stack>
-    </Collapsible>
+/** Filtre les sessions sur leur titre, leur identifiant ou le nom de leur agent, sans tenir compte de la casse. */
+export function filterSessions(rows: readonly SessionRow[], query: string): SessionRow[] {
+  const needle = query.trim().toLowerCase()
+  if (needle === '') return [...rows]
+  return rows.filter((row) =>
+    [row.title, row.id, row.agentName].some((field) => field?.toLowerCase().includes(needle))
   )
 }
 
-function SessionsSection() {
+function SessionsList() {
   const loaded = read(sessionRows)
-  const rows = sortSessions(loaded ?? [])
+  const rows = filterSessions(sortSessions(loaded ?? []), read(homeFilter))
   return (
-    <Collapsible
-      title="Sessions"
-      open={read(sectionsOpen).sessions}
-      onChange={(next) => update(sectionsOpen, (current) => ({ ...current, sessions: next }))}
-    >
-      <Stack gap="sm">
-        {/* `Collapsible.title` n'accepte qu'une chaîne : le bouton est la première ligne du corps. */}
-        <Button icon="add" onPress={openNewSession}>
-          New session
-        </Button>
-        {loaded === null ? (
-          <Spinner label="Loading sessions" />
-        ) : rows.length === 0 ? (
-          <Text muted size="sm">
-            No sessions yet.
-          </Text>
-        ) : (
-          <List label="Sessions">
-            {rows.map((row) => (
-              <ListItem
-                key={row.id}
-                title={clipBytes(row.title ?? row.id, ROW_TITLE_LIMIT_BYTES).text}
-                description={clipBytes([row.agentName, formatMoney(row.cost)].filter(Boolean).join(' · '), ROW_DESCRIPTION_LIMIT_BYTES).text}
-                onPress={() => openSession(row.id)}
-              >
-                <Badge tone={badgeTone(row.badge)}>{badgeLabel(row.badge)}</Badge>
-              </ListItem>
-            ))}
-          </List>
-        )}
-      </Stack>
-    </Collapsible>
+    <Stack gap="sm">
+      <FilterRow noun="sessions" newLabel="New session" onNew={openNewSession} />
+      {loaded === null ? (
+        <Spinner label="Loading sessions" />
+      ) : loaded.length === 0 ? (
+        <Text muted size="sm">
+          No sessions yet.
+        </Text>
+      ) : rows.length === 0 ? (
+        <EmptyState title="No match" description="No session matches this filter." />
+      ) : (
+        <List label="Sessions">
+          {rows.map((row) => (
+            <ListItem
+              key={row.id}
+              title={clipBytes(row.title ?? row.id, ROW_TITLE_LIMIT_BYTES).text}
+              description={clipBytes([row.agentName, formatMoney(row.cost)].filter(Boolean).join(' · '), ROW_DESCRIPTION_LIMIT_BYTES).text}
+              onPress={() => openSession(row.id)}
+            >
+              <Badge tone={badgeTone(row.badge)}>{badgeLabel(row.badge)}</Badge>
+            </ListItem>
+          ))}
+        </List>
+      )}
+    </Stack>
+  )
+}
+
+function selectTab(tab: HomeTab): void {
+  set(homeTab, tab)
+  // Les lignes déjà lues restent affichées pendant la relecture.
+  run(() => (tab === 'sessions' ? loadSessions() : loadConfigs(tab)))
+}
+
+/** Les cinq onglets et la liste de l'onglet choisi, sans section repliable autour. */
+function HomeTabs() {
+  const current = read(homeTab)
+  const configTab = CONFIG_TABS.find((tab) => tab.value === current)
+  return (
+    <Stack gap="sm">
+      {/* Les `Tabs` d'Orca ne passent jamais à la ligne (coupés dès 312 px) : une rangée de boutons le fait. */}
+      <Box direction="row" wrap gap="xs" padding="xs" radius="lg" background="muted">
+        {HOME_TABS.map((tab) => (
+          <Button
+            key={tab.value}
+            size="sm"
+            icon={tab.icon}
+            variant={tab.value === current ? 'solid' : 'ghost'}
+            // Un bouton plein neutre se fond dans la pastille : l'accent marque l'onglet actif.
+            {...(tab.value === current ? { tone: 'accent' as const } : {})}
+            onPress={() => selectTab(tab.value)}
+          >
+            {tab.label}
+          </Button>
+        ))}
+      </Box>
+      {configTab ? <ConfigList key={configTab.value} tab={configTab} /> : <SessionsList />}
+    </Stack>
   )
 }
 
@@ -303,8 +321,7 @@ export function Home() {
       >
         {needsKey ? <KeyForm rejected={info.keyRejected} /> : <WorkspaceLine />}
       </Collapsible>
-      {needsKey ? null : <ConfigurationsSection />}
-      {needsKey ? null : <SessionsSection />}
+      {needsKey ? null : <HomeTabs />}
     </Stack>
   )
 }

@@ -311,7 +311,7 @@ test('leaves the session with Back', async () => {
   const view = await mount(panel, { host, persisted: OPEN_S1 })
   await view.press({ role: 'button', text: /Back/ })
   assert.deepEqual(left, [{ sessionId: 's1' }])
-  assert.ok(view.find({ role: 'button', text: 'New session' }))
+  assert.ok(view.find({ type: 'IconButton', label: 'New session' }))
   await view.unmount()
 })
 

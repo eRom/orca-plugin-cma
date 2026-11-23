@@ -198,7 +198,7 @@ test('goes back to the home view', async () => {
   const host = mockHost({ requests: requests(() => ({ ok: true, value: { sessionId: 'sesn_new' } })) as never })
   const view = await mount(panel, { host, persisted: OPEN_FORM })
   await view.press({ role: 'button', text: /Back/ })
-  assert.ok(view.find({ role: 'button', text: 'New session' }))
+  assert.ok(view.find({ type: 'IconButton', label: 'New session' }))
   assert.equal(view.find({ label: 'Agent' }), null)
   await view.unmount()
 })
@@ -206,7 +206,7 @@ test('goes back to the home view', async () => {
 test('opens the form from the home button', async () => {
   const host = mockHost({ requests: requests(() => ({ ok: true, value: { sessionId: 'sesn_new' } })) as never })
   const view = await mount(panel, { host })
-  await view.press({ role: 'button', text: 'New session' })
+  await view.press({ type: 'IconButton', label: 'New session' })
   assert.ok(view.find({ label: 'Agent' }))
   assert.ok(view.find({ label: 'Environment' }))
   assert.equal(view.valueOf({ label: 'Budget (USD)' }), '5.00')

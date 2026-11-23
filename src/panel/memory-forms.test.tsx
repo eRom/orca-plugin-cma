@@ -414,7 +414,7 @@ test('the home Memory tab offers New memory store, which opens the creation form
   const calls = newCalls()
   const host = mockHost({ requests: requests(calls, newWorld()) })
   const view = await mount(panel, { host, persisted: { plugin: { nav: [{ view: 'home' }], 'home.tab': 'memory_store' } } })
-  await view.press({ role: 'button', text: 'New memory store' })
+  await view.press({ type: 'IconButton', label: 'New memory store' })
   assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'newConfig', kind: 'memory_store' }])
   assert.ok(view.find({ role: 'button', text: 'Create' }))
   await view.unmount()

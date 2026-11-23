@@ -4,7 +4,7 @@
 import { atom, plugin, read, set, update } from 'orca'
 import type { ConfigDetail, ConfigKind, ConfigRow, DraftRef, MemoryContent, MemoryStoreDetail } from '../protocol'
 import { loadDraftControls, refreshDraftsStatus, refreshDraftState } from './drafts'
-import { loadWorkspace, nav, pushView, run, workspace } from './state'
+import { homeTab, loadWorkspace, nav, pushView, run, workspace } from './state'
 
 /**
  * Lignes dessinées au plus par liste : un rendu est refusé au-delà de 5000 nœuds et d'environ
@@ -35,6 +35,12 @@ export function resetConfigs(): void {
  * refusée » : on relit l'identité du workspace, qui remontre le formulaire. Les lignes déjà lues
  * restent affichées pendant la relecture.
  */
+/** Lit la liste de configuration de l'onglet d'accueil, s'il en montre une ; les sessions ont leur propre lecture. */
+export function loadConfigTab(): Promise<void> {
+  const tab = read(homeTab)
+  return tab === 'sessions' ? Promise.resolve() : loadConfigs(tab)
+}
+
 export async function loadConfigs(kind: ConfigKind): Promise<void> {
   const info = read(workspace)
   if (!info?.hasKey || info.keyRejected) return

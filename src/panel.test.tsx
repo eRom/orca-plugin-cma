@@ -135,7 +135,7 @@ test('announces itself as visible and keeps the list in sync with the worker', a
   await view.unmount()
 })
 
-test('the New session button stays first in the Sessions section', async () => {
+test('the New session button stays first in the Sessions tab', async () => {
   const host = mockHost({
     requests: {
       'workspace.info': WITH_KEY,
@@ -144,7 +144,7 @@ test('the New session button stays first in the Sessions section', async () => {
     }
   })
   const view = await mount(panel, { host })
-  assert.ok(view.find({ role: 'button', text: 'New session' }))
+  assert.ok(view.find({ type: 'IconButton', label: 'New session' }))
   await view.unmount()
 })
 
@@ -219,6 +219,98 @@ test('Forget key asks for a confirmation before clearing the key', async () => {
   await view.press({ role: 'button', text: 'Confirm forget key' })
   assert.equal(cleared, 1)
   assert.ok(view.find({ label: 'API key' }))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('opens on the Sessions tab, with no Configurations or Sessions section to fold', async () => {
+  const kinds: unknown[] = []
+  const host = mockHost({
+    requests: {
+      'workspace.info': WITH_KEY,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'configs.list': ({ kind }: { kind: string }) => {
+        kinds.push(kind)
+        return { ok: true, value: [] }
+      },
+      'sessions.list': { ok: true, value: [sessionRow({ id: 'sesn_a', title: 'First' })] }
+    }
+  })
+  const view = await mount(panel, { host })
+  const tabs = ['Sessions', 'Agents', 'Envs', 'Memory', 'Vaults']
+  assert.deepEqual(
+    tabs.filter((label) => view.find({ role: 'button', text: label })?.props.variant === 'solid'),
+    ['Sessions']
+  )
+  assert.ok(view.find({ type: 'IconButton', label: 'New session' }))
+  assert.ok(view.find({ type: 'ListItem', text: /First/ }))
+  // Seule la section du workspace se replie encore.
+  assert.deepEqual(
+    view.findAll({ type: 'Collapsible' }).map((entry) => entry.props.title),
+    ['Anthropic workspace']
+  )
+  // L'onglet Sessions ne lit aucune liste de configuration.
+  assert.deepEqual(kinds, [])
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('switching tabs reads the chosen list, and coming back to Sessions rereads the sessions', async () => {
+  const kinds: unknown[] = []
+  let sessionReads = 0
+  const host = mockHost({
+    requests: {
+      'workspace.info': WITH_KEY,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'configs.list': ({ kind }: { kind: string }) => {
+        kinds.push(kind)
+        return { ok: true, value: [{ kind: 'agent', id: 'agent_a', name: 'Writer', summary: 'v1' }] }
+      },
+      'sessions.list': () => {
+        sessionReads += 1
+        return { ok: true, value: [] }
+      }
+    }
+  })
+  const view = await mount(panel, { host })
+  await view.press({ role: 'button', text: 'Agents' })
+  assert.deepEqual(kinds, ['agent'])
+  assert.ok(view.find({ type: 'IconButton', label: 'New agent' }))
+  assert.equal(view.find({ type: 'IconButton', label: 'New session' }), null)
+  assert.equal(view.persisted.plugin['home.tab'], 'agent')
+  const before = sessionReads
+  await view.press({ role: 'button', text: 'Sessions' })
+  assert.ok(sessionReads > before)
+  assert.ok(view.find({ type: 'IconButton', label: 'New session' }))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('filters the sessions by title, id or agent, and says so when nothing matches', async () => {
+  const host = mockHost({
+    requests: {
+      'workspace.info': WITH_KEY,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'sessions.list': {
+        ok: true,
+        value: [
+          sessionRow({ id: 'sesn_a', title: 'Deploy check', agentName: 'Incident commander' }),
+          sessionRow({ id: 'sesn_b', title: 'Notes', agentName: 'Writer' })
+        ]
+      }
+    }
+  })
+  const view = await mount(panel, { host })
+  // Le « + » de création est un bouton en contour, à droite du filtre.
+  assert.equal(view.find({ type: 'IconButton', label: 'New session' })?.props.variant, 'outline')
+  await view.type({ label: 'Filter' }, 'INCIDENT')
+  assert.equal(view.findAll({ type: 'ListItem' }).length, 1)
+  assert.ok(view.find({ type: 'ListItem', text: /Deploy check/ }))
+  await view.type({ label: 'Filter' }, 'sesn_b', { replace: true })
+  assert.ok(view.find({ type: 'ListItem', text: /Notes/ }))
+  await view.type({ label: 'Filter' }, 'zzz', { replace: true })
+  assert.equal(view.findAll({ type: 'ListItem' }).length, 0)
+  assert.ok(view.find({ type: 'EmptyState', label: 'No match' }))
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })

@@ -542,8 +542,8 @@ test('Archive then Confirm archives the agent and returns to the list', async ()
 
 test('New agent on the home tab opens the empty form, Create is the single solid action', async () => {
   const calls = newCalls()
-  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }) })
-  await view.press({ role: 'button', text: 'New agent' })
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: { plugin: { 'home.tab': 'agent' } } })
+  await view.press({ type: 'IconButton', label: 'New agent' })
   assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'newConfig', kind: 'agent' }])
   assert.equal(view.valueOf({ label: 'Name' }), '')
   assert.equal(button(view, 'Create')?.disabled, true)

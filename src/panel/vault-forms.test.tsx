@@ -262,9 +262,9 @@ test('creates a vault and opens its detail', async () => {
 
 test('New vault on the home vaults tab opens the creation form', async () => {
   const view = await mount(panel, { host: mockHost({ requests: requests(newCalls()) }) })
-  assert.equal(view.find({ role: 'button', text: 'New vault' }), null)
+  assert.equal(view.find({ type: 'IconButton', label: 'New vault' }), null)
   await view.press({ role: 'button', text: 'Vaults' })
-  await view.press({ role: 'button', text: 'New vault' })
+  await view.press({ type: 'IconButton', label: 'New vault' })
   assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'newConfig', kind: 'vault' }])
   assert.ok(view.find({ text: 'New vault' }))
   assert.ok(view.find({ label: 'Name' }))

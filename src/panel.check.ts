@@ -118,6 +118,7 @@ export default defineCheck({
   // Le formulaire de création : le choix du type (Select) et le champ du jeton, vides.
   'credential form new': credentialScenario(null),
   'configurations agents': {
+    persisted: { plugin: { 'home.tab': 'agent' } },
     requests: {
       'workspace.info': WITH_KEY,
       'sessions.visibility': { bootId: 'boot-1', watching: null },

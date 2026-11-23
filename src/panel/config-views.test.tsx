@@ -124,10 +124,13 @@ function requests(over: Record<string, unknown> = {}) {
 
 /** Le type actif du sélecteur : le seul bouton plein de la rangée. */
 function activeKind(view: Awaited<ReturnType<typeof mount>>): string[] {
-  return ['Agents', 'Envs', 'Memory', 'Vaults'].filter(
+  return ['Sessions', 'Agents', 'Envs', 'Memory', 'Vaults'].filter(
     (label) => view.find({ role: 'button', text: label })?.props.variant === 'solid'
   )
 }
+
+/** L'accueil sur l'onglet Agents (l'onglet par défaut est Sessions). */
+const AGENTS_TAB = { plugin: { 'home.tab': 'agent' } }
 
 function openConfig(kind: ConfigKind, id: string) {
   return { plugin: { nav: [{ view: 'home' }, { view: 'config', kind, id }] } }
@@ -135,7 +138,7 @@ function openConfig(kind: ConfigKind, id: string) {
 
 test('filters the agent list', async () => {
   const host = mockHost({ requests: requests() })
-  const view = await mount(panel, { host })
+  const view = await mount(panel, { host, persisted: AGENTS_TAB })
   assert.equal(view.findAll({ type: 'ListItem' }).length, 2)
   await view.type({ label: 'Filter' }, 'inci')
   assert.equal(view.findAll({ type: 'ListItem' }).length, 1)
@@ -154,7 +157,7 @@ test('filters the agent list', async () => {
 
 test('shows an empty state when a tab has nothing', async () => {
   const host = mockHost({ requests: requests({ 'configs.list': { ok: true, value: [] } }) })
-  const view = await mount(panel, { host })
+  const view = await mount(panel, { host, persisted: AGENTS_TAB })
   assert.ok(view.find({ type: 'EmptyState', label: 'Nothing here yet' }))
   assert.deepEqual(view.errors, [])
   await view.unmount()
@@ -162,7 +165,7 @@ test('shows an empty state when a tab has nothing', async () => {
 
 test('shows a list error with a short title and the API text inside', async () => {
   const host = mockHost({ requests: requests({ 'configs.list': { ok: false, code: 'other', error: 'x'.repeat(5000) } }) })
-  const view = await mount(panel, { host })
+  const view = await mount(panel, { host, persisted: AGENTS_TAB })
   assert.ok(view.find({ type: 'Callout', text: /Could not load the list/ }))
   assert.deepEqual(view.errors, [])
   await view.unmount()
@@ -178,7 +181,7 @@ test('opens a vault and comes back to the same tab', async () => {
       }
     })
   })
-  const view = await mount(panel, { host })
+  const view = await mount(panel, { host, persisted: AGENTS_TAB })
   assert.deepEqual(activeKind(view), ['Agents'])
   await view.press({ role: 'button', text: 'Vaults' })
   assert.deepEqual(activeKind(view), ['Vaults'])
@@ -197,7 +200,7 @@ test('opens a vault and comes back to the same tab', async () => {
 
 test('keeps the filter when coming back from a detail', async () => {
   const host = mockHost({ requests: requests({ 'configs.detail': { ok: true, value: AGENT } }) })
-  const view = await mount(panel, { host })
+  const view = await mount(panel, { host, persisted: AGENTS_TAB })
   await view.type({ label: 'Filter' }, 'inci')
   await view.press({ type: 'ListItem', label: 'Incident commander' })
   assert.equal(view.find({ label: 'Filter' }), null)

@@ -22,7 +22,8 @@ export type NavEntry =
   | { view: 'newConfig'; kind: ConfigKind }
   | { view: 'credential'; vaultId: string; credentialId: string | null }
 
-export type HomeTab = 'agent' | 'environment' | 'memory_store' | 'vault'
+/** Onglets de l'accueil : les sessions, puis les quatre types de configuration. */
+export type HomeTab = 'sessions' | 'agent' | 'environment' | 'memory_store' | 'vault'
 
 /** Profondeur maximale : accueil, un détail, une mémoire ouverte depuis une banque. */
 const MAX_DEPTH = 3
@@ -53,13 +54,10 @@ export function popIfTop(matches: (entry: NavEntry) => boolean): boolean {
   set(nav, popView(stack))
   return true
 }
-export const homeTab = atom<HomeTab>('home.tab', 'agent', { persist: 'plugin' })
+export const homeTab = atom<HomeTab>('home.tab', 'sessions', { persist: 'plugin' })
 export const homeFilter = atom('home.filter', '', { persist: 'plugin' })
-export const sectionsOpen = atom(
-  'home.sections',
-  { workspace: false, configurations: true, sessions: true },
-  { persist: 'plugin' }
-)
+/** Seule la section « Anthropic workspace » se replie encore ; une valeur persistée plus ancienne garde des clés ignorées. */
+export const sectionsOpen = atom('home.sections', { workspace: false }, { persist: 'plugin' })
 
 /** Identité du workspace ; null tant que le worker n'a pas répondu. */
 export const workspace = atom<WorkspaceInfo | null>(null)

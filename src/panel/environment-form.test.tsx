@@ -358,7 +358,7 @@ test('hides the network and package fields of a self-hosted environment', async 
 test('Archive asks first, then archives and returns home with the list reread', async () => {
   const calls = newCalls()
   const host = mockHost({ requests: requests(calls) })
-  const view = await mount(panel, { host, persisted: OPEN_DETAIL })
+  const view = await mount(panel, { host, persisted: { plugin: { ...OPEN_DETAIL.plugin, 'home.tab': 'environment' } } })
   await view.press({ role: 'button', text: 'Archive' })
   assert.ok(view.find({ type: 'Callout', text: /Archive Sandbox\? This can't be undone\./ }))
   assert.deepEqual(calls.archives, [])
