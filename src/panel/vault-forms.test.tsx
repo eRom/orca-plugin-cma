@@ -134,13 +134,25 @@ const persistedText = (view: View): string => JSON.stringify(view.persisted)
 const byteLength = (text: string): number => new TextEncoder().encode(text).length
 const invalidOf = (view: View, label: string): unknown => view.find({ label })?.props.invalid
 
+/** Presse le dernier bouton de ce texte : la question de confirmation s'ouvre après le bouton du geste. */
+async function pressConfirm(view: View, text: string): Promise<void> {
+  const last = view.findAll({ role: 'button', text }).at(-1)
+  assert.ok(last, `no ${text} button`)
+  await view.press(last)
+}
+
+/** Vrai quand la liste du coffre montre la ligne de cet identifiant (son bouton « Open »). */
+function hasCredential(view: View, title: string): boolean {
+  return view.find({ role: 'button', label: `Open ${title}` }) !== null
+}
+
 // --- Coffre ---
 
 test('opens a vault with its name, its credentials and Add credential', async () => {
   const view = await mount(panel, { host: mockHost({ requests: requests(newCalls()) }), persisted: OPEN_VAULT })
   assert.equal(view.valueOf({ label: 'Name' }), 'GitHub')
-  assert.ok(view.find({ type: 'ListItem', label: 'GitHub bearer' }))
-  assert.ok(view.find({ type: 'ListItem', label: 'GitHub OAuth' }))
+  assert.ok(hasCredential(view, 'GitHub bearer'))
+  assert.ok(hasCredential(view, 'GitHub OAuth'))
   assert.ok(view.find({ role: 'button', text: 'Add credential' }))
   assert.equal(view.find({ role: 'button', text: 'Save' })?.disabled, true)
   assert.deepEqual(view.errors, [])
@@ -279,7 +291,7 @@ test('Archive and Delete ask first, then act on the vault and return home with t
   assert.ok(view.find({ type: 'Callout', text: /Archive GitHub\? This can't be undone\./ }))
   assert.deepEqual(calls.archives, [])
   const listsBefore = calls.lists.length
-  await view.press({ role: 'button', text: 'Archive' })
+  await pressConfirm(view, 'Archive')
   assert.deepEqual(calls.archives, [{ kind: 'vault', id: 'vlt_a' }])
   assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }])
   assert.ok(calls.lists.length > listsBefore)
@@ -288,7 +300,7 @@ test('Archive and Delete ask first, then act on the vault and return home with t
   const second = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_VAULT })
   await second.press({ role: 'button', text: 'Delete' })
   assert.ok(second.find({ type: 'Callout', text: /Delete GitHub for good\? This can't be undone\./ }))
-  await second.press({ role: 'button', text: 'Delete' })
+  await pressConfirm(second, 'Delete')
   assert.deepEqual(calls.deletes, [{ kind: 'vault', id: 'vlt_a' }])
   assert.deepEqual(second.persisted.plugin.nav, [{ view: 'home' }])
   await second.unmount()
@@ -298,7 +310,7 @@ test('Archive and Delete ask first, then act on the vault and return home with t
 
 test('a credential row opens its form, and Add credential opens an empty one', async () => {
   const view = await mount(panel, { host: mockHost({ requests: requests(newCalls()) }), persisted: OPEN_VAULT })
-  await view.press({ type: 'ListItem', label: 'Deploy token' })
+  await view.press({ role: 'button', label: 'Open Deploy token' })
   assert.deepEqual(view.persisted.plugin.nav, [
     { view: 'home' },
     { view: 'config', kind: 'vault', id: 'vlt_a' },
@@ -306,7 +318,7 @@ test('a credential row opens its form, and Add credential opens an empty one', a
   ])
   assert.equal(view.valueOf({ label: 'Name' }), 'Deploy token')
   await view.press({ role: 'button', text: /Back/ })
-  assert.ok(view.find({ type: 'ListItem', label: 'Deploy token' }))
+  assert.ok(hasCredential(view, 'Deploy token'))
   await view.press({ role: 'button', text: 'Add credential' })
   assert.deepEqual(view.persisted.plugin.nav.at(-1), { view: 'credential', vaultId: 'vlt_a', credentialId: null })
   assert.equal(view.valueOf({ label: 'Name' }), '')
@@ -608,7 +620,7 @@ test('a credential name of 2000 bytes is clipped under 1 KiB in the list and in 
   const calls = newCalls()
   const host = mockHost({ requests: requests(calls, { 'configs.detail': { ok: true, value: vault } }) })
   const list = await mount(panel, { host, persisted: OPEN_VAULT })
-  const row = list.find({ type: 'ListItem' })
+  const row = list.find({ role: 'button', label: /^Open / })
   assert.ok(row)
   assert.ok(byteLength(row.label ?? '') < 1024)
   assert.ok((row.label ?? '').length > 0)
@@ -638,7 +650,7 @@ test('an OAuth credential is read-only with Archive and Delete, and no form', as
   await view.press({ role: 'button', text: 'Archive' })
   assert.deepEqual(calls.archives, [])
   const listsBefore = calls.lists.length
-  await view.press({ role: 'button', text: 'Archive' })
+  await pressConfirm(view, 'Archive')
   assert.deepEqual(calls.archives, [{ kind: 'credential', vaultId: 'vlt_a', id: 'vcrd_oauth' }])
   // De retour sur le coffre relu, la liste des coffres aussi.
   assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'config', kind: 'vault', id: 'vlt_a' }])
@@ -654,7 +666,7 @@ test('Delete on an editable credential asks first, then deletes it and returns t
   await view.press({ role: 'button', text: 'Delete' })
   assert.ok(view.find({ type: 'Callout', text: /Delete Deploy token for good\? This can't be undone\./ }))
   assert.deepEqual(calls.deletes, [])
-  await view.press({ role: 'button', text: 'Delete' })
+  await pressConfirm(view, 'Delete')
   assert.deepEqual(calls.deletes, [{ kind: 'credential', vaultId: 'vlt_a', id: 'vcrd_env' }])
   assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'config', kind: 'vault', id: 'vlt_a' }])
   await view.unmount()
@@ -665,7 +677,7 @@ test('an archive refused by the API shows its text and keeps the credential form
   const host = mockHost({ requests: requests(calls, { 'resource.archive': { ok: false, code: 'other', error: 'Credential is in use.' } }) })
   const view = await mount(panel, { host, persisted: openCredential('vcrd_bearer') })
   await view.press({ role: 'button', text: 'Archive' })
-  await view.press({ role: 'button', text: 'Archive' })
+  await pressConfirm(view, 'Archive')
   assert.equal(read(notice), 'Credential is in use.')
   assert.deepEqual(view.persisted.plugin.nav, openCredential('vcrd_bearer').plugin.nav)
   await view.unmount()
@@ -793,7 +805,7 @@ test('deleting a credential then pressing Back before the answer leaves the vaul
   })
   const view = await mount(panel, { host, persisted: openCredential('vcrd_env') })
   await view.press({ role: 'button', text: 'Delete' })
-  await view.press({ role: 'button', text: 'Delete' })
+  await pressConfirm(view, 'Delete')
   assert.equal(calls.deletes.length, 1)
   assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'config', kind: 'vault', id: 'vlt_a' }])
   await view.unmount()

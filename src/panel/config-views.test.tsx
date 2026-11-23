@@ -189,8 +189,8 @@ test('opens a vault and comes back to the same tab', async () => {
   await view.press({ type: 'ListItem', label: 'GitHub' })
   assert.deepEqual(detailCalls, [{ kind: 'vault', id: 'vlt_a' }])
   // Le coffre liste ses identifiants, sans secret.
-  assert.ok(view.find({ type: 'ListItem', label: 'GitHub OAuth' }))
-  assert.ok(view.find({ type: 'ListItem', label: 'DEPLOY_TOKEN' }))
+  assert.ok(view.find({ role: 'button', label: 'Open GitHub OAuth' }))
+  assert.ok(view.find({ role: 'button', label: 'Open DEPLOY_TOKEN' }))
   assert.ok(view.find({ text: /Environment variable/ }))
   await view.press({ role: 'button', text: /Back/ })
   assert.deepEqual(activeKind(view), ['Vaults'])

@@ -99,6 +99,13 @@ async function openPackages(view: Awaited<ReturnType<typeof mount>>): Promise<vo
   await view.toggle({ type: 'Collapsible', text: /Packages/ })
 }
 
+/** Presse le dernier bouton de ce texte : la question de confirmation s'ouvre après le bouton du geste. */
+async function pressConfirm(view: Awaited<ReturnType<typeof mount>>, text: string): Promise<void> {
+  const last = view.findAll({ role: 'button', text }).at(-1)
+  assert.ok(last, `no ${text} button`)
+  await view.press(last)
+}
+
 test('creates a limited environment with a host and a package, then opens its detail', async () => {
   const calls = newCalls()
   const host = mockHost({ requests: requests(calls) })
@@ -126,7 +133,7 @@ test('creates a limited environment with a host and a package, then opens its de
   assert.deepEqual(sent.form.packages.pip, ['requests'])
   // Le panneau revient au détail du nouvel identifiant ; la liste est relue.
   assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }, { view: 'config', kind: 'environment', id: 'env_new' }])
-  assert.ok(view.find({ type: 'Code', text: 'env_new' }))
+  assert.ok(view.find({ type: 'Text', text: 'env_new' }))
   assert.deepEqual(calls.details, ['env_new'])
   assert.ok(calls.lists.length > listsBefore)
   assert.deepEqual(read(formDrafts), {})
@@ -364,7 +371,7 @@ test('Archive asks first, then archives and returns home with the list reread', 
   assert.ok(view.find({ type: 'Callout', text: /Archive Sandbox\? This can't be undone\./ }))
   assert.deepEqual(calls.archives, [])
   const listsBefore = calls.lists.length
-  await view.press({ role: 'button', text: 'Archive' })
+  await pressConfirm(view, 'Archive')
   assert.deepEqual(calls.archives, [{ kind: 'environment', id: 'env_a' }])
   assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }])
   assert.ok(calls.lists.length > listsBefore)
@@ -381,7 +388,7 @@ test('Delete asks first, then deletes and returns home with the list reread', as
   assert.ok(view.find({ type: 'Callout', text: /Delete Sandbox for good\? This can't be undone\./ }))
   assert.deepEqual(calls.deletes, [])
   const listsBefore = calls.lists.length
-  await view.press({ role: 'button', text: 'Delete' })
+  await pressConfirm(view, 'Delete')
   assert.deepEqual(calls.deletes, [{ kind: 'environment', id: 'env_a' }])
   assert.deepEqual(view.persisted.plugin.nav, [{ view: 'home' }])
   assert.ok(calls.lists.length > listsBefore)
@@ -395,7 +402,7 @@ test('an archive refused by the API shows its text and changes nothing', async (
   })
   const view = await mount(panel, { host, persisted: OPEN_DETAIL })
   await view.press({ role: 'button', text: 'Archive' })
-  await view.press({ role: 'button', text: 'Archive' })
+  await pressConfirm(view, 'Archive')
   assert.equal(read(notice), 'Environment is still in use.')
   assert.deepEqual(view.persisted.plugin.nav, OPEN_DETAIL.plugin.nav)
   assert.ok(view.find({ type: 'Callout', text: /Archive Sandbox\?/ }))

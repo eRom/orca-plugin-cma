@@ -3,17 +3,16 @@
 // éphémère, pour ne pas réécrire ce que la personne tape (`a` ne devient pas `a=` pendant la frappe).
 import {
   atom,
+  Box,
   Button,
   Callout,
   Checkbox,
-  Collapsible,
   Input,
   plugin,
   RadioGroup,
   read,
   Row,
   set,
-  Spinner,
   Stack,
   Text,
   Textarea,
@@ -29,9 +28,15 @@ import {
   type KeyValueItem,
   type PackageManager
 } from '../protocol'
+import { ActionRow } from '../blocks/action-row'
+import { BackHeader } from '../blocks/back-header'
+import { FormSection } from '../blocks/form-section'
+import { GroupCard } from '../blocks/group-card'
+import { LoadingState } from '../blocks/loading-state'
+import { SectionCollapsible } from '../blocks/section-collapsible'
 import { metadataTextProblem, validateEnvironmentForm } from '../shared/environment-rules'
 import { clipBytes } from '../shared/text'
-import { archiveQuestion, ConfirmAction, deleteQuestion } from './confirm'
+import { archiveQuestion, askConfirmation, ConfirmPanel, deleteQuestion } from './confirm'
 import { configDetail, loadConfigs, loadDetail, openConfig } from './config-state'
 import {
   clearForm,
@@ -186,9 +191,18 @@ function goBack(): void {
 
 // --- Rendu ---
 
-type BodyProps = { id: string | null; base: EnvironmentForm; baseUpdatedAt: string | null; name: string }
+/** Ouverture de « Packages » choisie par la personne, par formulaire ; sans choix : ouvert seulement si l'environnement en a. */
+const packagesOpen = atom<Record<string, boolean>>({})
 
-function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
+function packagesSummary(form: EnvironmentForm): string {
+  const count = PACKAGE_MANAGERS.reduce((total, manager) => total + form.packages[manager].length, 0)
+  return count === 0 ? 'No packages' : `${count} package${count === 1 ? '' : 's'}`
+}
+
+type BodyProps = { id: string | null; base: EnvironmentForm; baseUpdatedAt: string | null }
+
+/** Name, Description, l'hébergement, la carte du réseau, les paquets repliés et les métadonnées, sous leur Save. */
+function EnvironmentFormBody({ id, base, baseUpdatedAt }: BodyProps) {
   const key = formKey('environment', id)
   const { form, base: draftBase, dirty, stale } = readForm(key, base, baseUpdatedAt)
   const latest = (): EnvironmentForm => readForm(key, base, baseUpdatedAt).form
@@ -207,107 +221,126 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
   const nameMissing = form.name.trim() === ''
   // L'erreur du nom attend que la personne l'ait modifié une fois : un formulaire neuf ne s'ouvre pas en rouge.
   const nameInvalid = nameMissing && isTouched(key, 'name')
+  const network = form.network
   return (
-    <Stack gap="md">
-      {dirty ? (
-        <Callout tone="accent">
-          <Row gap="sm" align="center" justify="between" wrap>
-            <Text size="sm">Unsaved changes</Text>
-            <Button variant="ghost" size="sm" onPress={() => discardForm(key)}>
-              Discard
-            </Button>
-          </Row>
-        </Callout>
-      ) : null}
-      {conflict && id !== null ? (
-        <Callout tone="warning" title={CONFLICT_TITLE}>
-          <Stack gap="sm">
-            <Text size="sm">Reload drops your changes. Save anyway overwrites what changed.</Text>
-            <Row gap="sm" wrap>
-              <Button variant="outline" size="sm" disabled={busy} onPress={() => run(() => reloadForm(key, id))}>
-                Reload
-              </Button>
-              <Button variant="solid" size="sm" disabled={busy || problem !== null} onPress={() => run(() => saveForm(target, true))}>
-                Save anyway
-              </Button>
-            </Row>
-          </Stack>
-        </Callout>
-      ) : null}
-      {failed?.key === key ? (
-        <Callout tone="danger" title="Could not save">
-          <Text size="sm">{clipBytes(failed.message, ERROR_TEXT_LIMIT_BYTES).text}</Text>
-        </Callout>
-      ) : null}
-      <Input
-        label="Name"
-        disabled={busy}
-        value={form.name}
-        invalid={nameInvalid}
-        onChange={(value) => {
-          touchField(key, 'name')
-          change({ name: value })
-        }}
-      />
-      <Input label="Description" disabled={busy} placeholder="Optional" value={form.description} onChange={(value) => change({ description: value })} />
-      {id === null ? (
-        <RadioGroup
-          label="Hosting"
-          disabled={busy}
-          value={form.hosting}
-          options={[
-            { value: 'cloud', label: 'Cloud' },
-            { value: 'self_hosted', label: 'Self-hosted' }
-          ]}
-          onChange={(value) => change({ hosting: value === 'self_hosted' ? 'self_hosted' : 'cloud' })}
-        />
-      ) : (
-        <Text size="sm">{`Hosting: ${base.hosting === 'cloud' ? 'Cloud' : 'Self-hosted'}`}</Text>
-      )}
-      {form.hosting === 'cloud' ? (
-        <>
-          <RadioGroup
-            label="Network"
-            disabled={busy}
-            value={form.network.mode}
-            options={[
-              { value: 'unrestricted', label: 'Unrestricted' },
-              { value: 'limited', label: 'Limited' }
-            ]}
-            onChange={(mode) => {
-              dropFieldText(key, 'hosts')
-              // Revenir à `Limited` retrouve les réglages du chargement, s'il y en avait.
-              change({ network: mode === 'limited' ? (draftBase.network.mode === 'limited' ? draftBase.network : DEFAULT_LIMITED) : { mode: 'unrestricted' } })
-            }}
-          />
-          {form.network.mode === 'limited' ? (
+    <FormSection
+      title={id === null ? undefined : 'Details'}
+      saveLabel={id === null ? 'Create' : 'Save'}
+      // `busy` grise Save : il dit aussi « rien à enregistrer » (saisie intacte) et « saisie invalide ».
+      busy={busy || problem !== null || (id !== null && !dirty)}
+      error={failed?.key === key ? clipBytes(failed.message, ERROR_TEXT_LIMIT_BYTES).text : undefined}
+      errorTitle="Could not save"
+      onSave={() => run(() => saveForm(target, false))}
+      cancelLabel="Discard"
+      onCancel={dirty ? () => discardForm(key) : undefined}
+    >
+      {[
+        conflict && id !== null ? (
+          <Callout key="conflict" tone="warning" title={CONFLICT_TITLE}>
             <Stack gap="sm">
-              <Textarea
-                label="Allowed hosts"
-                placeholder="One host per line"
-                disabled={busy}
-                rows={4}
-                value={fieldText(key, 'hosts', form.network.allowedHosts.join('\n'))}
-                onChange={(text) => {
-                  setFieldText(key, 'hosts', text)
-                  changeLimited({ allowedHosts: parseLines(text) })
-                }}
-              />
-              <Checkbox
-                label="Allow package managers"
-                disabled={busy}
-                checked={form.network.allowPackageManagers}
-                onChange={(checked) => changeLimited({ allowPackageManagers: checked })}
-              />
-              <Checkbox
-                label="Allow MCP servers"
-                disabled={busy}
-                checked={form.network.allowMcpServers}
-                onChange={(checked) => changeLimited({ allowMcpServers: checked })}
-              />
+              <Text size="sm">Reload drops your changes. Save anyway overwrites what changed.</Text>
+              <Row gap="sm" wrap>
+                <Button variant="outline" size="sm" disabled={busy} onPress={() => run(() => reloadForm(key, id))}>
+                  Reload
+                </Button>
+                <Button variant="solid" size="sm" disabled={busy || problem !== null} onPress={() => run(() => saveForm(target, true))}>
+                  Save anyway
+                </Button>
+              </Row>
             </Stack>
-          ) : null}
-          <Collapsible title="Packages" defaultOpen={hasPackages(form)}>
+          </Callout>
+        ) : null,
+        <Input
+          key="name"
+          label="Name"
+          disabled={busy}
+          value={form.name}
+          invalid={nameInvalid}
+          onChange={(value) => {
+            touchField(key, 'name')
+            change({ name: value })
+          }}
+        />,
+        <Input key="description" label="Description" disabled={busy} placeholder="Optional" value={form.description} onChange={(value) => change({ description: value })} />,
+        id === null ? (
+          <RadioGroup
+            key="hosting"
+            label="Hosting"
+            orientation="horizontal"
+            disabled={busy}
+            value={form.hosting}
+            options={[
+              { value: 'cloud', label: 'Cloud' },
+              { value: 'self_hosted', label: 'Self-hosted' }
+            ]}
+            onChange={(value) => change({ hosting: value === 'self_hosted' ? 'self_hosted' : 'cloud' })}
+          />
+        ) : (
+          // L'hébergement se fixe à la création.
+          <Text key="hosting" muted size="sm">{`Hosting: ${base.hosting === 'cloud' ? 'Cloud' : 'Self-hosted'}`}</Text>
+        ),
+        form.hosting === 'cloud' ? (
+          <GroupCard
+            key="network"
+            title="Network"
+            rows={[
+              <Box paddingY="xs">
+                <RadioGroup
+                  label="Network"
+                  labelHidden
+                  orientation="horizontal"
+                  disabled={busy}
+                  value={network.mode}
+                  options={[
+                    { value: 'unrestricted', label: 'Unrestricted' },
+                    { value: 'limited', label: 'Limited' }
+                  ]}
+                  onChange={(mode) => {
+                    dropFieldText(key, 'hosts')
+                    // Revenir à `Limited` retrouve les réglages du chargement, s'il y en avait.
+                    change({ network: mode === 'limited' ? (draftBase.network.mode === 'limited' ? draftBase.network : DEFAULT_LIMITED) : { mode: 'unrestricted' } })
+                  }}
+                />
+              </Box>,
+              network.mode === 'limited' ? (
+                <Box paddingY="xs">
+                  <Stack gap="sm">
+                    <Textarea
+                      label="Allowed hosts"
+                      placeholder="One host per line"
+                      disabled={busy}
+                      rows={4}
+                      value={fieldText(key, 'hosts', network.allowedHosts.join('\n'))}
+                      onChange={(text) => {
+                        setFieldText(key, 'hosts', text)
+                        changeLimited({ allowedHosts: parseLines(text) })
+                      }}
+                    />
+                    <Checkbox
+                      label="Allow package managers"
+                      disabled={busy}
+                      checked={network.allowPackageManagers}
+                      onChange={(checked) => changeLimited({ allowPackageManagers: checked })}
+                    />
+                    <Checkbox label="Allow MCP servers" disabled={busy} checked={network.allowMcpServers} onChange={(checked) => changeLimited({ allowMcpServers: checked })} />
+                  </Stack>
+                </Box>
+              ) : null
+            ]}
+          />
+        ) : (
+          <Text key="network" muted size="sm">
+            Network and packages are managed by the host.
+          </Text>
+        ),
+        form.hosting === 'cloud' ? (
+          <SectionCollapsible
+            key="packages"
+            title="Packages"
+            summary={packagesSummary(form)}
+            open={read(packagesOpen)[key] ?? hasPackages(form)}
+            onChange={(next) => update(packagesOpen, (current) => ({ ...current, [key]: next }))}
+          >
             <Stack gap="sm">
               {PACKAGE_MANAGERS.map((manager: PackageManager) => (
                 <Textarea
@@ -324,81 +357,83 @@ function EnvironmentFormBody({ id, base, baseUpdatedAt, name }: BodyProps) {
                 />
               ))}
             </Stack>
-          </Collapsible>
-        </>
-      ) : (
-        <Text muted size="sm">
-          Network and packages are managed by the host.
-        </Text>
-      )}
-      <Textarea
-        label="Metadata"
-        placeholder="key=value, one per line"
-        rows={3}
-        disabled={busy}
-        value={metadataRaw}
-        onChange={(text) => {
-          setFieldText(key, 'metadata', text)
-          change({ metadata: parseMetadata(text) })
-        }}
+          </SectionCollapsible>
+        ) : null,
+        <Textarea
+          key="metadata"
+          label="Metadata"
+          placeholder="key=value, one per line"
+          rows={3}
+          disabled={busy}
+          value={metadataRaw}
+          onChange={(text) => {
+            setFieldText(key, 'metadata', text)
+            change({ metadata: parseMetadata(text) })
+          }}
+        />,
+        problem !== null && !nameMissing ? (
+          <Text key="problem" tone="danger" size="sm">
+            {problem}
+          </Text>
+        ) : null,
+        dirty ? (
+          <Text key="dirty" muted size="xs">
+            Unsaved changes
+          </Text>
+        ) : null
+      ]}
+    </FormSection>
+  )
+}
+
+/** Archiver et supprimer l'environnement : en bas de l'écran, une rangée à part avec sa confirmation. */
+function EnvironmentActions({ id, name }: { id: string; name: string }) {
+  const key = formKey('environment', id)
+  const busy = read(saving)
+  const archiveKey = `environment:${id}:archive`
+  const deleteKey = `environment:${id}:delete`
+  return (
+    <Stack gap="sm">
+      <ActionRow
+        actions={[
+          { key: 'archive', label: 'Archive', disabled: busy, onPress: () => askConfirmation(archiveKey) },
+          { key: 'delete', label: 'Delete', tone: 'danger', disabled: busy, onPress: () => askConfirmation(deleteKey) }
+        ]}
       />
-      {problem !== null && !nameMissing ? (
-        <Text tone="danger" size="sm">
-          {problem}
-        </Text>
-      ) : null}
-      <Row gap="sm" align="center" wrap>
-        <Button disabled={busy || problem !== null || (id !== null && !dirty)} onPress={() => run(() => saveForm(target, false))}>
-          {id === null ? 'Create' : 'Save'}
-        </Button>
-        {id !== null ? (
-          <>
-            <ConfirmAction
-              actionKey={`environment:${id}:archive`}
-              label="Archive"
-              question={archiveQuestion(name)}
-              confirmLabel="Archive"
-              disabled={busy}
-              onConfirm={() => removeEnvironment(key, id, () => plugin.request('resource.archive', { kind: 'environment', id }))}
-            />
-            <ConfirmAction
-              actionKey={`environment:${id}:delete`}
-              label="Delete"
-              question={deleteQuestion(name)}
-              confirmLabel="Delete"
-              disabled={busy}
-              onConfirm={() => removeEnvironment(key, id, () => plugin.request('resource.delete', { kind: 'environment', id }))}
-            />
-          </>
-        ) : null}
-      </Row>
+      <ConfirmPanel
+        actionKey={archiveKey}
+        question={archiveQuestion(name)}
+        confirmLabel="Archive"
+        disabled={busy}
+        onConfirm={() => removeEnvironment(key, id, () => plugin.request('resource.archive', { kind: 'environment', id }))}
+      />
+      <ConfirmPanel
+        actionKey={deleteKey}
+        question={deleteQuestion(name)}
+        confirmLabel="Delete"
+        disabled={busy}
+        onConfirm={() => removeEnvironment(key, id, () => plugin.request('resource.delete', { kind: 'environment', id }))}
+      />
     </Stack>
   )
 }
 
-/** `id` null : la création ; sinon l'environnement chargé dans le détail ouvert. */
+/** `id` null : la création ; sinon l'environnement chargé dans le détail ouvert (son en-tête est celui de `ConfigDetailView`). */
 export function EnvironmentFormView({ id }: { id: string | null }): OrcaNode {
   if (id === null) {
     return (
       <Stack gap="md">
-        <Row gap="sm" align="center" justify="between" wrap>
-          <Button variant="ghost" size="sm" onPress={goBack}>
-            ‹ Back
-          </Button>
-        </Row>
-        <Text weight="semibold">New environment</Text>
-        <EnvironmentFormBody id={null} base={emptyForm()} baseUpdatedAt={null} name="" />
+        <BackHeader title="New environment" onBack={goBack} />
+        <EnvironmentFormBody id={null} base={emptyForm()} baseUpdatedAt={null} />
       </Stack>
     )
   }
   const detail = read(configDetail)
-  if (detail?.kind !== 'environment' || detail.id !== id) return <Spinner label="Loading details" />
+  if (detail?.kind !== 'environment' || detail.id !== id) return <LoadingState kind="operation" label="Loading details" />
   return (
-    <EnvironmentFormBody
-      id={id}
-      base={detail.form}
-      baseUpdatedAt={detail.updatedAt}
-      name={clipBytes(detail.name, NAME_LIMIT_BYTES).text}
-    />
+    <Stack gap="lg">
+      <EnvironmentFormBody id={id} base={detail.form} baseUpdatedAt={detail.updatedAt} />
+      <EnvironmentActions id={id} name={clipBytes(detail.name, NAME_LIMIT_BYTES).text} />
+    </Stack>
   )
 }

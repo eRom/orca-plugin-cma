@@ -143,6 +143,8 @@ export default defineCheck({
   },
   'new session form': newSessionScenario(),
   'new environment form': newEnvironmentScenario(),
+  // Le détail d'un environnement au repos : réseau limité, un paquet (Packages ouvert), Archive et Delete en bas.
+  'environment form': environmentDraftScenario(false),
   // Une saisie gardée sur une version plus ancienne que le détail : « Unsaved changes » et l'avis de conflit (Reload, Save anyway).
   'environment form conflict': environmentDraftScenario(),
   // Le formulaire d'un identifiant à jeton : le champ de remplacement du jeton, vide, avec son aide.
@@ -151,6 +153,17 @@ export default defineCheck({
   'credential form variable': credentialScenario('vcrd_variable'),
   // Le formulaire de création : le choix du type (Select) et le champ du jeton, vides.
   'credential form new': credentialScenario(null),
+  // Un identifiant OAuth : lu seulement, Archive et Delete.
+  'credential oauth': credentialScenario('vcrd_oauth'),
+  'new vault form': {
+    persisted: { plugin: { nav: [{ view: 'home' }, { view: 'newConfig', kind: 'vault' }] } },
+    requests: {
+      'workspace.info': WITH_KEY,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'configs.list': { ok: true as const, value: [] },
+      'sessions.list': { ok: true as const, value: [] }
+    }
+  },
   'configurations agents': {
     persisted: { plugin: { 'home.tab': 'agent' } },
     requests: {
@@ -365,8 +378,8 @@ function newEnvironmentScenario() {
   }
 }
 
-/** Un environnement en réseau limité dont la description a été modifiée puis gardée (atome persisté). */
-function environmentDraftScenario() {
+/** Un environnement en réseau limité ; `draft` : sa description modifiée puis gardée (atome persisté) sur une version plus ancienne. */
+function environmentDraftScenario(draft = true) {
   const form: EnvironmentForm = {
     name: 'Sandbox',
     description: 'Runs the nightly checks.',
@@ -388,6 +401,7 @@ function environmentDraftScenario() {
     metadata: form.metadata
   }
   const scenario = configScenario('environment', detail)
+  if (!draft) return scenario
   return {
     ...scenario,
     persisted: {

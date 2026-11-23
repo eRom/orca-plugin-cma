@@ -205,20 +205,24 @@ export function ConfigDetailView({ kind, id }: { kind: ConfigKind; id: string })
   const url = consoleUrl(workspaceId, kind, id)
   return (
     <Stack gap="md">
-      {kind === 'memory_store' ? (
+      {kind === 'agent' ? (
+        <DetailHeader name={name} id={id} url={url} />
+      ) : (
         <BackHeader
           title={clipTitle(name)}
           subtitle={clipTitle(id)}
           onBack={goBack}
           trailing={
-            <Row gap="xs" align="center">
-              <IconButton icon="refresh" label="Refresh" variant="ghost" size="sm" onPress={() => run(() => refreshStore(id))} />
+            kind === 'memory_store' ? (
+              <Row gap="xs" align="center">
+                <IconButton icon="refresh" label="Refresh" variant="ghost" size="sm" onPress={() => run(() => refreshStore(id))} />
+                <ConsoleButton url={url} />
+              </Row>
+            ) : (
               <ConsoleButton url={url} />
-            </Row>
+            )
           }
         />
-      ) : (
-        <DetailHeader name={name} id={id} url={url} />
       )}
       {failure ? (
         <ErrorRetry title="Could not load the details" message={clipBytes(failure, ERROR_TEXT_LIMIT_BYTES).text} onRetry={() => run(() => loadDetail(kind, id))} />
