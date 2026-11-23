@@ -37,18 +37,20 @@ async function walk(root: string, dir: string, found: Entry[]): Promise<void> {
 
 /**
  * Lit un dossier de skill : chaque fichier est envoyé sous `<dossier>/<chemin relatif>`. `SKILL.md` doit être à la
- * racine, jugé sur les noms que `readdir` rend et jamais par un `stat` : APFS ignore la casse, un `stat('SKILL.md')`
- * réussirait sur `skill.md`. La taille totale est sommée avant toute lecture de contenu.
+ * racine, fichier régulier jugé sur les noms que `readdir` rend et jamais par un `stat` : APFS ignore la casse, un
+ * `stat('SKILL.md')` réussirait sur `skill.md`. Les fichiers partent triés par chemin. La taille totale est sommée avant toute lecture de contenu.
  */
 export async function readSkillFolder(folder: string, maxBytes: number = SKILL_MAX_BYTES): Promise<ReadUploads> {
   const label = basename(folder)
   try {
-    const rootNames = await readdir(folder)
-    if (!rootNames.includes('SKILL.md')) {
-      return { ok: false, error: NO_SKILL_MD }
-    }
     const found: Entry[] = []
     await walk(folder, folder, found)
+    // Un fichier régulier à la racine, au nom exact : ni lien symbolique ni dossier (la marche les a sautés ou classés à part).
+    if (!found.some((entry) => entry.name === 'SKILL.md')) {
+      return { ok: false, error: NO_SKILL_MD }
+    }
+    // Ordre d'envoi déterministe, indépendant de celui de `readdir` (comparaison d'unités de code, sans locale).
+    found.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     if (found.reduce((total, entry) => total + entry.size, 0) > maxBytes) {
       return { ok: false, error: SKILL_TOO_LARGE }
     }

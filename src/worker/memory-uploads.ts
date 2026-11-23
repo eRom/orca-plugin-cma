@@ -30,7 +30,7 @@ const execFileAsync = promisify(execFile)
 export const runOsascript = async (args: string[]): Promise<string> => (await execFileAsync('osascript', args)).stdout
 
 /**
- * Le choix d'un fichier. macOS seulement ; annuler la boîte (erreur -128 d'`osascript`) rend `null`.
+ * Le choix d'un fichier ou d'un dossier (`options.kind`, fichier par défaut). macOS seulement ; annuler la boîte (erreur -128 d'`osascript`) rend `null`.
  * Une seule boîte à la fois : tant qu'elle est ouverte, un nouvel appel rejoint la même promesse (il reçoit la même
  * réponse). Sans cela, un appui après le délai du panneau empilerait une seconde boîte et la réponse de la première serait perdue.
  */

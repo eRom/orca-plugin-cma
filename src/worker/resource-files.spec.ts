@@ -34,7 +34,7 @@ test('reads every file of a skill folder under its folder name, nested paths inc
   expect(read.ok).toBe(true)
   if (!read.ok) return
   expect(read.label).toBe('teach')
-  expect(read.files.map((file) => file.name).sort()).toEqual(['teach/SKILL.md', 'teach/refs/note.md'])
+  expect(read.files.map((file) => file.name)).toEqual(['teach/SKILL.md', 'teach/refs/note.md'])
   const skill = read.files.find((file) => file.name === 'teach/SKILL.md')
   expect(await skill?.text()).toBe('# Teach\n')
   cleanup()
@@ -55,6 +55,12 @@ test('refuses a folder without SKILL.md at its root, even with a nested one', as
   expect(await readSkillFolder(nested)).toEqual({ ok: false, error: NO_SKILL_MD })
   const lower = skillFolder({ 'skill.md': '# Lower\n' })
   expect(await readSkillFolder(lower)).toEqual({ ok: false, error: NO_SKILL_MD })
+  // Un SKILL.md qui est un lien symbolique (la marche le saute) ou un dossier ne compte pas.
+  const linked = skillFolder({ 'real.md': '# Real\n' })
+  symlinkSync(join(linked, 'real.md'), join(linked, 'SKILL.md'))
+  expect(await readSkillFolder(linked)).toEqual({ ok: false, error: NO_SKILL_MD })
+  const directory = skillFolder({ 'SKILL.md/inner.md': 'x\n' })
+  expect(await readSkillFolder(directory)).toEqual({ ok: false, error: NO_SKILL_MD })
   cleanup()
 })
 
