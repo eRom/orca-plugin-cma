@@ -148,6 +148,9 @@ const perToolOpen = atom(false)
 const toolsOpen = atom(false)
 /** La section « Multiagent (optional) » : fermée par défaut. */
 const multiagentOpen = atom(false)
+/** Les sections « System prompt (optional) » et « Skills (optional) » : fermées par défaut. */
+const systemOpen = atom(false)
+const skillsOpen = atom(false)
 
 function setFlow(key: string, flow: Flow | null): void {
   update(flows, (current) => {
@@ -873,32 +876,66 @@ function FlowView({ target, flow }: { target: Target; flow: Flow }): OrcaNode {
 
 // --- Rendu : lecture seule ---
 
-/** Le prompt, les skills et les réglages par outil MCP : lus ici, écrits dans le YAML (`multiagent` a sa zone dans le formulaire). */
-function YamlZone({ agent }: { agent: AgentDetail }) {
-  const ref = agentDraft(agent.id)
-  const reread = (): void => run(async () => {
-    await loadConfigs('agent')
-    await loadDetail('agent', agent.id)
-  })
-  const overridden = agent.mcpServers.filter((server) => server.overrides.length > 0).slice(0, MAX_RENDERED_SERVERS)
+/** Le résumé d'un texte replié : sa première ligne non vide, coupée, ou `empty`. */
+function firstLine(text: string, empty: string): string {
+  const line = text.split('\n').find((candidate) => candidate.trim() !== '')
+  return line === undefined ? empty : clipTitle(line.trim())
+}
+
+/** Le prompt système, replié : lu ici, écrit dans le YAML. Une création n'en a pas encore. */
+function SystemPromptZone({ agent }: { agent: AgentDetail | null }) {
+  const text = agent?.system.text ?? ''
   return (
-    <Stack gap="sm">
-      <Text weight="semibold">Edited in YAML</Text>
+    <SectionCollapsible title="System prompt (optional)" summary={firstLine(text, 'None')} open={read(systemOpen)} onChange={(next) => set(systemOpen, next)}>
       <Stack gap="xs">
-        {agent.system.text ? (
-          <CodeView code={agent.system.text} label="System prompt" wrap maxHeight="md" />
+        {text ? (
+          <CodeView code={text} label="System prompt" wrap maxHeight="md" />
         ) : (
           <Text muted size="sm">
             No system prompt.
           </Text>
         )}
-        {agent.system.truncated ? (
+        {agent?.system.truncated ? (
           <Text muted size="xs">
             {TRUNCATED_NOTICE}
           </Text>
         ) : null}
+        <Text muted size="xs">
+          {agent === null ? 'Set it in YAML once the agent exists.' : 'Edited in YAML.'}
+        </Text>
       </Stack>
-      {agent.skills.length > 0 ? <Text size="sm">{`Skills: ${clipBytes(agent.skills.join(', '), LONG_TEXT_LIMIT_BYTES).text}`}</Text> : null}
+    </SectionCollapsible>
+  )
+}
+
+/** Les skills, repliées : la liste lue ici (l'édition viendra dans ce bloc), écrite dans le YAML pour l'instant. */
+function SkillsZone({ agent }: { agent: AgentDetail | null }) {
+  const skills = agent?.skills ?? []
+  const summary = skills.length === 0 ? 'None' : `${String(skills.length)} skill${skills.length === 1 ? '' : 's'}`
+  return (
+    <SectionCollapsible title="Skills (optional)" summary={summary} open={read(skillsOpen)} onChange={(next) => set(skillsOpen, next)}>
+      <Stack gap="xs">
+        {skills.length > 0 ? (
+          <Text size="sm">{clipBytes(skills.join(', '), LONG_TEXT_LIMIT_BYTES).text}</Text>
+        ) : (
+          <Text muted size="sm">
+            No skills.
+          </Text>
+        )}
+        <Text muted size="xs">
+          Edited in YAML.
+        </Text>
+      </Stack>
+    </SectionCollapsible>
+  )
+}
+
+/** Les réglages par outil des serveurs MCP : lus dans le bloc Tools, écrits dans le YAML. */
+function McpToolSettings({ agent }: { agent: AgentDetail }) {
+  const overridden = agent.mcpServers.filter((server) => server.overrides.length > 0).slice(0, MAX_RENDERED_SERVERS)
+  if (overridden.length === 0) return null
+  return (
+    <Stack gap="sm">
       {overridden.map((server) => (
         <Stack key={server.name} gap="xs">
           <Text muted size="xs">
@@ -913,6 +950,22 @@ function YamlZone({ agent }: { agent: AgentDetail }) {
           />
         </Stack>
       ))}
+      <Text muted size="xs">
+        Per-tool settings of MCP servers are edited in YAML.
+      </Text>
+    </Stack>
+  )
+}
+
+/** Le brouillon YAML de l'agent : tout ce que le formulaire n'écrit pas (prompt, skills, réglages par outil MCP...). */
+function YamlZone({ agent }: { agent: AgentDetail }) {
+  const ref = agentDraft(agent.id)
+  const reread = (): void => run(async () => {
+    await loadConfigs('agent')
+    await loadDetail('agent', agent.id)
+  })
+  return (
+    <Stack gap="sm">
       <Row>
         <Button variant="outline" size="sm" disabled={draftIsBusy(ref)} onPress={() => startDraft(ref)}>
           Edit in YAML
@@ -1008,7 +1061,6 @@ function AgentFormBody({ id, base, version, name, agent }: BodyProps) {
             change({ name: value })
           }}
         />
-        <Textarea label="Description" placeholder="Optional" rows={2} disabled={locked} value={form.description} onChange={(value) => change({ description: value })} />
         <Box direction="row" wrap gap="sm">
           <Box grow minWidth={FIELD_MIN_WIDTH}>
             <ModelField label="Model" value={form.model} models={agentModels()} disabled={locked} onChange={(model) => change({ model })} />
@@ -1023,7 +1075,9 @@ function AgentFormBody({ id, base, version, name, agent }: BodyProps) {
             />
           </Box>
         </Box>
+        <Textarea label="Description (optional)" rows={2} disabled={locked} value={form.description} onChange={(value) => change({ description: value })} />
       </Stack>
+      <SystemPromptZone agent={agent} />
       <SectionCollapsible title="Tools (optional)" summary={toolsSummary(form)} open={read(toolsOpen)} onChange={(next) => set(toolsOpen, next)}>
         <Stack gap="lg">
           <GroupCard
@@ -1080,8 +1134,10 @@ function AgentFormBody({ id, base, version, name, agent }: BodyProps) {
             onRemove={(serverName) => change({ mcpServers: latest().mcpServers.filter((server) => server.name !== serverName) })}
             onAdd={(server) => change({ mcpServers: [...latest().mcpServers, server] })}
           />
+          {agent !== null ? <McpToolSettings agent={agent} /> : null}
         </Stack>
       </SectionCollapsible>
+      <SkillsZone agent={agent} />
       <MultiagentZone
         form={form}
         models={agentModels()}

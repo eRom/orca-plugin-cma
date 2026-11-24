@@ -164,6 +164,11 @@ function optionValues(view: View, label: string): string[] {
   return (options as { value: string }[]).map((option) => option.value)
 }
 
+/** Ouvre une section repliable du formulaire si elle est fermée (son état survit d'un montage à l'autre). */
+async function openSection(view: View, title: RegExp): Promise<void> {
+  if (view.find({ type: 'Collapsible', text: title })?.props.open !== true) await view.toggle({ type: 'Collapsible', text: title })
+}
+
 // --- Modèle, effort ---
 
 test('offers the models of agent.formOptions plus the current model when it is missing', async () => {
@@ -390,7 +395,7 @@ test('Review changes is disabled until something changed, then previews and appl
   // L'action principale se lit comme telle : pleine, ton d'accent.
   assert.equal(button(view, 'Review changes')?.props.variant, 'solid')
   assert.equal(button(view, 'Review changes')?.props.tone, 'accent')
-  await view.type({ label: 'Description' }, ' More.')
+  await view.type({ label: 'Description (optional)' }, ' More.')
   assert.equal(button(view, 'Review changes')?.disabled, false)
   assert.ok(view.find({ text: 'Unsaved changes' }))
   await view.press({ role: 'button', text: 'Review changes' })
@@ -404,7 +409,7 @@ test('Review changes is disabled until something changed, then previews and appl
   // L'aperçu : la liste des changements, puis Confirm ; le formulaire est figé.
   assert.ok(view.find({ type: 'List', label: 'Changes' }))
   assert.equal(view.find({ role: 'button', text: 'Review changes' }), null)
-  assert.equal(view.find({ label: 'Description' })?.disabled, true)
+  assert.equal(view.find({ label: 'Description (optional)' })?.disabled, true)
   assert.equal(calls.commits.length, 0)
   const listsBefore = calls.lists.length
   await view.press({ role: 'button', text: 'Confirm' })
@@ -421,12 +426,12 @@ test('Review changes is disabled until something changed, then previews and appl
 test('Cancel on the preview returns to the form with the edits kept', async () => {
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
-  await view.type({ label: 'Description' }, ' More.')
+  await view.type({ label: 'Description (optional)' }, ' More.')
   await view.press({ role: 'button', text: 'Review changes' })
   await view.press({ role: 'button', text: 'Cancel' })
   assert.equal(calls.commits.length, 0)
-  assert.equal(view.valueOf({ label: 'Description' }), 'Triages incidents. More.')
-  assert.equal(view.find({ label: 'Description' })?.disabled, false)
+  assert.equal(view.valueOf({ label: 'Description (optional)' }), 'Triages incidents. More.')
+  assert.equal(view.find({ label: 'Description (optional)' })?.disabled, false)
   assert.equal(button(view, 'Review changes')?.disabled, false)
   await view.unmount()
 })
@@ -439,7 +444,7 @@ test('a kept draft opened on an earlier version is sent with its own baseVersion
     plugin: { ...OPEN_DETAIL.plugin, 'forms.drafts': { 'agent:agent_a': { form: kept, base: olderBase, baseStamp: 3 } } }
   }
   const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted })
-  assert.equal(view.valueOf({ label: 'Description' }), 'Older description, edited.')
+  assert.equal(view.valueOf({ label: 'Description (optional)' }), 'Older description, edited.')
   assert.ok(view.find({ text: /Started on v3, the agent is now v5/ }))
   await view.press({ role: 'button', text: 'Review changes' })
   const sent = calls.prepares[0]
@@ -465,7 +470,7 @@ test('a conflict offers Reload and Apply anyway, and Apply anyway forces the wri
     })
   })
   const view = await mount(panel, { host, persisted: OPEN_DETAIL })
-  await view.type({ label: 'Description' }, ' More.')
+  await view.type({ label: 'Description (optional)' }, ' More.')
   await view.press({ role: 'button', text: 'Review changes' })
   await view.press({ role: 'button', text: 'Confirm' })
   assert.ok(view.find({ type: 'Callout', text: /Changed elsewhere: v5 → v6\./ }))
@@ -482,12 +487,12 @@ test('Reload after a conflict drops the kept edits and reads the agent again', a
     requests: requests(calls, { 'write.commit': { ok: false, code: 'conflict', error: 'Changed elsewhere: v5 → v6.' } })
   })
   const view = await mount(panel, { host, persisted: OPEN_DETAIL })
-  await view.type({ label: 'Description' }, ' More.')
+  await view.type({ label: 'Description (optional)' }, ' More.')
   await view.press({ role: 'button', text: 'Review changes' })
   await view.press({ role: 'button', text: 'Confirm' })
   await view.press({ role: 'button', text: 'Reload' })
   assert.deepEqual(calls.details, ['agent_a', 'agent_a'])
-  assert.equal(view.valueOf({ label: 'Description' }), 'Triages incidents.')
+  assert.equal(view.valueOf({ label: 'Description (optional)' }), 'Triages incidents.')
   assert.deepEqual(read(formDrafts), {})
   await view.unmount()
 })
@@ -523,7 +528,7 @@ test('a stale kept input with edits offers Reload and Discard, and both drop it'
   assert.ok(button(view, 'Reload'))
   assert.ok(button(view, 'Discard'))
   await view.press({ role: 'button', text: 'Reload' })
-  assert.equal(view.valueOf({ label: 'Description' }), 'Triages incidents.')
+  assert.equal(view.valueOf({ label: 'Description (optional)' }), 'Triages incidents.')
   assert.deepEqual(read(formDrafts), {})
   await view.unmount()
 })
@@ -535,18 +540,31 @@ test('a refusal to prepare shows its notice and keeps the form', async () => {
     })
   })
   const view = await mount(panel, { host, persisted: OPEN_DETAIL })
-  await view.type({ label: 'Description' }, '!')
+  await view.type({ label: 'Description (optional)' }, '!')
   await view.press({ role: 'button', text: 'Review changes' })
   assert.ok(view.find({ type: 'Callout', text: /Nothing to apply/ }))
-  assert.equal(view.valueOf({ label: 'Description' }), 'Triages incidents.!')
+  assert.equal(view.valueOf({ label: 'Description (optional)' }), 'Triages incidents.!')
   await view.unmount()
 })
 
 // --- Résumés en lecture seule et YAML ---
 
+test('the optional sections come in order: System prompt, Tools, Skills, Multiagent', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  const sections = view
+    .findAll({ type: 'Collapsible' })
+    .map((node) => String(node.props.title))
+    .filter((title) => title.endsWith('(optional)'))
+  assert.deepEqual(sections, ['System prompt (optional)', 'Tools (optional)', 'Skills (optional)', 'Multiagent (optional)'])
+  assert.ok(view.find({ label: 'Description (optional)' }))
+  await view.unmount()
+})
+
 test('keeps the read-only summaries and one Edit in YAML link that opens the agent draft', async () => {
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  for (const title of [/System prompt \(optional\)/, /Skills \(optional\)/, /Tools \(optional\)/]) await openSection(view, title)
   assert.equal(view.find({ type: 'CodeView' })?.props.code, 'You are an incident commander.')
   assert.ok(view.find({ text: /skill_triage/ }))
 
@@ -726,7 +744,7 @@ test('saved agents show as chips named from the workspace list, with This agent 
   assert.ok(view.find({ role: 'button', label: 'Remove Helper' }))
   assert.ok(view.find({ role: 'button', label: 'Remove This agent' }))
   assert.ok(view.find({ role: 'button', label: 'Remove agent_gone' }))
-  assert.equal(view.find({ text: /edited in YAML/ }), null)
+  assert.equal(view.find({ text: /saved agents, edited in YAML/ }), null)
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
@@ -996,7 +1014,7 @@ test('m5: when reading the detail back fails after a successful update, the revi
     })
   })
   const view = await mount(panel, { host, persisted: OPEN_DETAIL })
-  await view.type({ label: 'Description' }, ' More.')
+  await view.type({ label: 'Description (optional)' }, ' More.')
   await view.press({ role: 'button', text: 'Review changes' })
   await view.press({ role: 'button', text: 'Confirm' })
   assert.equal(calls.commits.length, 1)
@@ -1070,7 +1088,7 @@ test('after a write the old base never shows while the list and the detail are r
         // La relecture de la liste qui suit l'écriture, une fois l'écran redessiné : jamais l'ancienne base, seulement l'agent relu.
         if (calls.commits.length > 0) {
           await sleep(30)
-          seen.push(current?.valueOf({ label: 'Description' }))
+          seen.push(current?.valueOf({ label: 'Description (optional)' }))
         }
         return { ok: true, value: kind === 'agent' ? ROWS : [] }
       }
@@ -1078,7 +1096,7 @@ test('after a write the old base never shows while the list and the detail are r
   })
   const view = await mount(panel, { host, persisted: OPEN_DETAIL })
   current = view
-  await view.type({ label: 'Description' }, ' More.')
+  await view.type({ label: 'Description (optional)' }, ' More.')
   await view.press({ role: 'button', text: 'Review changes' })
   await view.press({ role: 'button', text: 'Confirm' })
   assert.deepEqual(seen, ['Triages incidents. More.'])
