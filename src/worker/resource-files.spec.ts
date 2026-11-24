@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { FILE_TOO_LARGE, NO_SKILL_MD, readSkillFolder, readUploadFile, SKILL_TOO_LARGE } from './resource-files'
 
 const dirs: string[] = []
@@ -88,6 +88,6 @@ test('a missing path or a directory given as a file says it cannot be read', asy
   const dir = tempDir()
   expect(await readSkillFolder(join(dir, 'absent'))).toEqual({ ok: false, error: 'Could not read absent.' })
   expect(await readUploadFile(join(dir, 'gone.md'))).toEqual({ ok: false, error: 'Could not read gone.md.' })
-  expect(await readUploadFile(dir)).toEqual({ ok: false, error: `Could not read ${dir.split('/').pop()}.` })
+  expect(await readUploadFile(dir)).toEqual({ ok: false, error: `Could not read ${basename(dir)}.` })
   cleanup()
 })

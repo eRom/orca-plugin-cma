@@ -173,14 +173,28 @@ function slotOf(registry: Registry, file: string): { key: string; entry: Registr
   return key === undefined ? undefined : { key, entry: registry.entries[key] }
 }
 
-/** Le registre lu tel quel ; lève quand son contenu n'est pas un registre. */
+/**
+ * La clé d'un brouillon dans le registre, et le `file` rendu au panneau : toujours en `/`, sur tous les systèmes.
+ * Un registre écrit sous macOS se lit ainsi sous Windows et inversement ; l'accès disque passe par `join(folder, file)`
+ * (Node accepte `/` sous Windows).
+ */
+export const toPosixKey = (path: string): string => path.replace(/\\/g, '/')
+
+/**
+ * Le registre lu ; lève quand son contenu n'est pas un registre. Les clés d'un registre écrit sous Windows avant
+ * les clés POSIX (`agents\x.yaml`) passent en `/` ; elles sont réécrites à la prochaine écriture.
+ */
 function parseRegistry(raw: Buffer): Registry {
   const parsed = JSON.parse(raw.toString('utf8')) as Partial<Registry> | null
   const entries = parsed?.entries
   if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
     throw new Error('no entries object')
   }
-  return { entries }
+  const normalised: Registry['entries'] = {}
+  for (const [key, entry] of Object.entries(entries)) {
+    normalised[toPosixKey(key)] = entry
+  }
+  return { entries: normalised }
 }
 
 async function readOrNull(path: string): Promise<Buffer | null> {
@@ -324,7 +338,7 @@ export function createDrafts(deps: {
         continue
       }
       if (best === null || inside.length < best.prefix.length) {
-        best = { id: candidate.id, name: candidate.name, prefix: inside.split(sep).join('/') }
+        best = { id: candidate.id, name: candidate.name, prefix: toPosixKey(inside) }
       }
     }
     return best
@@ -377,10 +391,12 @@ export function createDrafts(deps: {
     if (problem) {
       return refuse('invalid', problem)
     }
-    const file = relative(folder, resolve(folder, await adapter.file(ref)))
-    if (file === '' || file === '..' || file.startsWith(`..${sep}`) || isAbsolute(file)) {
+    const inFolder = relative(folder, resolve(folder, await adapter.file(ref)))
+    // Le garde-fou lit le chemin natif (séparateur du système), avant la mise en `/`.
+    if (inFolder === '' || inFolder === '..' || inFolder.startsWith(`..${sep}`) || isAbsolute(inFolder)) {
       return refuse('other', 'The draft path is outside the drafts folder.')
     }
+    const file = toPosixKey(inFolder)
     // Le registre, son exemplaire mis de côté, les fichiers temporaires et les copies de secours
     // (`.recovered-`) sont à nous : un brouillon ne s'y ouvre ni ne s'y écrit.
     if (file.startsWith(REGISTRY_FILE) || file.endsWith('.tmp') || file.includes('.recovered-')) {
@@ -583,8 +599,7 @@ export function createDrafts(deps: {
 
           try {
             await host.show(workspace.id)
-            const inWorkspace = file.split(sep).join('/')
-            await host.open(workspace.id, workspace.prefix === '' ? inWorkspace : `${workspace.prefix}/${inWorkspace}`)
+            await host.open(workspace.id, workspace.prefix === '' ? file : `${workspace.prefix}/${file}`)
           } catch (error) {
             return refuse('other', `Orca could not open the draft: ${messageOf(error)}`)
           }
