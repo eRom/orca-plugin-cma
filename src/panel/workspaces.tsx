@@ -1,9 +1,10 @@
 // Section « Workspaces » de l'accueil : la liste des workspaces associés (un actif, un badge), l'ajout,
-// la modification d'une ligne (nom, clé, console, retrait) et la bascule. Aucun atome de ce fichier n'est persisté :
+// la modification d'une ligne (nom, clé, console, retrait) et la bascule. Seul l'état replié de la section est persisté :
 // une clé saisie reste en mémoire, dans son champ, nulle part ailleurs.
 import { atom, Badge, Box, Button, Callout, IconButton, Input, plugin, read, set, shell, Stack, Text } from 'orca'
 import { ConfirmInline } from '../blocks/confirm-inline'
 import { GroupCard } from '../blocks/group-card'
+import { SectionCollapsible } from '../blocks/section-collapsible'
 import type { IconAction } from '../blocks/icon-action'
 import type { ApiResult, WorkspaceInfo, WorkspaceRow } from '../protocol'
 import { clipBytes } from '../shared/text'
@@ -35,6 +36,9 @@ const DEFAULT_NAME = 'Default'
 
 /** Vrai pendant un appel au worker : un second appui ne part pas (un ajout doublé serait refusé en doublon). */
 const busy = atom(false)
+
+/** La section « Organisation » ouverte ou repliée : une préférence d'affichage, seul atome persisté du fichier. */
+const sectionOpen = atom('workspacesOpen', true, { persist: 'plugin' })
 
 const addOpen = atom(false)
 const addName = atom('')
@@ -472,19 +476,39 @@ function WorkspaceLine({ row, info }: { row: WorkspaceRow; info: WorkspaceInfo }
 }
 
 /**
- * La section : la liste des workspaces dans une carte (ou le formulaire de la première clé), le formulaire d'ajout dans la
- * même carte, après un filet, quand `+` l'ouvre.
+ * La section : « Organisation » repliable, le `+` à droite de son en-tête, et dans la carte la liste des workspaces (ou le
+ * formulaire de la première clé), puis le formulaire d'ajout après un filet quand `+` l'ouvre. Fermée, elle résume le
+ * workspace actif ; `+` la rouvre.
  */
 export function WorkspacesSection({ info }: { info: WorkspaceInfo }) {
   if (info.workspaces.length === 0) return <FirstKeyForm />
+  const open = read(sectionOpen)
+  const active = info.workspaces.find((row) => row.active)
   return (
-    <GroupCard
-      title="Workspaces"
-      trailing={<IconButton icon="add" label="Add workspace" variant="outline" onPress={openAddForm} />}
-      rows={[
-        ...info.workspaces.map((row) => ({ key: row.localId, row: <WorkspaceLine row={row} info={info} /> })),
-        read(addOpen) ? { key: 'add-form', row: <AddForm /> } : null
-      ]}
-    />
+    <Box direction="row" align="start" gap="sm">
+      <Box key="section" grow minWidth={0}>
+        <SectionCollapsible
+          title="Organisation"
+          summary={active ? clipName(active.name) : undefined}
+          open={open}
+          onChange={(next) => set(sectionOpen, next)}
+        >
+          <GroupCard
+            rows={[
+              ...info.workspaces.map((row) => ({ key: row.localId, row: <WorkspaceLine row={row} info={info} /> })),
+              read(addOpen) ? { key: 'add-form', row: <AddForm /> } : null
+            ]}
+          />
+        </SectionCollapsible>
+      </Box>
+      <Box key="add" shrink={false}>
+        <IconButton icon="add" label="Add workspace" variant="ghost" onPress={openAddFromHeader} />
+      </Box>
+    </Box>
   )
+}
+
+function openAddFromHeader(): void {
+  set(sectionOpen, true)
+  openAddForm()
 }

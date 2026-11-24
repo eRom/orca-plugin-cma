@@ -33,10 +33,10 @@ function requests(start: WorkspaceInfo, over: Record<string, unknown> = {}) {
   } as never
 }
 
-test('lists the workspaces with the Active badge and no fold', async () => {
+test('lists the workspaces with the Active badge under a folding Organisation section', async () => {
   const host = mockHost({ requests: requests(info('ws_1')) })
   const view = await mount(panel, { host })
-  assert.ok(view.find({ text: 'Workspaces' }))
+  assert.equal(view.find({ type: 'Collapsible' })?.props.title, 'Organisation')
   assert.ok(view.find({ text: 'Default' }))
   assert.ok(view.find({ text: 'wrkspc_default' }))
   assert.ok(view.find({ text: 'Orca-claude' }))
@@ -47,7 +47,7 @@ test('lists the workspaces with the Active badge and no fold', async () => {
   assert.equal(view.findAll({ type: 'IconButton', label: 'Use this workspace' }).length, 1)
   assert.ok(view.find({ type: 'IconButton', label: 'Edit Default' }))
   assert.ok(view.find({ type: 'IconButton', label: 'Edit Orca-claude' }))
-  assert.deepEqual(view.findAll({ type: 'Collapsible' }), [])
+  assert.equal(view.find({ type: 'Collapsible' })?.props.open, true)
   assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
   await view.unmount()
 })
@@ -221,6 +221,19 @@ test('Cancel closes the add form without calling the worker', async () => {
   // Rouvert, le formulaire est vide.
   await view.press({ type: 'IconButton', label: 'Add workspace' })
   assert.equal(view.valueOf({ label: 'Name' }), '')
+  await view.unmount()
+})
+
+test('folded, Organisation names the active workspace and + unfolds it on the add form', async () => {
+  const host = mockHost({ requests: requests(info('ws_2')) })
+  const view = await mount(panel, { host, persisted: { plugin: { workspacesOpen: false } } })
+  const section = view.find({ type: 'Collapsible', text: /Organisation/ })
+  assert.equal(section?.props.open, false)
+  assert.equal(section?.props.description, 'Orca-claude')
+  await view.press({ type: 'IconButton', label: 'Add workspace' })
+  assert.equal(view.find({ type: 'Collapsible', text: /Organisation/ })?.props.open, true)
+  assert.ok(view.find({ label: 'Name' }))
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
   await view.unmount()
 })
 
