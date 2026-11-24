@@ -15,6 +15,8 @@ import {
   POLICY_LABELS,
   type Committed,
   type FieldChange,
+  type MultiagentForm,
+  type MultiagentMemberForm,
   type PreparedWrite,
   type ToolPolicy
 } from '../protocol'
@@ -28,6 +30,7 @@ type Tool = BetaManagedAgentsAgent['tools'][number]
 type Mapping = Record<string, unknown>
 
 const BUILTIN_TOOLSET = 'agent_toolset_20260401'
+const MULTIAGENT_TYPE = 'multiagent_20261001'
 
 const isBuiltinToolset = (tool: Tool): tool is BetaManagedAgentsAgentToolset20260401 => tool.type === BUILTIN_TOOLSET
 const isMcpToolset = (tool: Tool): tool is BetaManagedAgentsMCPToolset => tool.type === 'mcp_toolset'
@@ -35,6 +38,26 @@ const isMcpToolset = (tool: Tool): tool is BetaManagedAgentsMCPToolset => tool.t
 const isMapping = (value: unknown): value is Mapping => typeof value === 'object' && value !== null && !Array.isArray(value)
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+
+/** Un membre `subagents` ou `workflows` de la réponse de l'API ; désactivé, il vaut « inline agents permis, aucun agent enregistré ». */
+function toMemberForm(member: { type: 'disabled' } | { type: 'enabled'; inline_agents: { type: string }; predefined_agents: unknown[] }): MultiagentMemberForm {
+  if (member.type === 'disabled') {
+    return { enabled: false, inlineAgents: true, predefinedCount: 0 }
+  }
+  return { enabled: true, inlineAgents: member.inline_agents.type === 'enabled', predefinedCount: member.predefined_agents.length }
+}
+
+/** Le bloc `multiagent` du formulaire : seule la forme `multiagent_20261001` s'édite, la topologie `coordinator` reste au YAML. */
+function toMultiagentForm(multiagent: BetaManagedAgentsAgent['multiagent']): MultiagentForm | null {
+  if (!multiagent || multiagent.type !== MULTIAGENT_TYPE) {
+    return null
+  }
+  return {
+    advisor: multiagent.advisor.type === 'enabled' ? multiagent.advisor.model : null,
+    subagents: toMemberForm(multiagent.subagents),
+    workflows: toMemberForm(multiagent.workflows)
+  }
+}
 
 /** L'agent de l'API tel que le formulaire le montre. Un outil sans entrée `configs` hérite du défaut : `null`, pas un réglage égal au défaut. */
 export function toAgentForm(agent: BetaManagedAgentsAgent): AgentForm {
@@ -60,7 +83,8 @@ export function toAgentForm(agent: BetaManagedAgentsAgent): AgentForm {
       const toolset = mcpToolsets.find((candidate) => candidate.mcp_server_name === server.name)
       // Sans `mcp_toolset`, le serveur n'expose aucun outil : la politique du formulaire vaut la plus prudente.
       return { name: server.name, url: server.url, policy: toolset?.default_config.permission_policy.type ?? 'always_ask' }
-    })
+    }),
+    multiagent: toMultiagentForm(agent.multiagent)
   }
 }
 
@@ -204,6 +228,43 @@ function applyMcpServers(doc: AgentDocument, form: AgentForm['mcpServers'], base
   }
 }
 
+/** Un membre `subagents` ou `workflows` écrit : les agents enregistrés du document passent tels quels tant que le membre reste activé. */
+function memberValue(member: MultiagentMemberForm, existing: unknown): Mapping {
+  if (!member.enabled) {
+    return { type: 'disabled' }
+  }
+  const kept = isMapping(existing) && existing.type === 'enabled' && Array.isArray(existing.predefined_agents) ? existing.predefined_agents : []
+  return { type: 'enabled', inline_agents: { type: member.inlineAgents ? 'enabled' : 'disabled' }, predefined_agents: kept }
+}
+
+const sameMember = (a: MultiagentMemberForm, b: MultiagentMemberForm): boolean => a.enabled === b.enabled && a.inlineAgents === b.inlineAgents
+
+/**
+ * Le bloc `multiagent`, membre par membre. Un formulaire sans bloc retire celui de l'agent (la clé absente part à
+ * `null`). Sinon le bloc du document, s'il est de type `multiagent_20261001`, est repris et seuls les membres qui
+ * diffèrent de `base` sont réécrits ; un bloc neuf (ou une autre topologie) reçoit les trois membres.
+ */
+function applyMultiagent(doc: AgentDocument, form: MultiagentForm | null, base: MultiagentForm | null): void {
+  if (form === null) {
+    if (base !== null) {
+      delete doc.multiagent
+    }
+    return
+  }
+  const existing = isMapping(doc.multiagent) && doc.multiagent.type === MULTIAGENT_TYPE ? doc.multiagent : null
+  const block: Mapping = existing === null ? { type: MULTIAGENT_TYPE } : { ...existing }
+  const writeAll = existing === null || base === null
+  if (writeAll || form.advisor !== base.advisor) {
+    block.advisor = form.advisor === null ? { type: 'disabled' } : { type: 'enabled', model: form.advisor }
+  }
+  for (const name of ['subagents', 'workflows'] as const) {
+    if (writeAll || !sameMember(form[name], base[name])) {
+      block[name] = memberValue(form[name], block[name])
+    }
+  }
+  doc.multiagent = block
+}
+
 /**
  * Le formulaire reporté sur un document : seul ce qui diffère de `base` est écrit (tout, pour une création, `base`
  * valant `null`). Le reste du document, y compris ce qu'un autre éditeur a changé, passe tel quel. Le document
@@ -221,6 +282,7 @@ export function applyAgentForm(doc: AgentDocument, form: AgentForm, base: AgentF
   }
   applyBuiltinTools(next, form.builtinTools, base?.builtinTools ?? null)
   applyMcpServers(next, form.mcpServers, base?.mcpServers ?? [])
+  applyMultiagent(next, form.multiagent ?? null, base?.multiagent ?? null)
   if (Array.isArray(next.tools) && next.tools.length === 0 && !('tools' in doc)) {
     delete next.tools
   }
@@ -294,6 +356,39 @@ function serverChanges(form: AgentForm['mcpServers'], base: AgentForm['mcpServer
   }
 }
 
+const memberText = (member: MultiagentMemberForm): string => (!member.enabled ? 'disabled' : member.inlineAgents ? 'enabled' : 'enabled, no inline agents')
+
+/** Le bloc en quelques mots : les membres activés, le conseiller avec son modèle. */
+function multiagentText(multiagent: MultiagentForm): string {
+  const parts: string[] = []
+  if (multiagent.advisor !== null) parts.push(multiagent.advisor === '' ? 'advisor' : `advisor ${multiagent.advisor}`)
+  if (multiagent.subagents.enabled) parts.push('subagents')
+  if (multiagent.workflows.enabled) parts.push('workflows')
+  return parts.length === 0 ? 'all disabled' : parts.join(', ')
+}
+
+function multiagentChanges(form: MultiagentForm | null, base: MultiagentForm | null, out: FieldChange[]): void {
+  if (form === null) {
+    if (base !== null) {
+      out.push({ path: 'Multiagent', before: multiagentText(base), after: null, lines: null })
+    }
+    return
+  }
+  if (base === null) {
+    out.push({ path: 'Multiagent', before: null, after: multiagentText(form), lines: null })
+    return
+  }
+  if (form.advisor !== base.advisor) {
+    out.push(leafChange('Advisor', base.advisor ?? 'disabled', form.advisor ?? 'disabled'))
+  }
+  if (memberText(form.subagents) !== memberText(base.subagents)) {
+    out.push(leafChange('Subagents', memberText(base.subagents), memberText(form.subagents)))
+  }
+  if (memberText(form.workflows) !== memberText(base.workflows)) {
+    out.push(leafChange('Workflows', memberText(base.workflows), memberText(form.workflows)))
+  }
+}
+
 /**
  * La revue d'un formulaire, dans ses propres mots : une ligne par réglage que la personne a changé (tout ce qui est
  * posé, pour une création). Le différentiel du document en donnerait davantage (un serveur ajouté y amène aussi son
@@ -323,6 +418,7 @@ export function formChanges(form: AgentForm, base: AgentForm | null): FieldChang
   }
   builtinChanges(form.builtinTools, base?.builtinTools ?? null, out)
   serverChanges(form.mcpServers, base?.mcpServers ?? [], out)
+  multiagentChanges(form.multiagent ?? null, base?.multiagent ?? null, out)
   return out
 }
 
@@ -361,6 +457,15 @@ export async function prepareAgentForm(
   }
   if (form.model.trim() === '') {
     return { ok: false, code: 'invalid', error: 'model is required.' }
+  }
+  if (form.multiagent?.advisor === '') {
+    return { ok: false, code: 'invalid', error: 'advisor model is required.' }
+  }
+  for (const [name, label] of [['subagents', 'Subagents'], ['workflows', 'Workflows']] as const) {
+    const member = form.multiagent?.[name]
+    if (member?.enabled && !member.inlineAgents && member.predefinedCount === 0) {
+      return { ok: false, code: 'invalid', error: `${label} need inline agents or at least one predefined agent.` }
+    }
   }
   try {
     let before: AgentDocument = {}

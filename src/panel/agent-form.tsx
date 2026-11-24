@@ -1,13 +1,14 @@
 // Formulaire d'un agent : création et modification. La saisie en cours est gardée par `form-state` (atome persisté,
 // avec la base et la version sur lesquelles elle a été commencée). « Review changes » met l'écriture en attente côté
 // worker (`agent.prepareForm`), montre les changements, puis « Confirm » l'envoie (`write.commit`) ; « Create »
-// crée l'agent d'un seul geste. Le prompt, les skills, `multiagent` et les réglages par outil MCP restent en lecture
-// seule, avec un renvoi vers le brouillon YAML. Les blocs du kit (`src/blocks/`) sont copiés tels quels.
+// crée l'agent d'un seul geste. Le bloc `multiagent` (workflows, sous-agents, conseiller) s'édite ici ; le prompt, les
+// skills, les agents enregistrés et les réglages par outil MCP restent en lecture seule, avec un renvoi vers le brouillon YAML. Les blocs du kit (`src/blocks/`) sont copiés tels quels.
 import {
   atom,
   Box,
   Button,
   Callout,
+  Checkbox,
   CodeView,
   IconButton,
   Input,
@@ -41,6 +42,8 @@ import {
   type ApiErrorCode,
   type Committed,
   type DraftRef,
+  type MultiagentForm,
+  type MultiagentMemberForm,
   type PreparedWrite,
   type ToolPolicy
 } from '../protocol'
@@ -96,7 +99,7 @@ function defaultTools(): AgentToolsForm {
 }
 
 function emptyForm(): AgentForm {
-  return { name: '', model: '', effort: null, description: '', builtinTools: defaultTools(), mcpServers: [] }
+  return { name: '', model: '', effort: null, description: '', builtinTools: defaultTools(), mcpServers: [], multiagent: null }
 }
 
 // --- État éphémère ---
@@ -121,6 +124,10 @@ const serverDraft = atom<ServerDraft>(NEW_SERVER)
 const serverTouched = atom<{ name: boolean; url: boolean }>({ name: false, url: false })
 /** La section des réglages par outil : fermée par défaut. */
 const perToolOpen = atom(false)
+/** La section « Tools (optional) » (outils intégrés et serveurs MCP) : fermée par défaut. */
+const toolsOpen = atom(false)
+/** La section « Multiagent (optional) » : fermée par défaut. */
+const multiagentOpen = atom(false)
 
 function setFlow(key: string, flow: Flow | null): void {
   update(flows, (current) => {
@@ -352,22 +359,199 @@ function serverProblems(draft: ServerDraft, servers: AgentForm['mcpServers']): {
   }
 }
 
-function ModelField({ form, models, disabled, onChange }: { form: AgentForm; models: string[] | null; disabled: boolean; onChange: (model: string) => void }) {
+type ModelFieldProps = { label: string; labelHidden?: boolean; value: string; models: string[] | null; disabled: boolean; onChange: (model: string) => void }
+
+/** Le choix d'un modèle : la liste de l'API (le modèle courant y est ajouté s'il manque), sinon un champ libre. */
+function ModelField({ label, labelHidden, value, models, disabled, onChange }: ModelFieldProps) {
   // Sans liste de l'API, un champ libre : le modèle reste modifiable.
   if (models === null || models.length === 0) {
-    return <Input label="Model" disabled={disabled} value={form.model} onChange={onChange} />
+    return <Input label={label} labelHidden={labelHidden} disabled={disabled} value={value} onChange={onChange} />
   }
-  const options = form.model === '' || models.includes(form.model) ? models : [form.model, ...models]
+  const options = value === '' || models.includes(value) ? models : [value, ...models]
   return (
     <Select
-      label="Model"
+      label={label}
+      labelHidden={labelHidden}
       placeholder="Choose a model"
       disabled={disabled}
-      value={form.model === '' ? undefined : form.model}
-      options={options.map((value) => ({ value, label: clipTitle(value) }))}
+      value={value === '' ? undefined : value}
+      options={options.map((option) => ({ value: option, label: clipTitle(option) }))}
       onChange={onChange}
     />
   )
+}
+
+// --- Multiagent ---
+
+type MemberName = 'subagents' | 'workflows'
+
+const MEMBER_OFF: MultiagentMemberForm = { enabled: false, inlineAgents: true, predefinedCount: 0 }
+
+/** Le bloc affiché quand l'agent n'en a pas : tout éteint. */
+const allOff = (): MultiagentForm => ({ advisor: null, subagents: MEMBER_OFF, workflows: MEMBER_OFF })
+
+const isAllOff = (block: MultiagentForm): boolean => block.advisor === null && !block.subagents.enabled && !block.workflows.enabled
+
+/**
+ * Un bloc tout éteint redevient « pas de bloc » quand l'agent n'en avait pas à l'ouverture ; sinon il reste, éteint,
+ * comme la base : allumer puis éteindre un membre ne laisse aucun écart.
+ */
+const settled = (block: MultiagentForm, base: MultiagentForm | null): MultiagentForm | null => (isAllOff(block) && base === null ? null : block)
+
+/** Allume ou éteint un membre ; allumé, il reprend la valeur de la base si elle l'avait allumé, sinon `inlineAgents` vrai. */
+function toggleMember(current: MultiagentForm | null, base: MultiagentForm | null, name: MemberName, on: boolean): MultiagentForm | null {
+  const block = current ?? allOff()
+  const before = base?.[name]
+  const member = on ? (before?.enabled ? before : { enabled: true, inlineAgents: true, predefinedCount: 0 }) : MEMBER_OFF
+  return settled({ ...block, [name]: member }, base)
+}
+
+/** Allume ou éteint le conseiller ; allumé sans modèle choisi, `''` (l'envoi attend le choix). */
+function toggleAdvisor(current: MultiagentForm | null, base: MultiagentForm | null, on: boolean): MultiagentForm | null {
+  const block = current ?? allOff()
+  return settled({ ...block, advisor: on ? (base?.advisor ?? '') : null }, base)
+}
+
+const savedAgentsText = (count: number): string => `${String(count)} saved agent${count === 1 ? '' : 's'}, edited in YAML`
+
+type MemberCardProps = {
+  title: string
+  description: string
+  member: MultiagentMemberForm
+  disabled: boolean
+  onToggle: (on: boolean) => void
+  onInline: (inline: boolean) => void
+}
+
+/** Une carte `subagents` ou `workflows` : l'interrupteur et sa description, puis (allumé) le droit de définir ses propres agents. */
+function MemberCard({ title, description, member, disabled, onToggle, onInline }: MemberCardProps) {
+  return (
+    <GroupCard
+      rows={[
+        <Box paddingY="xs">
+          <Stack gap="xs">
+            <Switch label={title} disabled={disabled} checked={member.enabled} onChange={onToggle} />
+            <Text muted size="xs">
+              {description}
+            </Text>
+          </Stack>
+        </Box>,
+        member.enabled ? (
+          <Box paddingY="xs">
+            <Stack gap="xs">
+              <Checkbox label="Can define its own agents" disabled={disabled} checked={member.inlineAgents} onChange={onInline} />
+              {member.predefinedCount > 0 ? (
+                <Text muted size="xs">
+                  {savedAgentsText(member.predefinedCount)}
+                </Text>
+              ) : null}
+            </Stack>
+          </Box>
+        ) : null
+      ]}
+    />
+  )
+}
+
+type MultiagentZoneProps = {
+  form: AgentForm
+  models: string[] | null
+  disabled: boolean
+  coordinator: boolean
+  /** La base de la saisie gardée : ce qu'un membre rallumé retrouve. */
+  base: MultiagentForm | null
+  onChange: (multiagent: MultiagentForm | null) => void
+}
+
+/** Les trois membres du bloc `multiagent` : « Dynamic workflows », « Subagents », « Advisor ». Une topologie `coordinator` reste au YAML. */
+function MultiagentZone({ form, models, disabled, coordinator, base, onChange }: MultiagentZoneProps) {
+  const block = form.multiagent ?? null
+  const view = block ?? allOff()
+  return (
+    <SectionCollapsible title="Multiagent (optional)" summary={multiagentSummary(block, coordinator)} open={read(multiagentOpen)} onChange={(next) => set(multiagentOpen, next)}>
+      <Stack gap="sm">
+        {coordinator ? (
+          <Text muted size="xs">
+            Coordinator topology, edited in YAML.
+          </Text>
+        ) : (
+          <>
+            <MemberCard
+              title="Dynamic workflows"
+              description="Writes a program that runs many agents in parallel."
+              member={view.workflows}
+              disabled={disabled}
+              onToggle={(on) => onChange(toggleMember(block, base, 'workflows', on))}
+              onInline={(inline) => onChange({ ...view, workflows: { ...view.workflows, inlineAgents: inline } })}
+            />
+            <MemberCard
+              title="Subagents"
+              description="Delegates tasks to other agents, each in its own thread."
+              member={view.subagents}
+              disabled={disabled}
+              onToggle={(on) => onChange(toggleMember(block, base, 'subagents', on))}
+              onInline={(inline) => onChange({ ...view, subagents: { ...view.subagents, inlineAgents: inline } })}
+            />
+            <GroupCard
+              rows={[
+                <Box paddingY="xs">
+                  <Stack gap="xs">
+                    <Switch label="Advisor" disabled={disabled} checked={view.advisor !== null} onChange={(on) => onChange(toggleAdvisor(block, base, on))} />
+                    <Text muted size="xs">
+                      Consults a model at least as capable as the agent's own.
+                    </Text>
+                  </Stack>
+                </Box>,
+                view.advisor !== null ? (
+                  <Box paddingY="xs">
+                    <ModelField
+                      label="Advisor model"
+                      labelHidden
+                      value={view.advisor}
+                      models={models}
+                      disabled={disabled}
+                      onChange={(advisor) => onChange({ ...view, advisor })}
+                    />
+                  </Box>
+                ) : null
+              ]}
+            />
+          </>
+        )}
+      </Stack>
+    </SectionCollapsible>
+  )
+}
+
+/** Le résumé du pli « Tools » fermé : l'état des outils intégrés et le nombre de serveurs MCP. */
+function toolsSummary(form: AgentForm): string {
+  const builtin = form.builtinTools?.enabled ? 'Built-in tools on' : 'Built-in tools off'
+  const count = form.mcpServers.length
+  return `${builtin}, ${count === 0 ? 'no MCP servers' : `${String(count)} MCP server${count === 1 ? '' : 's'}`}`
+}
+
+/** Le résumé du pli fermé : les membres allumés, le conseiller avec son modèle, ou « Off ». */
+function multiagentSummary(block: MultiagentForm | null, coordinator: boolean): string {
+  if (coordinator) return 'Coordinator topology'
+  if (block === null) return 'Off'
+  const parts: string[] = []
+  if (block.workflows.enabled) parts.push('Dynamic workflows')
+  if (block.subagents.enabled) parts.push('Subagents')
+  if (block.advisor !== null) parts.push(block.advisor === '' ? 'Advisor' : `Advisor ${block.advisor}`)
+  return parts.length === 0 ? 'Off' : parts.join(', ')
+}
+
+/** Ce qui manque au bloc `multiagent` pour partir, en une phrase ; null quand il est complet. */
+function multiagentProblem(block: MultiagentForm | null): string | null {
+  if (block === null) return null
+  if (block.advisor === '') return 'Choose an advisor model.'
+  for (const [name, label] of [['workflows', 'Dynamic workflows'], ['subagents', 'Subagents']] as const) {
+    const member = block[name]
+    if (member.enabled && !member.inlineAgents && member.predefinedCount === 0) {
+      return `${label} need inline agents or at least one saved agent.`
+    }
+  }
+  return null
 }
 
 /** Les réglages d'un outil intégré : deux listes sur une ligne qui passe à la ligne quand la place manque. */
@@ -584,7 +768,7 @@ function FlowView({ target, flow }: { target: Target; flow: Flow }): OrcaNode {
 
 // --- Rendu : lecture seule ---
 
-/** Le prompt, les skills, `multiagent` et les réglages par outil MCP : lus ici, écrits dans le YAML. */
+/** Le prompt, les skills et les réglages par outil MCP : lus ici, écrits dans le YAML (`multiagent` a sa zone dans le formulaire). */
 function YamlZone({ agent }: { agent: AgentDetail }) {
   const ref = agentDraft(agent.id)
   const reread = (): void => run(async () => {
@@ -610,7 +794,6 @@ function YamlZone({ agent }: { agent: AgentDetail }) {
         ) : null}
       </Stack>
       {agent.skills.length > 0 ? <Text size="sm">{`Skills: ${clipBytes(agent.skills.join(', '), LONG_TEXT_LIMIT_BYTES).text}`}</Text> : null}
-      {agent.multiagent ? <Text size="sm">{clipBytes(agent.multiagent, LONG_TEXT_LIMIT_BYTES).text}</Text> : null}
       {overridden.map((server) => (
         <Stack key={server.name} gap="xs">
           <Text muted size="xs">
@@ -679,7 +862,8 @@ function AgentFormBody({ id, base, version, name, agent }: BodyProps) {
   const locked = isLocked(flow)
   const tools = form.builtinTools
   const nameMissing = form.name.trim() === ''
-  const problem = nameMissing || form.model.trim() === ''
+  const multiagentIssue = multiagentProblem(form.multiagent ?? null)
+  const problem = nameMissing || form.model.trim() === '' || multiagentIssue !== null
   // L'erreur du nom attend que la personne l'ait modifié une fois : un formulaire neuf ne s'ouvre pas en rouge.
   const nameInvalid = nameMissing && isTouched(key, 'name')
   // Le pied (le bouton principal) reste là au repos et pendant une création ; la revue ou le conflit le remplacent.
@@ -722,7 +906,7 @@ function AgentFormBody({ id, base, version, name, agent }: BodyProps) {
         <Textarea label="Description" placeholder="Optional" rows={2} disabled={locked} value={form.description} onChange={(value) => change({ description: value })} />
         <Box direction="row" wrap gap="sm">
           <Box grow minWidth={FIELD_MIN_WIDTH}>
-            <ModelField form={form} models={read(agentModels)} disabled={locked} onChange={(model) => change({ model })} />
+            <ModelField label="Model" value={form.model} models={agentModels()} disabled={locked} onChange={(model) => change({ model })} />
           </Box>
           <Box grow minWidth={FIELD_MIN_WIDTH}>
             <Select
@@ -735,59 +919,71 @@ function AgentFormBody({ id, base, version, name, agent }: BodyProps) {
           </Box>
         </Box>
       </Stack>
-      <GroupCard
-        title="Built-in tools"
-        rows={[
-          // Chaque ligne respire de part et d'autre du filet, comme celles des serveurs MCP.
-          <Box paddingY="xs">
-            <Switch
-              label="Enabled"
-              disabled={locked}
-              checked={tools?.enabled ?? false}
-              onChange={(checked) => {
-                const current = latest().builtinTools
-                if (checked) change({ builtinTools: current === null ? defaultTools() : { ...current, enabled: true } })
-                // Un agent sans toolset qui l'a activé puis désactivé revient à sans toolset ; sinon le toolset reste, désactivé.
-                else change({ builtinTools: current === null || draftBase.builtinTools === null ? null : { ...current, enabled: false } })
-              }}
-            />
-          </Box>,
-          tools !== null ? (
-            <Box paddingY="xs">
-              <Stack gap="sm">
-                <Select
-                  label="Default permission"
+      <SectionCollapsible title="Tools (optional)" summary={toolsSummary(form)} open={read(toolsOpen)} onChange={(next) => set(toolsOpen, next)}>
+        <Stack gap="lg">
+          <GroupCard
+            title="Built-in tools"
+            rows={[
+              // Chaque ligne respire de part et d'autre du filet, comme celles des serveurs MCP.
+              <Box paddingY="xs">
+                <Switch
+                  label="Enabled"
                   disabled={locked}
-                  value={tools.policy}
-                  options={POLICY_OPTIONS}
-                  onChange={(value) => {
-                    const policy = asPolicy(value)
-                    if (policy !== null) changeTools({ policy })
+                  checked={tools?.enabled ?? false}
+                  onChange={(checked) => {
+                    const current = latest().builtinTools
+                    if (checked) change({ builtinTools: current === null ? defaultTools() : { ...current, enabled: true } })
+                    // Un agent sans toolset qui l'a activé puis désactivé revient à sans toolset ; sinon le toolset reste, désactivé.
+                    else change({ builtinTools: current === null || draftBase.builtinTools === null ? null : { ...current, enabled: false } })
                   }}
                 />
-                <SectionCollapsible title="Per-tool settings" summary={customisedSummary(tools)} open={read(perToolOpen)} onChange={(next) => set(perToolOpen, next)}>
-                  <Stack gap="md">
-                    {tools.tools.map((tool) => (
-                      <ToolRow
-                        key={tool.name}
-                        tool={tool}
-                        disabled={locked}
-                        onChange={(changes) => changeTools({ tools: tools.tools.map((entry) => (entry.name === tool.name ? { ...entry, ...changes } : entry)) })}
-                      />
-                    ))}
+              </Box>,
+              tools !== null ? (
+                <Box paddingY="xs">
+                  <Stack gap="sm">
+                    <Select
+                      label="Default permission"
+                      disabled={locked}
+                      value={tools.policy}
+                      options={POLICY_OPTIONS}
+                      onChange={(value) => {
+                        const policy = asPolicy(value)
+                        if (policy !== null) changeTools({ policy })
+                      }}
+                    />
+                    <SectionCollapsible title="Per-tool settings" summary={customisedSummary(tools)} open={read(perToolOpen)} onChange={(next) => set(perToolOpen, next)}>
+                      <Stack gap="md">
+                        {tools.tools.map((tool) => (
+                          <ToolRow
+                            key={tool.name}
+                            tool={tool}
+                            disabled={locked}
+                            onChange={(changes) => changeTools({ tools: tools.tools.map((entry) => (entry.name === tool.name ? { ...entry, ...changes } : entry)) })}
+                          />
+                        ))}
+                      </Stack>
+                    </SectionCollapsible>
                   </Stack>
-                </SectionCollapsible>
-              </Stack>
-            </Box>
-          ) : null
-        ]}
-      />
-      <ServersZone
-        servers={form.mcpServers}
+                </Box>
+              ) : null
+            ]}
+          />
+          <ServersZone
+            servers={form.mcpServers}
+            disabled={locked}
+            onPolicy={(serverName, policy) => change({ mcpServers: latest().mcpServers.map((server) => (server.name === serverName ? { ...server, policy } : server)) })}
+            onRemove={(serverName) => change({ mcpServers: latest().mcpServers.filter((server) => server.name !== serverName) })}
+            onAdd={(server) => change({ mcpServers: [...latest().mcpServers, server] })}
+          />
+        </Stack>
+      </SectionCollapsible>
+      <MultiagentZone
+        form={form}
+        models={agentModels()}
         disabled={locked}
-        onPolicy={(serverName, policy) => change({ mcpServers: latest().mcpServers.map((server) => (server.name === serverName ? { ...server, policy } : server)) })}
-        onRemove={(serverName) => change({ mcpServers: latest().mcpServers.filter((server) => server.name !== serverName) })}
-        onAdd={(server) => change({ mcpServers: [...latest().mcpServers, server] })}
+        coordinator={agent?.multiagentCoordinator === true}
+        base={draftBase.multiagent ?? null}
+        onChange={(multiagent) => change({ multiagent })}
       />
       <Stack gap="sm">
         {flow !== undefined ? <FlowView target={target} flow={flow} /> : null}
@@ -810,7 +1006,7 @@ function AgentFormBody({ id, base, version, name, agent }: BodyProps) {
             </Row>
             {problem ? (
               <Text muted size="xs">
-                Name and model are required.
+                {nameMissing || form.model.trim() === '' ? 'Name and model are required.' : multiagentIssue}
               </Text>
             ) : null}
           </Stack>

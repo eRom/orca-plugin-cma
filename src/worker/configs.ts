@@ -203,7 +203,8 @@ export function toAgentDetail(agent: BetaManagedAgentsAgent): AgentDetail {
       return { name: server.name, url: server.url, ...view }
     }),
     skills: agent.skills.map((skill) => skill.skill_id),
-    multiagent: agent.multiagent ? summarizeMultiagent(agent.multiagent) : null
+    multiagent: agent.multiagent ? summarizeMultiagent(agent.multiagent) : null,
+    multiagentCoordinator: agent.multiagent?.type === 'coordinator'
   }
 }
 
