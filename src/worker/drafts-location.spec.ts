@@ -2,11 +2,12 @@ import { expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { REGISTRY_FILE } from './drafts'
+import { REGISTRY_FILE, type Drafts } from './drafts'
 import {
   DRAFTS_PROJECT_KEY,
   DRAFTS_SUBFOLDER,
   createDraftsLocation,
+  guardDrafts,
   type KeyStore,
   type ProjectSource
 } from './drafts-location'
@@ -363,4 +364,29 @@ test('merges directories of the target when no file collides', async () => {
   expectMovedTo(draftsOf(rows[1]))
   expect(readFileSync(join(draftsOf(rows[1]), 'agents', 'other.yaml'), 'utf8')).toBe('other\n')
   cleanup()
+})
+
+test('draft handlers refuse without a chosen project', async () => {
+  let called = false
+  const result = await guardDrafts<string>(null, async () => {
+    called = true
+    return { ok: true, value: 'never' }
+  })
+  expect(result).toEqual({
+    ok: false,
+    error: 'Choose a drafts workspace in the Drafts section of the home first.',
+    code: 'drafts_missing'
+  })
+  expect(called).toBe(false)
+})
+
+test('draft handlers delegate to the drafts object once a project is chosen', async () => {
+  const drafts = { tag: 'fake' } as unknown as Drafts
+  const seen: Drafts[] = []
+  const result = await guardDrafts<string>(drafts, async (given) => {
+    seen.push(given)
+    return { ok: true, value: 'done' }
+  })
+  expect(result).toEqual({ ok: true, value: 'done' })
+  expect(seen[0]).toBe(drafts)
 })

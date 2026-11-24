@@ -3,14 +3,12 @@
 // base de lecture, workspace de retour), et sait donc dire si le fichier a été modifié depuis.
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { ApiErrorCode, ApiResult, DraftInfo, DraftRef, DraftsStatus, PreparedWrite } from '../protocol'
 import { NO_KEY_MESSAGE, failure } from './client'
-import type { EditorHost } from './editor-host'
+import type { DraftsHost } from './editor-host'
 import type { PendingWrites } from './pending-writes'
 
-export const DRAFTS_FOLDER = join(homedir(), '.config', 'agent-claude-managed', 'managed-agents')
 export const REGISTRY_FILE = '.orca-drafts.json'
 
 /** Nom de fichier lisible tiré d'un nom d'objet ; sert aux adaptateurs (agents, mémoires). */
@@ -209,7 +207,7 @@ async function resolvedOrSelf(path: string): Promise<string> {
 
 export function createDrafts(deps: {
   folder: string
-  host: EditorHost
+  host: DraftsHost
   adapters: { agent?: DraftAdapter<AgentRef>; memory?: DraftAdapter<MemoryRef> }
   workspace: DraftsWorkspace
   pending: PendingWrites
@@ -300,16 +298,24 @@ export function createDrafts(deps: {
 
   const writeRegistry = (registry: Registry): Promise<void> => writeAtomic(registryPath, JSON.stringify(registry, null, 2))
 
-  /** Le workspace d'Orca dont le dossier est celui des brouillons (comparé par `realpath`), ou null. */
-  async function findWorkspace(): Promise<{ id: string; name: string } | null> {
+  /**
+   * Le workspace d'Orca qui contient le dossier des brouillons (comparé par `realpath`), le plus proche s'il y en
+   * a plusieurs, ou null. `prefix` est le chemin du dossier relatif au workspace, en `/` ('' si c'est le workspace).
+   */
+  async function findWorkspace(): Promise<{ id: string; name: string; prefix: string } | null> {
     await mkdir(folder, { recursive: true })
     const target = await realpath(folder)
+    let best: { id: string; name: string; prefix: string } | null = null
     for (const candidate of await host.folders()) {
-      if ((await resolvedOrSelf(candidate.path)) === target) {
-        return { id: candidate.id, name: candidate.name }
+      const inside = relative(await resolvedOrSelf(candidate.path), target)
+      if (inside !== '' && (inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside))) {
+        continue
+      }
+      if (best === null || inside.length < best.prefix.length) {
+        best = { id: candidate.id, name: candidate.name, prefix: inside.split(sep).join('/') }
       }
     }
-    return null
+    return best
   }
 
   async function describe(ref: DraftRef, file: string, entry: RegistryEntry): Promise<DraftInfo | null> {
@@ -509,7 +515,7 @@ export function createDrafts(deps: {
           if (active === null) {
             return refuse('no_key', NO_KEY_MESSAGE)
           }
-          let workspace: { id: string; name: string } | null
+          let workspace: { id: string; name: string; prefix: string } | null
           try {
             workspace = await findWorkspace()
           } catch (error) {
@@ -567,7 +573,8 @@ export function createDrafts(deps: {
 
           try {
             await host.show(workspace.id)
-            await host.open(workspace.id, file)
+            const inWorkspace = file.split(sep).join('/')
+            await host.open(workspace.id, workspace.prefix === '' ? inWorkspace : `${workspace.prefix}/${inWorkspace}`)
           } catch (error) {
             return refuse('other', `Orca could not open the draft: ${messageOf(error)}`)
           }

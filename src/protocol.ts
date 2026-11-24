@@ -487,6 +487,10 @@ declare module 'orca' {
       output: ApiResult<PreparedWrite>
     }
     'drafts.status': { output: DraftsStatus }
+    /** Les projets de la barre latérale d'Orca où loger les brouillons ; `current` marque celui qui est retenu. */
+    'drafts.projects': { output: ApiResult<DraftsProject[]> }
+    /** Retient le projet et y déplace les brouillons ; rend l'état du nouveau dossier. */
+    'drafts.choose': { input: { projectId: string }; output: ApiResult<DraftsStatus> }
     'draft.open': { input: DraftRef; output: ApiResult<DraftInfo> }
     'draft.discard': { input: DraftRef; output: ApiResult<DraftInfo> }
     'draft.state': { input: DraftRef; output: ApiResult<DraftInfo | null> }

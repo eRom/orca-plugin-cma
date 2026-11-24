@@ -5,7 +5,7 @@ import { cp, lstat, mkdir, readFile, readdir, realpath, rename as fsRename, rm, 
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { ApiResult, DraftsProject } from '../protocol'
-import { REGISTRY_FILE } from './drafts'
+import { REGISTRY_FILE, type Drafts } from './drafts'
 
 export const DRAFTS_SUBFOLDER = 'managed-agents'
 /** Clé du storage du plugin qui retient l'id du projet choisi. */
@@ -241,4 +241,18 @@ export function createDraftsLocation(deps: {
     })
 
   return { folder, projects: list, choose }
+}
+
+const NO_DRAFTS_PROJECT: { ok: false; error: string; code: 'drafts_missing' } = {
+  ok: false,
+  error: 'Choose a drafts workspace in the Drafts section of the home first.',
+  code: 'drafts_missing'
+}
+
+/** Sans projet retenu, aucun brouillon n'est lu ni écrit : le refus est le même pour toutes les requêtes `draft.*`. */
+export function guardDrafts<T>(
+  drafts: Drafts | null,
+  run: (drafts: Drafts) => Promise<ApiResult<T>>
+): Promise<ApiResult<T>> {
+  return drafts === null ? Promise.resolve(NO_DRAFTS_PROJECT) : run(drafts)
 }

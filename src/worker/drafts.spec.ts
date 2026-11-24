@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApiResult, DraftRef, PreparedWrite } from '../protocol'
 import { REGISTRY_FILE, createDrafts, sameRef, slugify, type DraftAdapter, type DraftBase } from './drafts'
-import type { EditorHost } from './editor-host'
+import type { DraftsHost } from './editor-host'
 import { fakeWorkspace } from './fake-workspace'
 import { createPendingWrites } from './pending-writes'
 
@@ -36,7 +36,7 @@ function fakeHost(folder: string | null) {
     focus: { workspaceId: 'ws-other', name: 'my-project' } as { workspaceId: string; name: string } | null,
     failShow: false
   }
-  const host: EditorHost = {
+  const host: DraftsHost = {
     async folders() {
       return folder === null ? [] : [{ id: 'ws-drafts', name: 'managed-agents', path: realpathSync(folder) }]
     },
@@ -853,5 +853,100 @@ test('an orphan draft with unapplied work still protects its file name from anot
   space.state.names['ws-new'] = 'Default'
   expect(await drafts.open(other)).toEqual({ ok: false, code: 'other', error: 'Another draft already uses this file name.' })
   expect(readFileSync(join(folder, 'agents/shared.yaml'), 'utf8')).toBe('name: My edit\n')
+  cleanup()
+})
+
+/** Un dossier de brouillons logé dans un sous-dossier d'un workspace : l'hôte rend les chemins des workspaces donnés. */
+function subfolderSetup(workspaces: { id: string; path: string }[], folder: string) {
+  const calls: string[] = []
+  const host: DraftsHost = {
+    async folders() {
+      return workspaces.map(({ id, path }) => ({ id, name: id, path: realpathSync(path) }))
+    },
+    async focused() {
+      return null
+    },
+    async show(workspaceId) {
+      calls.push(`show ${workspaceId}`)
+    },
+    async open(workspaceId, path) {
+      calls.push(`open ${workspaceId} ${path}`)
+    }
+  }
+  const adapter: DraftAdapter<AgentRef> = {
+    async file(ref) {
+      return `agents/${ref.agentId ?? 'new'}.yaml`
+    },
+    async readLive() {
+      return { text: LIVE, base: { version: 3 } }
+    },
+    async prepare(_ref, _text, _base, stage): Promise<ApiResult<PreparedWrite>> {
+      return { ok: true, value: stage(async () => ({ ok: true, value: { label: 'Saved' } }), [], false) }
+    }
+  }
+  const drafts = createDrafts({
+    folder,
+    host,
+    adapters: { agent: adapter },
+    workspace: fakeWorkspace().deps,
+    pending: createPendingWrites(() => 0),
+    now: () => new Date('2026-11-22T10:00:00.000Z'),
+    log: () => {}
+  })
+  return { drafts, calls }
+}
+
+test('opens a draft from a subfolder of the workspace', async () => {
+  const folder = tempFolder()
+  const { drafts, calls } = subfolderSetup([{ id: 'ws-drafts', path: join(folder, '..') }], folder)
+  expect((await drafts.status()).ready).toBe(true)
+  const result = await drafts.open(AGENT)
+  expect(result.ok).toBe(true)
+  expect(calls).toEqual(['show ws-drafts', 'open ws-drafts managed-agents/agents/agent_1.yaml'])
+  cleanup()
+})
+
+test('opens a draft from a project whose path has spaces and accents', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cma-drafts-'))
+  dirs.push(root)
+  const project = join(root, 'Claude Code Config', 'LaDenrée')
+  const folder = join(project, 'managed-agents')
+  mkdirSync(folder, { recursive: true })
+  const { drafts, calls } = subfolderSetup([{ id: 'ws-drafts', path: project }], folder)
+  const result = await drafts.open(AGENT)
+  expect(result.ok).toBe(true)
+  expect(calls).toEqual(['show ws-drafts', 'open ws-drafts managed-agents/agents/agent_1.yaml'])
+  expect(existsSync(join(folder, FILE))).toBe(true)
+  cleanup()
+})
+
+test('prefers the closest workspace', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cma-drafts-'))
+  dirs.push(root)
+  const project = join(root, 'project')
+  const folder = join(project, 'managed-agents')
+  mkdirSync(folder, { recursive: true })
+  const { drafts, calls } = subfolderSetup(
+    [
+      { id: 'ws-root', path: root },
+      { id: 'ws-project', path: project }
+    ],
+    folder
+  )
+  const result = await drafts.open(AGENT)
+  expect(result.ok).toBe(true)
+  expect(calls).toEqual(['show ws-project', 'open ws-project managed-agents/agents/agent_1.yaml'])
+  cleanup()
+})
+
+test('does not match a workspace that only shares a name prefix with the folder', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cma-drafts-'))
+  dirs.push(root)
+  const folder = join(root, 'project', 'managed-agents')
+  const sibling = join(root, 'project-two')
+  mkdirSync(folder, { recursive: true })
+  mkdirSync(sibling)
+  const { drafts } = subfolderSetup([{ id: 'ws-sibling', path: sibling }], folder)
+  expect((await drafts.status()).ready).toBe(false)
   cleanup()
 })
