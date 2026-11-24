@@ -26,7 +26,7 @@ import { AgentFormView, leaveAgentView, TRUNCATED_NOTICE } from './agent-form'
 import { EnvironmentFormView } from './environment-form'
 import { MemoryActions, MemoryDeleteAction, MemoryStoreFormView, refreshStore } from './memory-forms'
 import { VaultFormView } from './vault-forms'
-import { configDetail, configDetailError, configRows, loadDetail, loadMemory, memoryContent, memoryError, restoreNewAgent } from './config-state'
+import { configDetail, configDetailError, configRows, loadAgentModels, loadDetail, loadMemory, memoryContent, memoryError, restoreNewAgent } from './config-state'
 import { ERROR_TEXT_LIMIT_BYTES, nav, popView, run, workspace } from './state'
 
 /** Plafond d'un titre ou d'un libellé : un libellé de plus de 1 Kio fait refuser le rendu. */
@@ -62,6 +62,9 @@ export async function restoreConfigView(): Promise<void> {
     await loadMemory(top.memoryStoreId, top.memoryId)
   } else if (top?.view === 'newConfig') {
     await restoreNewAgent()
+  } else if (top?.view === 'config' && top.kind === 'agent') {
+    // Détail déjà chargé (panneau rechargé sur un agent ouvert) : la liste des modèles peut manquer ou avoir expiré.
+    await loadAgentModels()
   }
 }
 
