@@ -340,6 +340,9 @@ function closeChooser(): void {
 function ProjectList({ projects }: { projects: DraftsProject[] | null }): OrcaNode {
   const busy = read(checking)
   const refusal = read(chooseRefusal)
+  // Le projet courant que le worker dit non prêt (fermé dans Orca) se rechoisit : c'est le geste que le message demande.
+  const status = read(draftsStatus)
+  const notReady = status !== null && !status.ready
   return (
     <Stack gap="sm">
       {refusal !== null ? (
@@ -369,7 +372,7 @@ function ProjectList({ projects }: { projects: DraftsProject[] | null }): OrcaNo
                     subtitle={project.path}
                     status={project.current ? { label: 'Current' } : undefined}
                     actions={
-                      project.current
+                      project.current && !notReady
                         ? []
                         : [{ key: 'use', icon: 'check', label: `Use ${project.name}`, disabled: busy, onPress: () => run(() => chooseProject(project.id)) }]
                     }

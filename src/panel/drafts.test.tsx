@@ -2,7 +2,7 @@ import { Stack } from 'orca'
 import { assert, mockHost, mount, test } from 'orca/testing'
 import type { DraftInfo, DraftRef, DraftsProject, FieldChange, PreparedWrite } from '../protocol'
 import { ChangesPreview, describeChange } from './changes'
-import { DraftControls, DraftsSection, draftKey, loadDraftControls, loadDraftsSection } from './drafts'
+import { DraftControls, DraftsSection, draftKey, loadDraftControls, loadDraftsSection, refreshDraftsStatus } from './drafts'
 import { run } from './state'
 
 const REF: DraftRef = { kind: 'agent', agentId: 'agent_a' }
@@ -700,6 +700,31 @@ test('a successful read with no project says so in the list', async () => {
   assert.ok(view.find({ text: 'No Orca project yet. Add one in Orca (Add project), then try again.' }))
   assert.ok(view.find({ role: 'button', text: 'Cancel' }))
   assert.equal(view.find({ type: 'Callout' }), null)
+  assert.deepEqual([view.errors, view.warnings, view.refusals], NO_ERRORS)
+  await view.unmount()
+})
+
+test('a current project that is not ready can be chosen again', async () => {
+  const state = { current: 'p_alpha' as string | null, reads: 0, chosen: [] as string[] }
+  const status = { folder: '/x/alpha/managed-agents', ready: false }
+  const requests = { ...(sectionRequests(state) as object), 'drafts.status': () => status } as never
+  const view = await mount(
+    {
+      default: DraftsSection,
+      setup() {
+        run(loadDraftsSection)
+        run(refreshDraftsStatus)
+      }
+    },
+    { host: mockHost({ requests }) }
+  )
+  await view.press({ type: 'IconButton', label: 'Change workspace' })
+  assert.ok(view.find({ text: 'Current' }))
+  // The worker says the drafts folder is not open in Orca: choosing the current project again is the way out.
+  assert.ok(view.find({ type: 'IconButton', label: 'Use alpha' }))
+  await view.press({ type: 'IconButton', label: 'Use alpha' })
+  assert.deepEqual(state.chosen, ['p_alpha'])
+  assert.equal(view.find({ text: 'Choose a workspace' }), null)
   assert.deepEqual([view.errors, view.warnings, view.refusals], NO_ERRORS)
   await view.unmount()
 })
