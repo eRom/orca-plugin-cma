@@ -1011,7 +1011,7 @@ function SkillsZone({ skills, before, disabled, onChange }: SkillsZoneProps) {
               const index = before.findIndex((entry) => entry.type === skill.type && entry.skillId === skill.skillId)
               return index === -1 ? Number.POSITIVE_INFINITY : index
             }
-            const added = { type, skillId, version: before.find((entry) => entry.type === type && entry.skillId === skillId)?.version ?? null }
+            const added: AgentSkillRef = { type, skillId, version: before.find((entry) => entry.type === type && entry.skillId === skillId)?.version ?? null }
             // Un skill rechoisi reprend son rang d'origine : sinon le brouillon diffère de sa base par l'ordre seul, que
             // le worker ignore (« Unsaved changes » puis « Nothing to apply »). Les nouveaux restent après, dans l'ordre d'ajout.
             onChange([...skills, added].sort((a, b) => rank(a) - rank(b)))
