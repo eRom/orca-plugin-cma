@@ -105,7 +105,10 @@ async function moveEntry(source: string, target: string, rename: Rename): Promis
       return
     }
     // Un dossier de même nom existe déjà dans la cible (vide de brouillons) : on fusionne son contenu.
-    if ((code === 'ENOTEMPTY' || code === 'EEXIST') && (await stat(source)).isDirectory()) {
+    // Windows répond EPERM (et non ENOTEMPTY) à un dossier renommé sur un dossier existant : on le tient
+    // pour une fusion seulement si la cible est bien un dossier.
+    const targetIsDirectory = code === 'EPERM' && (await stat(target).catch(() => null))?.isDirectory() === true
+    if ((code === 'ENOTEMPTY' || code === 'EEXIST' || targetIsDirectory) && (await stat(source)).isDirectory()) {
       await mkdir(target, { recursive: true })
       for (const name of await readdir(source)) {
         await moveEntry(join(source, name), join(target, name), rename)

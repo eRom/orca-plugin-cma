@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { rename as fsRename, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { REGISTRY_FILE, type Drafts } from './drafts'
@@ -389,4 +390,39 @@ test('draft handlers delegate to the drafts object once a project is chosen', as
   })
   expect(result).toEqual({ ok: true, value: 'done' })
   expect(seen[0]).toBe(drafts)
+})
+
+test('merges a directory when rename fails with EPERM on an existing folder', async () => {
+  const rows = [project('p1', 'one'), project('p2', 'two')]
+  // Windows refuse de renommer un dossier sur un dossier existant avec EPERM (là où POSIX dit ENOTEMPTY).
+  const rename = (async (from: string, to: string) => {
+    const existing = await stat(to).catch(() => null)
+    if (existing?.isDirectory()) throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' })
+    return fsRename(from, to)
+  }) as typeof fsRename
+  const { location } = fakeLocation(rows, { rename })
+  await location.choose('p1')
+  populate(draftsOf(rows[0]))
+  mkdirSync(join(draftsOf(rows[1]), 'agents'), { recursive: true })
+  writeFileSync(join(draftsOf(rows[1]), 'agents', 'b.yaml'), 'name: b\n')
+  const result = await location.choose('p2')
+  expect(result.ok).toBe(true)
+  expectMovedTo(draftsOf(rows[1]))
+  expect(readFileSync(join(draftsOf(rows[1]), 'agents', 'b.yaml'), 'utf8')).toBe('name: b\n')
+  expect(existsSync(draftsOf(rows[0]))).toBe(false)
+  cleanup()
+})
+
+test('an EPERM on a file target is not mistaken for a directory merge', async () => {
+  const rows = [project('p1', 'one'), project('p2', 'two')]
+  const rename = (async () => {
+    throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' })
+  }) as unknown as typeof fsRename
+  const { location, data } = fakeLocation(rows, { rename })
+  await location.choose('p1')
+  populate(draftsOf(rows[0]))
+  const result = await location.choose('p2')
+  expect(result.ok).toBe(false)
+  expect(data.get(DRAFTS_PROJECT_KEY)).toBe('p1')
+  cleanup()
 })
