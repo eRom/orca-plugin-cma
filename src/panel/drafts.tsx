@@ -1,14 +1,15 @@
-// Contrôles d'un brouillon : installation du dossier, ouverture dans l'éditeur d'Orca, application
-// (récapitulatif puis envoi), conflit et succès. Tout l'état est éphémère (rien n'est persisté, le jeton
-// d'écriture non plus) et rangé par `draftKey(ref)` : deux brouillons ne se mélangent pas.
+// Brouillons : le bloc « Drafts » de la home (choix du projet d'Orca qui les héberge) et les contrôles d'un brouillon
+// (ouverture dans l'éditeur d'Orca, application : récapitulatif puis envoi, conflit et succès). L'état des contrôles est
+// éphémère (rien n'est persisté, le jeton d'écriture non plus) et rangé par `draftKey(ref)` : deux brouillons ne se mélangent
+// pas. Seul le repli du bloc `Drafts` est persisté.
 //
 // Un composant d'Orca ne peut pas lancer de lecture en se dessinant : la vue qui héberge `DraftControls`
-// appelle `loadDraftControls(draftRef)` à son ouverture (`run(() => loadDraftControls(ref))`).
+// appelle `loadDraftControls(draftRef)` à son ouverture (`run(() => loadDraftControls(ref))`), et le `setup` du panneau
+// appelle `loadDraftsSection()` pour le bloc de la home.
 import {
   atom,
   Button,
   Callout,
-  CodeView,
   plugin,
   read,
   Row,
@@ -16,17 +17,18 @@ import {
   Stack,
   Text,
   update,
-  type OrcaNode,
-  type PanelContext
+  type OrcaNode
 } from 'orca'
-import type { ApiErrorCode, Committed, DraftInfo, DraftRef, DraftsStatus, PreparedWrite } from '../protocol'
+import type { ApiErrorCode, Committed, DraftInfo, DraftRef, DraftsProject, DraftsStatus, PreparedWrite } from '../protocol'
 import { clipBytes } from '../shared/text'
+import { EmptyView } from '../blocks/empty-view'
+import { GroupCard } from '../blocks/group-card'
+import { ItemRow } from '../blocks/item-row'
+import { SectionCollapsible } from '../blocks/section-collapsible'
 import { ChangesPreview } from './changes'
 import { ConfirmAction } from './confirm'
 import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, run } from './state'
 
-/** Relecture de `drafts.status` tant que la carte d'installation est affichée. */
-export const DRAFTS_POLL_MS = 5_000
 /** Titre de l'avis d'un conflit : le même texte que celui du worker. */
 const CONFLICT_TITLE = 'Changed elsewhere since you opened it.'
 /** Plafond d'un titre ou d'un nom repris dans un libellé : plus de 1 Kio fait refuser le rendu. */
@@ -54,7 +56,7 @@ type Flow =
 
 /** Le dossier de brouillons et s'il est un projet d'Orca ; null tant que la première lecture n'est pas revenue. */
 const draftsStatus = atom<DraftsStatus | null>(null)
-/** Vrai pendant un « Check again ». */
+/** Vrai pendant un choix de projet en route : les ✓ de la liste sont grisés. */
 const checking = atom(false)
 /** Le brouillon que le worker connaît, par clé ; absent tant que `draft.state` n'a pas répondu, null s'il n'y en a pas. */
 const draftInfos = atom<Record<string, DraftInfo | null>>({})
@@ -99,52 +101,17 @@ function isBusy(flow: Flow | undefined): boolean {
   return flow?.step === 'opening' || flow?.step === 'preparing' || ((flow?.step === 'review' || flow?.step === 'conflict') && flow.busy)
 }
 
-// --- Relecture de l'état d'installation ---
+// --- Relecture de l'état du dossier ---
 
-let pollMs = DRAFTS_POLL_MS
-let pollTimer: ReturnType<typeof setInterval> | null = null
-/** Vrai entre `setupDrafts` et la fermeture du panneau : sans lui, une réponse tardive relancerait un minuteur orphelin. */
-let panelOpen = false
 /** Numéro de la dernière relecture lancée : une réponse plus ancienne que la dernière ne compte pas. */
 let statusSeq = 0
 
-/** Intervalle de relecture ; les tests le raccourcissent, avant de monter le panneau. */
-export function setDraftsPollInterval(ms: number): void {
-  pollMs = ms
-}
-
-function stopPoll(): void {
-  if (pollTimer !== null) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
-}
-
-function startPoll(): void {
-  if (!panelOpen || pollTimer !== null) return
-  pollTimer = setInterval(() => {
-    // Une relecture perdue coûte un tour : la suivante, ou « Check again », reprend.
-    refreshDraftsStatus().catch(() => {})
-  }, pollMs)
-}
-
-/** À appeler depuis le `setup` du panneau : la relecture s'arrête à la fermeture, quoi qu'affiche la vue. */
-export function setupDrafts(ctx: PanelContext): void {
-  panelOpen = true
-  ctx.signal.addEventListener('abort', () => {
-    panelOpen = false
-    stopPoll()
-  })
-}
-
-/** Relit `drafts.status`. Tant que le dossier n'est pas un projet, la relecture se répète ; elle s'arrête dès qu'il l'est. */
+/** Relit `drafts.status`. Une relecture, pas un sondage : la personne change de projet depuis la home, qui met l'état à jour. */
 export async function refreshDraftsStatus(): Promise<void> {
   const mine = ++statusSeq
   const status = await plugin.request('drafts.status')
   if (mine !== statusSeq) return
   set(draftsStatus, status)
-  if (status.ready) stopPoll()
-  else startPoll()
 }
 
 /** Relit ce que le worker sait du brouillon (le registre seul répond, sans réseau). */
@@ -306,33 +273,146 @@ function clock(iso: string): string | null {
   return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
 }
 
-function SetupCard({ folder }: { folder: string }): OrcaNode {
+// --- Bloc « Drafts » de la home ---
+
+/** Les projets d'Orca qui peuvent héberger les brouillons, dont le courant ; null tant que la première lecture n'est pas revenue. */
+const draftsProjects = atom<DraftsProject[] | null>(null)
+/** Vrai quand la liste de choix est déployée (premier choix ou changement). */
+const choosing = atom(false)
+/** Le refus du dernier `drafts.choose`, montré au-dessus de la liste qui reste ouverte ; null sans refus. */
+const chooseRefusal = atom<string | null>(null)
+const draftsSectionOpen = atom('draftsSectionOpen', true, { persist: 'plugin' })
+
+/**
+ * À appeler à l'ouverture du panneau et du choix : lit les projets candidats et le courant. Une lecture de fond : un échec
+ * (refus ou hôte muet) laisse ce que le bloc savait, ou rien, et il montre alors son état vide.
+ */
+export async function loadDraftsSection(): Promise<void> {
+  try {
+    const result = await plugin.request('drafts.projects')
+    if (result.ok) set(draftsProjects, result.value)
+  } catch {
+    // Rien à montrer : le bloc garde son dernier état.
+  }
+}
+
+async function chooseProject(projectId: string): Promise<void> {
+  set(checking, true)
+  try {
+    const result = await plugin.request('drafts.choose', { projectId })
+    if (!result.ok) {
+      set(chooseRefusal, clipBytes(result.error, ERROR_TEXT_LIMIT_BYTES).text)
+      return
+    }
+    // Ce statut est le plus récent : une relecture partie avant lui ne doit pas le recouvrir.
+    statusSeq += 1
+    set(draftsStatus, result.value)
+    set(chooseRefusal, null)
+    set(choosing, false)
+    await loadDraftsSection()
+  } finally {
+    set(checking, false)
+  }
+}
+
+function openChooser(): void {
+  set(draftsSectionOpen, true)
+  set(chooseRefusal, null)
+  set(choosing, true)
+  run(loadDraftsSection)
+}
+
+function closeChooser(): void {
+  set(chooseRefusal, null)
+  set(choosing, false)
+}
+
+function ProjectList({ projects }: { projects: DraftsProject[] }): OrcaNode {
   const busy = read(checking)
+  const refusal = read(chooseRefusal)
   return (
-    <Callout tone="accent" title="Add the drafts folder to Orca">
-      <Stack gap="sm">
-        <Text size="sm">Orca opens drafts from a project folder. Add this folder once (Add project, then Folder), then come back:</Text>
-        <CodeView code={clipBytes(folder, 2_000).text} label="Drafts folder" wrap />
-        <Row gap="sm" wrap>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            onPress={() =>
-              run(async () => {
-                set(checking, true)
-                try {
-                  await refreshDraftsStatus()
-                } finally {
-                  set(checking, false)
-                }
-              })
-            }
-          >
-            Check again
+    <Stack gap="sm">
+      {refusal !== null ? (
+        <Callout tone="danger" title="Could not change the drafts workspace">
+          <Text size="sm">{refusal}</Text>
+        </Callout>
+      ) : null}
+      <GroupCard
+        title="Choose a workspace"
+        trailing={
+          <Button variant="ghost" size="sm" onPress={closeChooser}>
+            Cancel
           </Button>
-        </Row>
-      </Stack>
+        }
+        rows={
+          projects.length === 0
+            ? [<EmptyView kind="list" text="No Orca workspace yet. Add a folder in Orca (Add project, then Folder), then try again." />]
+            : projects.map((project) => ({
+                key: project.id,
+                row: (
+                  <ItemRow
+                    lead={{ kind: 'monogram', text: project.name }}
+                    title={project.name}
+                    subtitle={project.path}
+                    status={project.current ? { label: 'Current' } : undefined}
+                    actions={
+                      project.current
+                        ? []
+                        : [{ key: 'use', icon: 'check', label: `Use ${project.name}`, disabled: busy, onPress: () => run(() => chooseProject(project.id)) }]
+                    }
+                  />
+                )
+              }))
+        }
+      />
+    </Stack>
+  )
+}
+
+/** Le bloc de la home : le projet d'Orca qui héberge les brouillons, à choisir ou à changer. */
+export function DraftsSection(): OrcaNode {
+  const projects = read(draftsProjects) ?? []
+  const current = projects.find((project) => project.current)
+  const body = read(choosing) ? (
+    <ProjectList projects={projects} />
+  ) : current === undefined ? (
+    <EmptyView
+      kind="panel"
+      title="No drafts workspace"
+      description="Edit agents and memories as files in Orca's editor. They live in a folder workspace you choose."
+      icon="folder"
+      action={{ label: 'Add Orca workspace', onPress: openChooser }}
+    />
+  ) : (
+    <GroupCard
+      rows={[
+        <ItemRow
+          key="current"
+          lead={{ kind: 'monogram', text: current.name }}
+          title={current.name}
+          subtitle={`${current.path}/managed-agents`}
+          actions={[{ key: 'change', icon: 'edit', label: 'Change workspace', onPress: openChooser }]}
+        />
+      ]}
+    />
+  )
+  return (
+    <SectionCollapsible
+      title="Drafts"
+      summary={current?.name ?? 'Not set'}
+      open={read(draftsSectionOpen)}
+      onChange={(next) => set(draftsSectionOpen, next)}
+    >
+      {body}
+    </SectionCollapsible>
+  )
+}
+
+/** Hors de la home : le choix du projet se fait dans le bloc Drafts de l'accueil. */
+function SetupCard(): OrcaNode {
+  return (
+    <Callout tone="accent" title="Choose a drafts workspace">
+      <Text size="sm">Pick the Orca workspace that holds your drafts in the Drafts section of the home.</Text>
     </Callout>
   )
 }
@@ -410,7 +490,7 @@ export function DraftNotice({ draftRef }: { draftRef: DraftRef }): OrcaNode {
   const status = read(draftsStatus)
   return (
     <Stack gap="sm">
-      {status !== null && !status.ready ? <SetupCard folder={status.folder} /> : null}
+      {status !== null && !status.ready ? <SetupCard /> : null}
       <FlowView draftRef={draftRef} flow={flow} onApplied={undefined} onDiscarded={undefined} />
     </Stack>
   )
@@ -483,7 +563,7 @@ export function DraftControls({ draftRef, label, showOpen = true, onApplied, onD
   if (!showOpen && !kept && flow === undefined) return null
   return (
     <Stack gap="sm">
-      {showSetup ? <SetupCard folder={status.folder} /> : null}
+      {showSetup ? <SetupCard /> : null}
       {flow !== undefined ? <FlowView draftRef={draftRef} flow={flow} onApplied={onApplied} onDiscarded={onDiscarded} /> : null}
       {inFlow || (!showOpen && !kept) ? null : (
         <Stack gap="sm">

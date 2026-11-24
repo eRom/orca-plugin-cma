@@ -522,7 +522,7 @@ export function createDrafts(deps: {
             return refuse('other', `Orca could not list its workspaces: ${messageOf(error)}`)
           }
           if (!workspace) {
-            return refuse('drafts_missing', 'Add the drafts folder to Orca first.')
+            return refuse('drafts_missing', 'The drafts project is not open in Orca. Choose it again in the Drafts section of the home.')
           }
           const located = await locate(adapter, ref)
           if (!('file' in located)) {

@@ -212,8 +212,8 @@ test('opens on the Sessions tab, with no Configurations or Sessions section to f
   )
   assert.ok(view.find({ type: 'IconButton', label: 'New session' }))
   assert.ok(view.find({ type: 'ListItem', text: /First/ }))
-  // Seule la section Organisation se replie.
-  assert.deepEqual(view.findAll({ type: 'Collapsible' }).map((node) => node.props.title), ['Organisation'])
+  // Seules les sections Drafts et Organisation se replient.
+  assert.deepEqual(view.findAll({ type: 'Collapsible' }).map((node) => node.props.title), ['Drafts', 'Organisation'])
   // L'onglet Sessions ne lit aucune liste de configuration.
   assert.deepEqual(kinds, [])
   assert.deepEqual(view.errors, [])

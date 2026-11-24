@@ -36,7 +36,7 @@ function requests(start: WorkspaceInfo, over: Record<string, unknown> = {}) {
 test('lists the workspaces with the Active badge under a folding Organisation section', async () => {
   const host = mockHost({ requests: requests(info('ws_1')) })
   const view = await mount(panel, { host })
-  assert.equal(view.find({ type: 'Collapsible' })?.props.title, 'Organisation')
+  assert.equal(view.find({ type: 'Collapsible', text: /Organisation/ })?.props.title, 'Organisation')
   assert.ok(view.find({ text: 'Default' }))
   assert.ok(view.find({ text: 'wrkspc_default' }))
   assert.ok(view.find({ text: 'Orca-claude' }))
@@ -47,7 +47,7 @@ test('lists the workspaces with the Active badge under a folding Organisation se
   assert.equal(view.findAll({ type: 'IconButton', label: 'Use this workspace' }).length, 1)
   assert.ok(view.find({ type: 'IconButton', label: 'Edit Default' }))
   assert.ok(view.find({ type: 'IconButton', label: 'Edit Orca-claude' }))
-  assert.equal(view.find({ type: 'Collapsible' })?.props.open, true)
+  assert.equal(view.find({ type: 'Collapsible', text: /Organisation/ })?.props.open, true)
   assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
   await view.unmount()
 })

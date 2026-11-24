@@ -24,6 +24,7 @@ import { badgeLabel, badgeTone, sortSessions } from '../shared/sessions'
 import { clipBytes } from '../shared/text'
 import { configErrors, configRows, loadConfigs, openConfig, openNewAgent, RENDER_ROW_CAP } from './config-state'
 import { filterRows } from './config-views'
+import { DraftsSection } from './drafts'
 import { openNewConfig } from './environment-form'
 import { openNewSession } from './new-session'
 import { loadResources } from './resource-state'
@@ -241,6 +242,7 @@ export function Home() {
   const needsKey = !info.hasKey || info.keyRejected
   return (
     <Stack gap="md">
+      <DraftsSection />
       <WorkspacesSection info={info} />
       {needsKey ? null : <HomeTabs />}
     </Stack>

@@ -116,7 +116,7 @@ test('status is ready once a workspace holds the folder, even when its path is a
 test('open without a workspace for the folder is drafts_missing and writes no file', async () => {
   const { drafts, folder, live } = setup({ workspace: false })
   const result = await drafts.open(AGENT)
-  expect(result).toEqual({ ok: false, code: 'drafts_missing', error: 'Add the drafts folder to Orca first.' })
+  expect(result).toEqual({ ok: false, code: 'drafts_missing', error: 'The drafts project is not open in Orca. Choose it again in the Drafts section of the home.' })
   expect(existsSync(join(folder, FILE))).toBe(false)
   expect(live.reads).toBe(0)
   cleanup()
