@@ -520,7 +520,9 @@ function MemberCard({ title, description, member, before, disabled, names, onTog
                   })}
                 </Box>
               ) : null}
-              {full ? null : (
+              {full ? (
+                <Text muted size="xs">{`Up to ${String(MAX_SAVED_AGENTS)} saved agents.`}</Text>
+              ) : (
                 <Select
                   // La clé suit la liste : le choix fait, la liste se remonte et revient au texte d'invite.
                   key={member.savedAgents.length}
@@ -530,7 +532,7 @@ function MemberCard({ title, description, member, before, disabled, names, onTog
                   disabled={disabled || options.length === 0}
                   value={undefined}
                   options={options}
-                  onChange={(id) => onSavedAgents([...member.savedAgents, { id, version: null }])}
+                  onChange={(id) => onSavedAgents([...member.savedAgents, { id, version: before?.savedAgents.find((agent) => agent.id === id)?.version ?? null }])}
                 />
               )}
               {empty ? (

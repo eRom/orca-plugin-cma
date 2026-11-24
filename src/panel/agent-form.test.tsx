@@ -748,6 +748,33 @@ test('choosing a saved agent adds a chip and is sent without a version, and the 
   await view.unmount()
 })
 
+test('removing a saved agent then picking it again keeps its pin: nothing changes', async () => {
+  const calls = newCalls()
+  const block = { advisor: null, subagents: { enabled: true, inlineAgents: true, savedAgents: TWO_SAVED }, workflows: MEMBER_OFF }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, { ...detailWith(block), ...withWorkspaceAgents(calls) }) }), persisted: OPEN_DETAIL })
+  await openMultiagent(view)
+  await view.press({ role: 'button', label: 'Remove Helper' })
+  await view.select({ label: 'Add saved agent to Subagents' }, 'agent_helper')
+  await view.press({ role: 'button', label: 'Remove Reviewer' })
+  await view.press({ role: 'button', text: 'Review changes' })
+  assert.deepEqual(savedAgentsOf(calls, 'subagents'), [{ id: 'agent_helper', version: 2 }])
+  await view.unmount()
+})
+
+test('a form kept with the old saved agents count (predefinedCount) is ignored instead of breaking the card', async () => {
+  const calls = newCalls()
+  const block = { advisor: null, subagents: { enabled: true, inlineAgents: true, savedAgents: TWO_SAVED }, workflows: MEMBER_OFF }
+  const old = { advisor: null, subagents: { enabled: true, inlineAgents: true, predefinedCount: 2 }, workflows: { enabled: false, inlineAgents: true, predefinedCount: 0 } }
+  const kept = { ...FORM, multiagent: old }
+  const persisted = { plugin: { ...OPEN_DETAIL.plugin, 'forms.drafts': { 'agent:agent_a': { form: kept, base: kept, baseStamp: DETAIL.version } } } }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, { ...detailWith(block), ...withWorkspaceAgents(calls) }) }), persisted })
+  await openMultiagent(view)
+  assert.ok(view.find({ text: 'Helper' }))
+  assert.equal(view.find({ text: 'Unsaved changes' }), null)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
 test('a new agent cannot pick itself: the list has no This agent', async () => {
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls, withWorkspaceAgents(calls)) }), persisted: OPEN_NEW })

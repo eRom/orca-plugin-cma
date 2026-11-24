@@ -576,6 +576,14 @@ test('prepareAgentForm refuses more than 20 saved agents, and accepts exactly 20
   expect((await prepare({ agentId: 'agent_1', baseVersion: 5, form: withSaved('subagents', many(20)), base: form })).ok).toBe(true)
 })
 
+test('a new block lists its saved agents in the review, not only the block line', () => {
+  const added = withForm({ multiagent: { ...ALL_OFF, subagents: { enabled: true, inlineAgents: false, savedAgents: [{ id: 'agent_new', version: null }] } } })
+  expect(summary(formChanges(added, form))).toEqual([
+    { path: 'Multiagent', before: null, after: 'subagents' },
+    { path: 'Subagents saved agent', before: null, after: 'agent_new' }
+  ])
+})
+
 test('AC-5: the review names each saved agent added or removed from a member that stays on, and leaves an untouched member alone', () => {
   const changed = withSaved('subagents', [{ id: 'agent_b', version: 1 }, { id: 'agent_new', version: null }])
   expect(summary(formChanges(changed, twoForm))).toEqual([

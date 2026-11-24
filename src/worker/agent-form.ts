@@ -48,7 +48,7 @@ function toMemberForm(
   if (member.type === 'disabled') {
     return { enabled: false, inlineAgents: true, savedAgents: [] }
   }
-  // La réponse rend toujours les références résolues (`self` revient avec l'identifiant du propriétaire) et épinglées.
+  // La réponse rend toujours les références résolues et épinglées. L'agent lui-même revient sous son identifiant ; renvoyé ainsi, l'API le traite comme `self` et le réépingle sur la nouvelle version (sonde du 24/11 : v2 envoyée, v3 relue).
   return {
     enabled: true,
     inlineAgents: member.inline_agents.type === 'enabled',
@@ -391,6 +391,9 @@ const lostSaved = (member: MultiagentMemberForm | null, before: MultiagentMember
 const removesText = (count: number): string => (count === 0 ? '' : ` (removes ${String(count)} saved agent${count === 1 ? '' : 's'})`)
 
 /** Une ligne par agent enregistré ajouté ou retiré d'un membre qui reste activé (le worker n'a que les identifiants, pas les noms). */
+/** Un membre absent (bloc neuf) : aucun agent enregistré, tout ce que le formulaire en porte est un ajout. */
+const MEMBER_NONE: MultiagentMemberForm = { enabled: false, inlineAgents: true, savedAgents: [] }
+
 function savedAgentChanges(path: string, form: MultiagentMemberForm, base: MultiagentMemberForm, out: FieldChange[]): void {
   const before = new Set(base.savedAgents.map((agent) => agent.id))
   const after = new Set(form.savedAgents.map((agent) => agent.id))
@@ -426,6 +429,10 @@ function multiagentChanges(form: MultiagentForm | null, base: MultiagentForm | n
   }
   if (base === null) {
     out.push({ path: 'Multiagent', before: null, after: multiagentText(form), lines: null })
+    // Un bloc neuf nomme aussi ses agents enregistrés : la ligne du bloc ne dit pas lesquels.
+    for (const [name, path] of [['subagents', 'Subagents'], ['workflows', 'Workflows']] as const) {
+      if (form[name].enabled) savedAgentChanges(path, form[name], MEMBER_NONE, out)
+    }
     return
   }
   if (form.advisor !== base.advisor) {
@@ -507,7 +514,7 @@ async function nameSavedAgents(store: ClientStore, agentId: string | null, chang
   )
 }
 
-export type PrepareAgentFormInput ={ agentId: string | null; baseVersion: number | null; form: AgentForm; base: AgentForm | null }
+export type PrepareAgentFormInput = { agentId: string | null; baseVersion: number | null; form: AgentForm; base: AgentForm | null }
 
 /**
  * Met en attente l'écriture d'un formulaire. La version n'est pas vérifiée ici : l'envoi porte celle que le
