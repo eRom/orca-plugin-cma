@@ -239,6 +239,11 @@ test('keeps the filter when coming back from a detail', async () => {
   await view.unmount()
 })
 
+/** Ouvre une section repliable du formulaire si elle est fermée (son état survit d'un montage à l'autre). */
+async function openSection(view: Awaited<ReturnType<typeof mount>>, title: RegExp): Promise<void> {
+  if (view.find({ type: 'Collapsible', text: title })?.props.open !== true) await view.toggle({ type: 'Collapsible', text: title })
+}
+
 test('shows the agent detail as a form, with the read-only summaries kept', async () => {
   const host = mockHost({ requests: requests({ 'configs.detail': { ok: true, value: AGENT } }), })
   const view = await mount(panel, { host, persisted: openConfig('agent', 'agent_a') })
@@ -246,6 +251,8 @@ test('shows the agent detail as a form, with the read-only summaries kept', asyn
   assert.ok(view.find({ type: 'Code', text: 'agent_a' }))
   assert.equal(view.valueOf({ label: 'Model' }), 'claude-haiku-5-5')
   assert.equal(view.valueOf({ label: 'Effort' }), 'high')
+  await openSection(view, /System prompt \(optional\)/)
+  await openSection(view, /Skills \(optional\)/)
   const prompt = view.find({ type: 'CodeView' })
   assert.ok(prompt)
   assert.equal(prompt.props.code, 'You are an incident commander.')
@@ -270,6 +277,7 @@ test('shows the truncation notice', async () => {
   const truncated: AgentDetail = { ...AGENT, system: { text: 'You are an incident commander.', truncated: true } }
   const host = mockHost({ requests: requests({ 'configs.detail': { ok: true, value: truncated } }) })
   const view = await mount(panel, { host, persisted: openConfig('agent', 'agent_a') })
+  await openSection(view, /System prompt \(optional\)/)
   assert.ok(view.find({ text: 'Truncated, open in Console for the full text' }))
   await view.unmount()
 })
