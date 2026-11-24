@@ -1,6 +1,7 @@
 // Le formulaire d'un agent, côté worker : l'agent de l'API en formulaire (`toAgentForm`), le formulaire reporté sur
 // un document (`applyAgentForm`), puis la préparation de l'écriture. Le formulaire passe par le même document, le
 // même différentiel et le même envoi que le brouillon YAML (`agent-drafts.ts`) : une seule règle de conflit.
+import { isDeepStrictEqual } from 'node:util'
 import type Anthropic from '@anthropic-ai/sdk'
 import type {
   BetaManagedAgentsAgent,
@@ -251,6 +252,10 @@ function applyMultiagent(doc: AgentDocument, form: MultiagentForm | null, base: 
     }
     return
   }
+  // Rien de changé dans le formulaire : le bloc de l'agent vivant passe tel quel, même s'il a changé ailleurs.
+  if (base !== null && isDeepStrictEqual(form, base)) {
+    return
+  }
   const existing = isMapping(doc.multiagent) && doc.multiagent.type === MULTIAGENT_TYPE ? doc.multiagent : null
   const block: Mapping = existing === null ? { type: MULTIAGENT_TYPE } : { ...existing }
   const writeAll = existing === null || base === null
@@ -367,10 +372,23 @@ function multiagentText(multiagent: MultiagentForm): string {
   return parts.length === 0 ? 'all disabled' : parts.join(', ')
 }
 
+/** Les agents enregistrés qu'un membre éteint emporte : l'API remplace l'objet du membre, la liste ne survit pas. */
+const lostSaved = (member: MultiagentMemberForm | null, before: MultiagentMemberForm): number =>
+  before.enabled && !(member?.enabled ?? false) ? before.predefinedCount : 0
+
+const removesText = (count: number): string => (count === 0 ? '' : ` (removes ${String(count)} saved agent${count === 1 ? '' : 's'})`)
+
+function memberChange(path: string, form: MultiagentMemberForm, base: MultiagentMemberForm, out: FieldChange[]): void {
+  if (memberText(form) !== memberText(base)) {
+    out.push(leafChange(path, memberText(base), `${memberText(form)}${removesText(lostSaved(form, base))}`))
+  }
+}
+
 function multiagentChanges(form: MultiagentForm | null, base: MultiagentForm | null, out: FieldChange[]): void {
   if (form === null) {
     if (base !== null) {
-      out.push({ path: 'Multiagent', before: multiagentText(base), after: null, lines: null })
+      const lost = lostSaved(null, base.subagents) + lostSaved(null, base.workflows)
+      out.push({ path: `Multiagent${removesText(lost)}`, before: multiagentText(base), after: null, lines: null })
     }
     return
   }
@@ -381,12 +399,8 @@ function multiagentChanges(form: MultiagentForm | null, base: MultiagentForm | n
   if (form.advisor !== base.advisor) {
     out.push(leafChange('Advisor', base.advisor ?? 'disabled', form.advisor ?? 'disabled'))
   }
-  if (memberText(form.subagents) !== memberText(base.subagents)) {
-    out.push(leafChange('Subagents', memberText(base.subagents), memberText(form.subagents)))
-  }
-  if (memberText(form.workflows) !== memberText(base.workflows)) {
-    out.push(leafChange('Workflows', memberText(base.workflows), memberText(form.workflows)))
-  }
+  memberChange('Subagents', form.subagents, base.subagents, out)
+  memberChange('Workflows', form.workflows, base.workflows, out)
 }
 
 /**
@@ -458,13 +472,13 @@ export async function prepareAgentForm(
   if (form.model.trim() === '') {
     return { ok: false, code: 'invalid', error: 'model is required.' }
   }
-  if (form.multiagent?.advisor === '') {
+  if (form.multiagent?.advisor?.trim() === '') {
     return { ok: false, code: 'invalid', error: 'advisor model is required.' }
   }
   for (const [name, label] of [['subagents', 'Subagents'], ['workflows', 'Workflows']] as const) {
     const member = form.multiagent?.[name]
     if (member?.enabled && !member.inlineAgents && member.predefinedCount === 0) {
-      return { ok: false, code: 'invalid', error: `${label} need inline agents or at least one predefined agent.` }
+      return { ok: false, code: 'invalid', error: `${label} need inline agents or at least one saved agent.` }
     }
   }
   try {

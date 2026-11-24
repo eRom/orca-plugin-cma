@@ -473,7 +473,7 @@ test('removing the block drops the key, which the update sends as null', () => {
   expect(applyAgentForm(coordinatorDoc, form, form).multiagent).toEqual(coordinatorDoc.multiagent)
 })
 
-test('changing the advisor keeps the predefined agents of subagents, and turning a member off then on again keeps them too', () => {
+test('changing the advisor or the inline option keeps the predefined agents of subagents, and turning the member off drops them', () => {
   const advisor = applyAgentForm(blockDoc, { ...blockForm, multiagent: { ...blockForm.multiagent!, advisor: 'claude-opus-5-5' } }, blockForm)
   expect(advisor.multiagent).toEqual({ ...ENABLED_BLOCK, advisor: { type: 'enabled', model: 'claude-opus-5-5' } })
   expect(diffDocuments(blockDoc, advisor).map((change) => change.path)).toEqual(['multiagent.advisor.model'])
@@ -515,12 +515,12 @@ test('prepareAgentForm refuses an advisor without a model and an enabled member 
   expect(await prepare({ agentId: 'agent_1', baseVersion: 5, form: withForm({ multiagent: { ...ALL_OFF, subagents: noInline } }), base: form })).toEqual({
     ok: false,
     code: 'invalid',
-    error: 'Subagents need inline agents or at least one predefined agent.'
+    error: 'Subagents need inline agents or at least one saved agent.'
   })
   expect(await prepare({ agentId: 'agent_1', baseVersion: 5, form: withForm({ multiagent: { ...ALL_OFF, workflows: noInline } }), base: form })).toEqual({
     ok: false,
     code: 'invalid',
-    error: 'Workflows need inline agents or at least one predefined agent.'
+    error: 'Workflows need inline agents or at least one saved agent.'
   })
   // Avec des agents enregistrés, inline éteint est permis.
   const allowed = await prepare({ agentId: 'agent_1', baseVersion: 5, form: withForm({ multiagent: { ...ALL_OFF, subagents: { ...noInline, predefinedCount: 1 } } }), base: form })
@@ -540,7 +540,7 @@ test('the multiagent review reads as one line when the block is added or removed
   const added = withForm({ multiagent: { ...ALL_OFF, advisor: 'claude-fable-5-2', subagents: { enabled: true, inlineAgents: true, predefinedCount: 0 } } })
   expect(summary(formChanges(added, form))).toEqual([{ path: 'Multiagent', before: null, after: 'advisor claude-fable-5-2, subagents' }])
   expect(summary(formChanges(withForm({ multiagent: null }), blockForm))).toEqual([
-    { path: 'Multiagent', before: 'advisor claude-fable-5-2, subagents', after: null }
+    { path: 'Multiagent (removes 1 saved agent)', before: 'advisor claude-fable-5-2, subagents', after: null }
   ])
   const changed = { ...blockForm, multiagent: { advisor: null, subagents: { ...blockForm.multiagent!.subagents, inlineAgents: true }, workflows: { enabled: true, inlineAgents: false, predefinedCount: 0 } } }
   expect(summary(formChanges(changed, blockForm))).toEqual([
@@ -548,6 +548,18 @@ test('the multiagent review reads as one line when the block is added or removed
     { path: 'Subagents', before: 'enabled, no inline agents', after: 'enabled' },
     { path: 'Workflows', before: 'disabled', after: 'enabled, no inline agents' }
   ])
+})
+
+test('turning a member with saved agents off says how many the review removes', () => {
+  const off = { ...blockForm, multiagent: { ...blockForm.multiagent!, subagents: ALL_OFF.subagents } }
+  expect(summary(formChanges(off, blockForm))).toEqual([{ path: 'Subagents', before: 'enabled, no inline agents', after: 'disabled (removes 1 saved agent)' }])
+})
+
+test('an untouched multiagent form leaves a block changed elsewhere as it is, even on another change', () => {
+  const live = agentToDocument(withBlock({ type: 'coordinator', agents: [{ type: 'self' }] }))
+  const after = applyAgentForm(live, { ...blockForm, name: 'Renamed' }, blockForm)
+  expect(after.multiagent).toEqual(live.multiagent)
+  expect(diffDocuments(live, after).map((change) => change.path)).toEqual(['name'])
 })
 
 test('a staged multiagent change sends the multiagent key only, and clearing it sends null', async () => {

@@ -201,6 +201,14 @@ test('a model list kept more than a day ago is read again from the API and kept 
   await view.unmount()
 })
 
+test('an expired model list whose reread fails is still offered, never the free text field', async () => {
+  const calls = newCalls()
+  const host = mockHost({ requests: requests(calls, { 'agent.formOptions': { ok: true, value: { models: [] } } }) })
+  const view = await mount(panel, { host, persisted: openDetailWithCache(['claude-haiku-5-5', 'claude-cached'], Date.now() - DAY_MS - 1000) })
+  assert.deepEqual(optionValues(view, 'Model'), ['claude-haiku-5-5', 'claude-cached'])
+  await view.unmount()
+})
+
 test('falls back to a text field for the model when the API lists none', async () => {
   const calls = newCalls()
   const host = mockHost({ requests: requests(calls, { 'agent.formOptions': { ok: true, value: { models: [] } } }) })
@@ -606,7 +614,18 @@ test('switching the last member off returns to no block: nothing is left to revi
   await view.unmount()
 })
 
-test('turning the last member of an existing block off keeps the block, all off, as the form', async () => {
+test('turning a member with saved agents off says they will be removed', async () => {
+  const calls = newCalls()
+  const block = { advisor: null, subagents: { enabled: true, inlineAgents: true, predefinedCount: 2 }, workflows: MEMBER_ON }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, detailWith(block)) }), persisted: OPEN_DETAIL })
+  await openMultiagent(view)
+  assert.equal(view.find({ text: 'Turning it off removes 2 saved agents.' }), null)
+  await view.toggle({ label: 'Subagents' })
+  assert.equal(view.find({ text: 'Turning it off removes 2 saved agents.' })?.props.tone, 'warning')
+  await view.unmount()
+})
+
+test('turning the last member of an existing block off sends no block, so the agent goes back to one thread', async () => {
   const calls = newCalls()
   const block = { advisor: null, subagents: MEMBER_ON, workflows: MEMBER_OFF }
   const view = await mount(panel, { host: mockHost({ requests: requests(calls, detailWith(block)) }), persisted: OPEN_DETAIL })
@@ -614,7 +633,7 @@ test('turning the last member of an existing block off keeps the block, all off,
   assert.equal(view.valueOf({ label: 'Subagents' }), true)
   await view.toggle({ label: 'Subagents' })
   await view.press({ role: 'button', text: 'Review changes' })
-  assert.deepEqual(calls.prepares[0]?.form.multiagent, { advisor: null, subagents: MEMBER_OFF, workflows: MEMBER_OFF })
+  assert.equal(calls.prepares[0]?.form.multiagent, null)
   await view.unmount()
 })
 

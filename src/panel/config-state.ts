@@ -30,10 +30,18 @@ export const AGENT_MODELS_TTL_MS = 24 * 60 * 60 * 1000
  */
 export const agentModelsCache = atom<{ models: string[]; fetchedAt: number } | null>('agent.models', null, { persist: 'plugin' })
 
-/** Les modèles que le formulaire d'agent propose ; null sans liste fraîche (le formulaire offre alors un champ libre). */
-export function agentModels(now: number = Date.now()): string[] | null {
+/**
+ * Les modèles que le formulaire d'agent propose, même périmés : un formulaire ouvert ne repasse pas au champ libre
+ * quand la liste vieillit ou que sa relecture échoue. Null sans aucune liste (le formulaire offre un champ libre).
+ */
+export function agentModels(): string[] | null {
+  return read(agentModelsCache)?.models ?? null
+}
+
+/** Vrai quand la liste gardée a moins de 24 h : elle n'est alors pas relue. */
+function agentModelsFresh(now: number = Date.now()): boolean {
   const cache = read(agentModelsCache)
-  return cache !== null && now - cache.fetchedAt < AGENT_MODELS_TTL_MS ? cache.models : null
+  return cache !== null && now - cache.fetchedAt < AGENT_MODELS_TTL_MS
 }
 
 /** Oublie les listes lues (clé changée ou oubliée) : elles ne valent plus pour la nouvelle clé. */
@@ -113,7 +121,7 @@ async function loadStoreDrafts(store: MemoryStoreDetail): Promise<void> {
  * et le formulaire offre un champ libre pour le modèle.
  */
 export async function loadAgentModels(): Promise<void> {
-  if (agentModels() !== null) return
+  if (agentModelsFresh()) return
   try {
     const result = await plugin.request('agent.formOptions')
     if (!result.ok) {

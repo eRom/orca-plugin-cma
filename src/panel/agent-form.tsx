@@ -393,23 +393,22 @@ const allOff = (): MultiagentForm => ({ advisor: null, subagents: MEMBER_OFF, wo
 const isAllOff = (block: MultiagentForm): boolean => block.advisor === null && !block.subagents.enabled && !block.workflows.enabled
 
 /**
- * Un bloc tout éteint redevient « pas de bloc » quand l'agent n'en avait pas à l'ouverture ; sinon il reste, éteint,
- * comme la base : allumer puis éteindre un membre ne laisse aucun écart.
+ * Un bloc tout éteint redevient « pas de bloc » : l'envoi porte alors `multiagent: null` et l'agent repasse à un seul fil.
  */
-const settled = (block: MultiagentForm, base: MultiagentForm | null): MultiagentForm | null => (isAllOff(block) && base === null ? null : block)
+const settled = (block: MultiagentForm): MultiagentForm | null => (isAllOff(block) ? null : block)
 
 /** Allume ou éteint un membre ; allumé, il reprend la valeur de la base si elle l'avait allumé, sinon `inlineAgents` vrai. */
 function toggleMember(current: MultiagentForm | null, base: MultiagentForm | null, name: MemberName, on: boolean): MultiagentForm | null {
   const block = current ?? allOff()
   const before = base?.[name]
   const member = on ? (before?.enabled ? before : { enabled: true, inlineAgents: true, predefinedCount: 0 }) : MEMBER_OFF
-  return settled({ ...block, [name]: member }, base)
+  return settled({ ...block, [name]: member })
 }
 
 /** Allume ou éteint le conseiller ; allumé sans modèle choisi, `''` (l'envoi attend le choix). */
 function toggleAdvisor(current: MultiagentForm | null, base: MultiagentForm | null, on: boolean): MultiagentForm | null {
   const block = current ?? allOff()
-  return settled({ ...block, advisor: on ? (base?.advisor ?? '') : null }, base)
+  return settled({ ...block, advisor: on ? (base?.advisor ?? '') : null })
 }
 
 const savedAgentsText = (count: number): string => `${String(count)} saved agent${count === 1 ? '' : 's'}, edited in YAML`
@@ -418,13 +417,20 @@ type MemberCardProps = {
   title: string
   description: string
   member: MultiagentMemberForm
+  /** Le membre à l'ouverture : éteint, il perd ses agents enregistrés, ce que la carte annonce. */
+  before: MultiagentMemberForm | undefined
   disabled: boolean
   onToggle: (on: boolean) => void
   onInline: (inline: boolean) => void
 }
 
+/** Les agents enregistrés qu'un membre éteint emporte : l'API remplace l'objet, la liste ne survit pas. */
+const lostSavedAgents = (member: MultiagentMemberForm, before: MultiagentMemberForm | undefined): number =>
+  !member.enabled && before?.enabled ? before.predefinedCount : 0
+
 /** Une carte `subagents` ou `workflows` : l'interrupteur et sa description, puis (allumé) le droit de définir ses propres agents. */
-function MemberCard({ title, description, member, disabled, onToggle, onInline }: MemberCardProps) {
+function MemberCard({ title, description, member, before, disabled, onToggle, onInline }: MemberCardProps) {
+  const lost = lostSavedAgents(member, before)
   return (
     <GroupCard
       rows={[
@@ -434,6 +440,11 @@ function MemberCard({ title, description, member, disabled, onToggle, onInline }
             <Text muted size="xs">
               {description}
             </Text>
+            {lost > 0 ? (
+              <Text tone="warning" size="xs">
+                {`Turning it off removes ${String(lost)} saved agent${lost === 1 ? '' : 's'}.`}
+              </Text>
+            ) : null}
           </Stack>
         </Box>,
         member.enabled ? (
@@ -480,6 +491,7 @@ function MultiagentZone({ form, models, disabled, coordinator, base, onChange }:
               title="Dynamic workflows"
               description="Writes a program that runs many agents in parallel."
               member={view.workflows}
+              before={base?.workflows}
               disabled={disabled}
               onToggle={(on) => onChange(toggleMember(block, base, 'workflows', on))}
               onInline={(inline) => onChange({ ...view, workflows: { ...view.workflows, inlineAgents: inline } })}
@@ -488,6 +500,7 @@ function MultiagentZone({ form, models, disabled, coordinator, base, onChange }:
               title="Subagents"
               description="Delegates tasks to other agents, each in its own thread."
               member={view.subagents}
+              before={base?.subagents}
               disabled={disabled}
               onToggle={(on) => onChange(toggleMember(block, base, 'subagents', on))}
               onInline={(inline) => onChange({ ...view, subagents: { ...view.subagents, inlineAgents: inline } })}
@@ -544,7 +557,7 @@ function multiagentSummary(block: MultiagentForm | null, coordinator: boolean): 
 /** Ce qui manque au bloc `multiagent` pour partir, en une phrase ; null quand il est complet. */
 function multiagentProblem(block: MultiagentForm | null): string | null {
   if (block === null) return null
-  if (block.advisor === '') return 'Choose an advisor model.'
+  if (block.advisor !== null && block.advisor.trim() === '') return 'Choose an advisor model.'
   for (const [name, label] of [['workflows', 'Dynamic workflows'], ['subagents', 'Subagents']] as const) {
     const member = block[name]
     if (member.enabled && !member.inlineAgents && member.predefinedCount === 0) {
