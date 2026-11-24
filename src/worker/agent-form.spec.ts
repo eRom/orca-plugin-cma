@@ -155,7 +155,7 @@ test('a creation writes everything the form carries and nothing it leaves empty'
     ],
     mcp_servers: [{ name: 'linear', type: 'url', url: 'https://mcp.linear.app/mcp' }]
   })
-  const bare = applyAgentForm({}, { name: 'x', model: 'claude-haiku-5-5', effort: null, description: 'd', builtinTools: null, mcpServers: [], multiagent: null }, null)
+  const bare = applyAgentForm({}, { name: 'x', model: 'claude-haiku-5-5', effort: null, description: 'd', builtinTools: null, mcpServers: [], multiagent: null, skills: [] }, null)
   expect(bare).toEqual({ name: 'x', model: { id: 'claude-haiku-5-5' }, description: 'd' })
 })
 
@@ -681,4 +681,126 @@ test('a staged multiagent change sends the multiagent key only, and clearing it 
   const cleared = await prepare({ agentId: 'agent_1', baseVersion: 6, form: { ...stored, multiagent: null }, base: stored })
   await commitOf(pending, cleared, false)
   expect((only(api.calls, 'agents.update')[1]?.args[1] as Record<string, unknown>).multiagent).toBe(null)
+})
+
+// --- Skills ---
+
+const SKILL_PINS = [
+  { type: 'custom', skill_id: 'skill_triage', version: '3' },
+  { type: 'anthropic', skill_id: 'xlsx', version: 'latest' }
+]
+const skilledAgent = { ...structuredClone(fixture), skills: SKILL_PINS } as unknown as BetaManagedAgentsAgent
+const skilledForm = toAgentForm(skilledAgent)
+const skilledDoc = agentToDocument(skilledAgent)
+
+const withSkills = (skills: AgentForm['skills'], from: AgentForm = skilledForm): AgentForm => ({ ...from, skills })
+
+test('the skills of the response map to the form with their pinned versions, and an agent without skills has an empty list', () => {
+  expect(form.skills).toEqual([])
+  expect(skilledForm.skills).toEqual([
+    { type: 'custom', skillId: 'skill_triage', version: '3' },
+    { type: 'anthropic', skillId: 'xlsx', version: 'latest' }
+  ])
+})
+
+test('an unchanged form, or a change to another field, leaves the skills of the document alone, pins included', () => {
+  expect(diffDocuments(skilledDoc, applyAgentForm(skilledDoc, skilledForm, skilledForm))).toEqual([])
+  const renamed = applyAgentForm(skilledDoc, { ...skilledForm, name: 'Renamed' }, skilledForm)
+  expect(renamed.skills).toEqual(SKILL_PINS)
+  expect(diffDocuments(skilledDoc, renamed).map((change) => change.path)).toEqual(['name'])
+})
+
+test('an added skill is written without a version, and the skills already there keep their entry and pin', () => {
+  const added = withSkills([...skilledForm.skills, { type: 'custom', skillId: 'skill_new', version: null }])
+  expect(applyAgentForm(skilledDoc, added, skilledForm).skills).toEqual([...SKILL_PINS, { type: 'custom', skill_id: 'skill_new' }])
+  // Un agent sans skill : la clé naît avec le seul ajout.
+  expect(applyAgentForm(doc, withSkills([{ type: 'anthropic', skillId: 'pdf', version: null }], form), form).skills).toEqual([{ type: 'anthropic', skill_id: 'pdf' }])
+})
+
+test('a removed skill leaves only that entry, and removing the last one writes an empty list', () => {
+  const one = applyAgentForm(skilledDoc, withSkills([skilledForm.skills[1]!]), skilledForm)
+  expect(one.skills).toEqual([SKILL_PINS[1]])
+  expect(applyAgentForm(skilledDoc, withSkills([]), skilledForm).skills).toEqual([])
+})
+
+test('a skill pinned elsewhere since the form opened keeps the live pin, and one added elsewhere survives', () => {
+  const live = { ...skilledDoc, skills: [{ type: 'custom', skill_id: 'skill_triage', version: '4' }, SKILL_PINS[1], { type: 'custom', skill_id: 'skill_other', version: '1' }] }
+  const after = applyAgentForm(live, withSkills([skilledForm.skills[0]!, { type: 'custom', skillId: 'skill_new', version: null }]), skilledForm)
+  expect(after.skills).toEqual([
+    { type: 'custom', skill_id: 'skill_triage', version: '4' },
+    { type: 'custom', skill_id: 'skill_other', version: '1' },
+    { type: 'custom', skill_id: 'skill_new' }
+  ])
+})
+
+test('a creation writes the skills of the form and nothing when it has none', () => {
+  expect(applyAgentForm({}, withSkills([{ type: 'anthropic', skillId: 'xlsx', version: null }], form), null).skills).toEqual([{ type: 'anthropic', skill_id: 'xlsx' }])
+  expect('skills' in applyAgentForm({}, form, null)).toBe(false)
+})
+
+test('the review has one Skill line per skill added or removed, and none for an untouched list', () => {
+  const changed = withSkills([skilledForm.skills[1]!, { type: 'custom', skillId: 'skill_new', version: null }])
+  expect(summary(formChanges(changed, skilledForm))).toEqual([
+    { path: 'Skill', before: null, after: 'skill_new' },
+    { path: 'Skill', before: 'skill_triage', after: null }
+  ])
+  expect(formChanges(skilledForm, skilledForm)).toEqual([])
+  expect(summary(formChanges(withSkills([{ type: 'anthropic', skillId: 'pdf', version: null }], form), null)).filter((line) => line.path === 'Skill')).toEqual([
+    { path: 'Skill', before: null, after: 'pdf' }
+  ])
+})
+
+/** Un faux client dont les listes de skills rendent ce qu'on lui donne ; une source absente de `sources` échoue. */
+function withSkillLists(api: ReturnType<typeof fakeApi>, sources: Partial<Record<string, { id: string; display_name: string }[]>>): void {
+  const original = api.store.get
+  api.store.get = async () =>
+    ({
+      ...(await original()),
+      skills: {
+        list: async function* ({ source }: { source: string }) {
+          const rows = sources[source]
+          if (rows === undefined) throw new Error('skills unavailable')
+          yield* rows
+        }
+      }
+    }) as never
+}
+
+test('the staged review names the skills, from the workspace and from Anthropic', async () => {
+  const { api, prepare } = setup()
+  api.agents.set('agent_1', { ...structuredClone(skilledAgent), id: 'agent_1' } as unknown as AgentRecord)
+  withSkillLists(api, {
+    custom: [{ id: 'skill_triage', display_name: 'incident-triage' }, { id: 'skill_new', display_name: 'vulgarise' }],
+    anthropic: [{ id: 'pdf', display_name: 'pdf' }, { id: 'xlsx', display_name: 'xlsx' }]
+  })
+  const changed = withSkills([skilledForm.skills[1]!, { type: 'custom', skillId: 'skill_new', version: null }, { type: 'anthropic', skillId: 'pdf', version: null }])
+  const prepared = await prepare({ agentId: 'agent_1', baseVersion: 5, form: changed, base: skilledForm })
+  expect(prepared.ok && summary(prepared.value.changes)).toEqual([
+    { path: 'Skill', before: null, after: 'vulgarise' },
+    { path: 'Skill', before: null, after: 'pdf' },
+    { path: 'Skill', before: 'incident-triage', after: null }
+  ])
+})
+
+test('when a skills list cannot be read, the review keeps the ids of that source and names the other', async () => {
+  const { api, prepare } = setup()
+  api.agents.set('agent_1', { ...structuredClone(skilledAgent), id: 'agent_1' } as unknown as AgentRecord)
+  withSkillLists(api, { custom: [{ id: 'skill_new', display_name: 'vulgarise' }] })
+  const changed = withSkills([...skilledForm.skills, { type: 'custom', skillId: 'skill_new', version: null }, { type: 'anthropic', skillId: 'pdf', version: null }])
+  const prepared = await prepare({ agentId: 'agent_1', baseVersion: 5, form: changed, base: skilledForm })
+  expect(prepared.ok && summary(prepared.value.changes)).toEqual([
+    { path: 'Skill', before: null, after: 'vulgarise' },
+    { path: 'Skill', before: null, after: 'pdf' }
+  ])
+})
+
+test('a staged skills change sends the skills key only, with the kept pins and the added skill without a version', async () => {
+  const { api, pending, prepare } = setup()
+  api.agents.set('agent_1', { ...structuredClone(skilledAgent), id: 'agent_1' } as unknown as AgentRecord)
+  const changed = withSkills([...skilledForm.skills, { type: 'anthropic', skillId: 'pdf', version: null }])
+  const prepared = await prepare({ agentId: 'agent_1', baseVersion: 5, form: changed, base: skilledForm })
+  expect(await commitOf(pending, prepared, false)).toEqual({ ok: true, value: { label: 'Applied, v6', id: 'agent_1' } })
+  const sent = only(api.calls, 'agents.update')[0]?.args[1] as Record<string, unknown>
+  expect(Object.keys(sent).sort()).toEqual(['skills', 'version'])
+  expect(sent.skills).toEqual([...SKILL_PINS, { type: 'anthropic', skill_id: 'pdf' }])
 })

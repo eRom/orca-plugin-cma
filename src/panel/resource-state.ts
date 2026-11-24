@@ -8,6 +8,8 @@ import { loadWorkspace, pendingConfirmation, workspace } from './state'
 /** Lignes de chaque carte ; `null` tant que la première lecture n'est pas revenue (la carte montre un Spinner). */
 export const skillRows = atom<SkillRow[] | null>('resources.skills', null)
 export const fileRows = atom<FileRow[] | null>('resources.files', null)
+/** Les skills d'Anthropic, lus pour le formulaire d'agent seulement (l'onglet Resources ne les montre pas) ; `null` tant qu'ils ne sont pas lus. */
+export const anthropicSkillRows = atom<SkillRow[] | null>('resources.anthropicSkills', null)
 /** Erreur de lecture de chaque liste ; les lignes déjà lues restent affichées. */
 export const resourceErrors = atom<{ skills: string | null; files: string | null }>('resources.errors', {
   skills: null,
@@ -85,6 +87,7 @@ export function resetResources(): void {
   generation += 1
   set(skillRows, null)
   set(fileRows, null)
+  set(anthropicSkillRows, null)
   set(resourceErrors, { skills: null, files: null })
   showNotice('skills', null)
   showNotice('files', null)
@@ -122,6 +125,21 @@ async function readList<T>(
 
 export function loadSkills(): Promise<void> {
   return readList('skills', () => plugin.request('skills.list'), skillRows)
+}
+
+/**
+ * Lit les skills d'Anthropic. Une lecture de fond : un échec laisse la liste à `null` (le menu du formulaire n'offre
+ * alors que les skills de l'espace) et la prochaine ouverture d'un agent la relit. Une réponse d'un workspace quitté
+ * depuis est ignorée.
+ */
+export async function loadAnthropicSkills(): Promise<void> {
+  const info = read(workspace)
+  if (!info?.hasKey || info.keyRejected) return
+  const startedIn = generation
+  const result = await plugin.request('skills.listAnthropic')
+  if (startedIn !== generation) return
+  if (result.ok) set(anthropicSkillRows, result.value)
+  else if (result.code === 'unauthorized') await loadWorkspace()
 }
 
 export function loadFiles(): Promise<void> {

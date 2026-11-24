@@ -226,6 +226,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     createFilePicker({ platform: process.platform, run: runOsascript }, { kind: 'file', prompt: 'Choose a file to upload' })
   )
   orca.panels.handle('skills.list', resources.listSkills)
+  orca.panels.handle('skills.listAnthropic', resources.listAnthropicSkills)
   orca.panels.handle('skills.upload', resources.uploadSkill)
   orca.panels.handle('skills.uploadVersion', resources.uploadSkillVersion)
   orca.panels.handle('skills.delete', resources.deleteSkill)

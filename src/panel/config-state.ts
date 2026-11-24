@@ -4,7 +4,7 @@
 import { atom, plugin, read, set, update } from 'orca'
 import type { ConfigDetail, ConfigKind, ConfigRow, DraftRef, MemoryContent, MemoryStoreDetail } from '../protocol'
 import { loadDraftControls, refreshDraftsStatus, refreshDraftState } from './drafts'
-import { loadResources } from './resource-state'
+import { anthropicSkillRows, loadAnthropicSkills, loadResources, loadSkills, skillRows } from './resource-state'
 import { homeTab, loadWorkspace, nav, pushView, run, workspace } from './state'
 
 /**
@@ -141,7 +141,10 @@ export async function loadAgentModels(): Promise<void> {
  */
 async function loadAgentExtras(agentId: string | null): Promise<void> {
   const rows = read(configRows).agent === undefined ? loadConfigs('agent').catch(() => {}) : Promise.resolve()
-  await Promise.all([loadAgentModels(), rows, loadDraftControls({ kind: 'agent', agentId })])
+  // Les skills de l'espace et ceux d'Anthropic nourrissent le menu « + Add skill » ; lus seulement s'ils manquent.
+  const custom = read(skillRows) === null ? loadSkills().catch(() => {}) : Promise.resolve()
+  const anthropic = read(anthropicSkillRows) === null ? loadAnthropicSkills().catch(() => {}) : Promise.resolve()
+  await Promise.all([loadAgentModels(), rows, custom, anthropic, loadDraftControls({ kind: 'agent', agentId })])
 }
 
 /** Ouvre le formulaire de création d'un agent : empile la vue, puis charge ce qu'elle lit. */
