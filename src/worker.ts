@@ -254,7 +254,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   }
   await currentDrafts()
   // Le choix d'un fichier et l'envoi groupé de mémoires : le contenu des fichiers reste dans le worker.
-  const pickerDeps = { platform: process.platform, run: runTool }
+  const pickerDeps = { platform: process.platform, run: runTool, log: (message: string) => orca.log(message) }
   orca.panels.handle('file.pick', createNativePicker(pickerDeps, { kind: 'file', prompt: 'Choose a file to upload as a memory' }))
   // Les skills et les fichiers de l'espace : listes, envois (le contenu est lu ici) et suppressions.
   const resources = createResourceHandlers(store)

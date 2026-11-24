@@ -805,12 +805,12 @@ test('the file dialog waits as long as Orca allows, and a cancelled dialog chang
 test('a file picker refusal shows under its row and does not block the others', async () => {
   const calls = newCalls()
   const host = mockHost({
-    requests: requests(calls, newWorld(), { ...NO_DRAFT, 'file.pick': { ok: false, code: 'other', error: 'File picking works on macOS only.' } })
+    requests: requests(calls, newWorld(), { ...NO_DRAFT, 'file.pick': { ok: false, code: 'other', error: 'Could not open the file picker.' } })
   })
   const view = await mount(panel, { host, persisted: OPEN_STORE })
   await addRows(view, 1)
   await view.press(fileButtons(view)[0]!)
-  assert.ok(view.find({ text: 'File picking works on macOS only.' }))
+  assert.ok(view.find({ text: 'Could not open the file picker.' }))
   assert.equal(fileButtons(view)[0]?.text, 'Choose file…')
   await view.unmount()
 })

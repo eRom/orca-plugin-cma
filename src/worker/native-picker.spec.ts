@@ -1,7 +1,11 @@
 // Aucun de ces tests n'ouvre une vraie boîte de dialogue : `run` est toujours simulé (sauf les trois derniers,
 // qui lancent le runtime courant sur un script sans fenêtre pour prouver `runTool`).
 import { expect, test } from 'bun:test'
+import { win32 } from 'node:path'
 import { createNativePicker, runTool, type RunTool } from './native-picker'
+
+/** PowerShell est lancé par chemin absolu sous le dossier système, jamais par recherche dans le PATH. */
+const POWERSHELL = win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 
 type Call = { command: string; args: string[]; env?: Record<string, string> }
 type Answer = { stdout?: string; exitCode?: number; stderr?: string } | Error
@@ -24,9 +28,11 @@ function fakeRun(answers: Record<string, Answer>): { run: RunTool; calls: Call[]
 }
 
 const DISPLAY = { DISPLAY: ':0' }
+const HOME = '/home/r'
 const PROMPT = 'Choose a file to upload'
 const CANCELLED = { ok: true, value: null }
-const COULD_NOT_OPEN = { ok: false, code: 'other', error: 'Could not open the file picker.' }
+const UNAVAILABLE = { ok: false, code: 'picker_unavailable', error: 'No file dialog is available on this computer.' }
+const COULD_NOT_OPEN ={ ok: false, code: 'other', error: 'Could not open the file picker.' }
 
 /** Le script PowerShell décodé de `-EncodedCommand` (UTF-16LE en base64). */
 const decodeScript = (args: string[]): string => Buffer.from(args[args.indexOf('-EncodedCommand') + 1] ?? '', 'base64').toString('utf16le')
@@ -44,7 +50,7 @@ test('darwin uses osascript and maps -128 to cancel', async () => {
 })
 
 test('win32 runs powershell with the prompt in the environment and returns the path', async () => {
-  const { run, calls } = fakeRun({ 'powershell.exe': { stdout: 'C:\\Users\\romain\\Mes documents\\notes.md' } })
+  const { run, calls } = fakeRun({ [POWERSHELL]: { stdout: 'C:\\Users\\romain\\Mes documents\\notes.md' } })
   const pick = createNativePicker({ platform: 'win32', run }, { kind: 'file', prompt: PROMPT })
   expect(await pick()).toEqual({ ok: true, value: { file: 'C:\\Users\\romain\\Mes documents\\notes.md', name: 'notes.md' } })
   expect(calls.length).toBe(1)
@@ -56,34 +62,34 @@ test('win32 runs powershell with the prompt in the environment and returns the p
 })
 
 test('win32 empty output is a cancel', async () => {
-  const { run } = fakeRun({ 'powershell.exe': { stdout: '' } })
+  const { run } = fakeRun({ [POWERSHELL]: { stdout: '' } })
   expect(await createNativePicker({ platform: 'win32', run }, { kind: 'file', prompt: PROMPT })()).toEqual(CANCELLED)
 })
 
 test('linux uses zenity, exit 1 is a cancel', async () => {
   const chosen = fakeRun({ zenity: { stdout: '/home/r/Été/x.md\n' } })
-  const pick = createNativePicker({ platform: 'linux', run: chosen.run, env: DISPLAY }, { kind: 'file', prompt: PROMPT })
+  const pick = createNativePicker({ platform: 'linux', run: chosen.run, env: DISPLAY, home: HOME }, { kind: 'file', prompt: PROMPT })
   expect(await pick()).toEqual({ ok: true, value: { file: '/home/r/Été/x.md', name: 'x.md' } })
-  expect(chosen.calls).toEqual([{ command: 'zenity', args: ['--file-selection', `--title=${PROMPT}`] }])
+  expect(chosen.calls).toEqual([{ command: 'zenity', args: ['--file-selection', '--filename=/home/r/', `--title=${PROMPT}`] }])
 
   const cancelled = fakeRun({ zenity: { exitCode: 1 } })
-  expect(await createNativePicker({ platform: 'linux', run: cancelled.run, env: DISPLAY }, { kind: 'file', prompt: PROMPT })()).toEqual(CANCELLED)
+  expect(await createNativePicker({ platform: 'linux', run: cancelled.run, env: DISPLAY, home: HOME }, { kind: 'file', prompt: PROMPT })()).toEqual(CANCELLED)
 })
 
 test('linux falls back to kdialog when zenity is missing', async () => {
   const chosen = fakeRun({ kdialog: { stdout: '/home/r/x.md\n' } })
-  const pick = createNativePicker({ platform: 'linux', run: chosen.run, env: DISPLAY }, { kind: 'file', prompt: PROMPT })
+  const pick = createNativePicker({ platform: 'linux', run: chosen.run, env: DISPLAY, home: HOME }, { kind: 'file', prompt: PROMPT })
   expect(await pick()).toEqual({ ok: true, value: { file: '/home/r/x.md', name: 'x.md' } })
   expect(chosen.calls.map((call) => call.command)).toEqual(['zenity', 'kdialog'])
-  expect(chosen.calls[1]?.args).toEqual(['--getopenfilename', '.', '--title', PROMPT])
+  expect(chosen.calls[1]?.args).toEqual(['--getopenfilename', '/home/r/', `--title=${PROMPT}`])
 
   const cancelled = fakeRun({ kdialog: { exitCode: 1 } })
-  expect(await createNativePicker({ platform: 'linux', run: cancelled.run, env: DISPLAY }, { kind: 'file', prompt: PROMPT })()).toEqual(CANCELLED)
+  expect(await createNativePicker({ platform: 'linux', run: cancelled.run, env: DISPLAY, home: HOME }, { kind: 'file', prompt: PROMPT })()).toEqual(CANCELLED)
 })
 
 test('linux without zenity nor kdialog answers picker_unavailable', async () => {
   const { run, calls } = fakeRun({})
-  const answer = await createNativePicker({ platform: 'linux', run, env: DISPLAY }, { kind: 'file', prompt: PROMPT })()
+  const answer = await createNativePicker({ platform: 'linux', run, env: DISPLAY, home: HOME }, { kind: 'file', prompt: PROMPT })()
   expect(answer.ok).toBe(false)
   expect(answer).toEqual({ ok: false, code: 'picker_unavailable', error: 'No file dialog is available on this computer.' })
   expect(calls.map((call) => call.command)).toEqual(['zenity', 'kdialog'])
@@ -102,28 +108,28 @@ test('a folder pick passes the folder flag to each tool', async () => {
   expect(await createNativePicker({ platform: 'darwin', run: mac.run }, folder)()).toEqual({ ok: true, value: { file: '/Users/x/skills/teach/', name: 'teach' } })
   expect(mac.calls[0]?.args.join(' ')).toContain('choose folder')
 
-  const win = fakeRun({ 'powershell.exe': { stdout: 'C:\\skills\\teach' } })
+  const win = fakeRun({ [POWERSHELL]: { stdout: 'C:\\skills\\teach' } })
   expect(await createNativePicker({ platform: 'win32', run: win.run }, folder)()).toEqual({ ok: true, value: { file: 'C:\\skills\\teach', name: 'teach' } })
   expect(decodeScript(win.calls[0]?.args ?? [])).toContain('FolderBrowserDialog')
 
   const zenity = fakeRun({ zenity: { stdout: '/home/r/skills/teach\n' } })
-  expect(await createNativePicker({ platform: 'linux', run: zenity.run, env: DISPLAY }, folder)()).toEqual({ ok: true, value: { file: '/home/r/skills/teach', name: 'teach' } })
-  expect(zenity.calls[0]?.args).toEqual(['--file-selection', '--directory', `--title=${folder.prompt}`])
+  expect(await createNativePicker({ platform: 'linux', run: zenity.run, env: DISPLAY, home: HOME }, folder)()).toEqual({ ok: true, value: { file: '/home/r/skills/teach', name: 'teach' } })
+  expect(zenity.calls[0]?.args).toEqual(['--file-selection', '--directory', '--filename=/home/r/', `--title=${folder.prompt}`])
 
   const kdialog = fakeRun({ kdialog: { stdout: '/home/r/skills/teach\n' } })
-  await createNativePicker({ platform: 'linux', run: kdialog.run, env: DISPLAY }, folder)()
-  expect(kdialog.calls[1]?.args).toEqual(['--getexistingdirectory', '.', '--title', folder.prompt])
+  await createNativePicker({ platform: 'linux', run: kdialog.run, env: DISPLAY, home: HOME }, folder)()
+  expect(kdialog.calls[1]?.args).toEqual(['--getexistingdirectory', '/home/r/', `--title=${folder.prompt}`])
 })
 
 test('a path with spaces, accents and a quote comes back intact', async () => {
   const unix = "/home/r/Été/l'été notes .md"
   const linux = fakeRun({ zenity: { stdout: `${unix}\n` } })
-  expect(await createNativePicker({ platform: 'linux', run: linux.run, env: DISPLAY }, { kind: 'file', prompt: PROMPT })()).toEqual({
+  expect(await createNativePicker({ platform: 'linux', run: linux.run, env: DISPLAY, home: HOME }, { kind: 'file', prompt: PROMPT })()).toEqual({
     ok: true,
     value: { file: unix, name: "l'été notes .md" }
   })
   const windows = "C:\\Users\\romain\\Mes documents\\l'été.md"
-  const win = fakeRun({ 'powershell.exe': { stdout: windows } })
+  const win = fakeRun({ [POWERSHELL]: { stdout: windows } })
   expect(await createNativePicker({ platform: 'win32', run: win.run }, { kind: 'file', prompt: PROMPT })()).toEqual({
     ok: true,
     value: { file: windows, name: "l'été.md" }
@@ -145,41 +151,104 @@ test('prompt with quotes is passed safely', async () => {
   expect(macArgs[macArgs.length - 1]).toBe(prompt)
   expect(macArgs.slice(0, -1).some((arg) => arg.includes('quoted'))).toBe(false)
 
-  const win = fakeRun({ 'powershell.exe': { stdout: 'C:\\x.md' } })
+  const win = fakeRun({ [POWERSHELL]: { stdout: 'C:\\x.md' } })
   await createNativePicker({ platform: 'win32', run: win.run }, { kind: 'file', prompt })()
   expect(win.calls[0]?.env).toEqual({ PICK_PROMPT: prompt })
   expect((win.calls[0]?.args ?? []).some((arg) => arg.includes('quoted'))).toBe(false)
   expect(decodeScript(win.calls[0]?.args ?? []).includes('quoted')).toBe(false)
 
   const linux = fakeRun({ zenity: { stdout: '/x.md\n' } })
-  await createNativePicker({ platform: 'linux', run: linux.run, env: DISPLAY }, { kind: 'file', prompt })()
-  expect(linux.calls[0]?.args).toEqual(['--file-selection', `--title=${prompt}`])
+  await createNativePicker({ platform: 'linux', run: linux.run, env: DISPLAY, home: HOME }, { kind: 'file', prompt })()
+  expect(linux.calls[0]?.args).toEqual(['--file-selection', '--filename=/home/r/', `--title=${prompt}`])
 })
 
 test('a dialog tool that fails says it could not open', async () => {
   const cases: { platform: NodeJS.Platform; answers: Record<string, Answer> }[] = [
     { platform: 'darwin', answers: { osascript: { exitCode: 1, stderr: 'execution error: Not authorized to send Apple events. (-1743)' } } },
-    { platform: 'win32', answers: { 'powershell.exe': { exitCode: 1, stderr: 'Exception: ShowDialog' } } },
+    { platform: 'win32', answers: { [POWERSHELL]: { exitCode: 1, stderr: 'Exception: ShowDialog' } } },
     { platform: 'linux', answers: { zenity: { exitCode: 5, stderr: 'Gtk-WARNING **: cannot open display' } } },
     { platform: 'linux', answers: { zenity: new Error('spawn zenity EACCES') } },
     { platform: 'linux', answers: { kdialog: { exitCode: 2 } } }
   ]
   for (const entry of cases) {
     const { run } = fakeRun(entry.answers)
-    const answer = await createNativePicker({ platform: entry.platform, run, env: DISPLAY }, { kind: 'file', prompt: PROMPT })()
+    const answer = await createNativePicker({ platform: entry.platform, run, env: DISPLAY, home: HOME }, { kind: 'file', prompt: PROMPT })()
     expect({ platform: entry.platform, answer }).toEqual({ platform: entry.platform, answer: COULD_NOT_OPEN })
     // Le message de l'outil n'est jamais montré brut.
     expect(JSON.stringify(answer).includes('Gtk')).toBe(false)
   }
 })
 
-test('linux without a display fails instead of looking like a cancel, and runs no tool', async () => {
-  const { run, calls } = fakeRun({ zenity: { exitCode: 1 } })
-  const answer = await createNativePicker({ platform: 'linux', run, env: {} }, { kind: 'file', prompt: PROMPT })()
-  expect(answer).toEqual(COULD_NOT_OPEN)
-  expect(calls).toEqual([])
+test('linux without a display answers picker_unavailable, with or without a tool, and runs no tool', async () => {
+  const withTool = fakeRun({ zenity: { exitCode: 1 } })
+  expect(await createNativePicker({ platform: 'linux', run: withTool.run, env: {}, home: HOME }, { kind: 'file', prompt: PROMPT })()).toEqual(UNAVAILABLE)
+  const noTool = fakeRun({})
+  expect(await createNativePicker({ platform: 'linux', run: noTool.run, env: {}, home: HOME }, { kind: 'file', prompt: PROMPT })()).toEqual(UNAVAILABLE)
+  expect([...withTool.calls, ...noTool.calls]).toEqual([])
   const wayland = fakeRun({ zenity: { stdout: '/x.md\n' } })
-  expect((await createNativePicker({ platform: 'linux', run: wayland.run, env: { WAYLAND_DISPLAY: 'wayland-0' } }, { kind: 'file', prompt: PROMPT })()).ok).toBe(true)
+  expect((await createNativePicker({ platform: 'linux', run: wayland.run, env: { WAYLAND_DISPLAY: 'wayland-0' }, home: HOME }, { kind: 'file', prompt: PROMPT })()).ok).toBe(true)
+})
+
+test('a prompt starting with a dash is not read as an option', async () => {
+  const prompt = '-e tell application "Finder" to quit'
+  const mac = fakeRun({ osascript: { stdout: '/x.md\n' } })
+  await createNativePicker({ platform: 'darwin', run: mac.run }, { kind: 'file', prompt })()
+  const macArgs = mac.calls[0]?.args ?? []
+  expect(macArgs.slice(-2)).toEqual(['--', prompt])
+
+  const zenity = fakeRun({ zenity: { stdout: '/x.md\n' } })
+  await createNativePicker({ platform: 'linux', run: zenity.run, env: DISPLAY, home: HOME }, { kind: 'file', prompt })()
+  expect(zenity.calls[0]?.args).toEqual(['--file-selection', '--filename=/home/r/', `--title=${prompt}`])
+
+  const kdialog = fakeRun({ kdialog: { stdout: '/x.md\n' } })
+  await createNativePicker({ platform: 'linux', run: kdialog.run, env: DISPLAY, home: HOME }, { kind: 'file', prompt })()
+  expect(kdialog.calls[1]?.args).toEqual(['--getopenfilename', '/home/r/', `--title=${prompt}`])
+})
+
+test('win32 starts PowerShell by its absolute path under the system folder', async () => {
+  const { run, calls } = fakeRun({ 'D:\\Win\\System32\\WindowsPowerShell\\v1.0\\powershell.exe': { stdout: 'C:\\x.md' } })
+  await createNativePicker({ platform: 'win32', run, env: { SystemRoot: 'D:\\Win' } }, { kind: 'file', prompt: PROMPT })()
+  expect(calls.map((call) => call.command)).toEqual(['D:\\Win\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'])
+  const fallback = fakeRun({ 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe': { stdout: 'C:\\x.md' } })
+  await createNativePicker({ platform: 'win32', run: fallback.run, env: {} }, { kind: 'file', prompt: PROMPT })()
+  expect(fallback.calls.map((call) => call.command)).toEqual(['C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'])
+})
+
+test('a missing osascript or PowerShell answers picker_unavailable, another spawn error says it could not open', async () => {
+  const noMac = fakeRun({})
+  expect(await createNativePicker({ platform: 'darwin', run: noMac.run }, { kind: 'file', prompt: PROMPT })()).toEqual(UNAVAILABLE)
+  const noWin = fakeRun({})
+  expect(await createNativePicker({ platform: 'win32', run: noWin.run }, { kind: 'file', prompt: PROMPT })()).toEqual(UNAVAILABLE)
+  const brokenMac = fakeRun({ osascript: new Error('spawn osascript EACCES') })
+  expect(await createNativePicker({ platform: 'darwin', run: brokenMac.run }, { kind: 'file', prompt: PROMPT })()).toEqual(COULD_NOT_OPEN)
+  const brokenWin = fakeRun({ [POWERSHELL]: new Error('spawn powershell.exe EPERM') })
+  expect(await createNativePicker({ platform: 'win32', run: brokenWin.run }, { kind: 'file', prompt: PROMPT })()).toEqual(COULD_NOT_OPEN)
+})
+
+test('a tool failure is logged with its exit code and the start of its error output, and never shown to the panel', async () => {
+  const logs: string[] = []
+  const stderr = `Gtk-WARNING secret-detail ${'x'.repeat(400)}`
+  const { run } = fakeRun({ zenity: { exitCode: 5, stderr } })
+  const answer = await createNativePicker({ platform: 'linux', run, env: DISPLAY, home: HOME, log: (message) => logs.push(message) }, { kind: 'file', prompt: PROMPT })()
+  expect(answer).toEqual(COULD_NOT_OPEN)
+  expect(logs.length).toBe(1)
+  expect(logs[0]).toContain('zenity')
+  expect(logs[0]).toContain('5')
+  expect(logs[0]).toContain('Gtk-WARNING secret-detail')
+  expect(logs[0]?.includes('x'.repeat(201))).toBe(false)
+  expect(JSON.stringify(answer).includes('secret-detail')).toBe(false)
+
+  const spawnLogs: string[] = []
+  const broken = fakeRun({ osascript: new Error('spawn osascript EACCES') })
+  await createNativePicker({ platform: 'darwin', run: broken.run, log: (message) => spawnLogs.push(message) }, { kind: 'file', prompt: PROMPT })()
+  expect(spawnLogs.length).toBe(1)
+  expect(spawnLogs[0]).toContain('EACCES')
+
+  // Une annulation n'est pas un échec : rien n'est journalisé.
+  const cancelLogs: string[] = []
+  const cancelled = fakeRun({ zenity: { exitCode: 1 } })
+  await createNativePicker({ platform: 'linux', run: cancelled.run, env: DISPLAY, home: HOME, log: (message) => cancelLogs.push(message) }, { kind: 'file', prompt: PROMPT })()
+  expect(cancelLogs).toEqual([])
 })
 
 test('one dialog at a time: a second call joins the first', async () => {

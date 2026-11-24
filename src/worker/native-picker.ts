@@ -2,6 +2,7 @@
 // PowerShell (System.Windows.Forms) sous Windows, `zenity` puis `kdialog` sous Linux. Aucun autre processus n'est lancé.
 // Sans outil de dialogue, la réponse est `picker_unavailable` : le panneau propose alors de coller un chemin.
 import { execFile } from 'node:child_process'
+import { homedir } from 'node:os'
 import { posix, win32 } from 'node:path'
 import type { ApiResult, PickedFile } from '../protocol'
 
@@ -18,8 +19,12 @@ export type RunTool = (command: string, args: string[], options?: { env?: Record
 export type NativePickerDeps = {
   platform: NodeJS.Platform
   run: RunTool
-  /** L'environnement qui dit si un affichage existe (Linux) ; celui du worker par défaut. */
+  /** L'environnement qui dit si un affichage existe (Linux) et où est le dossier système (Windows) ; celui du worker par défaut. */
   env?: NodeJS.ProcessEnv
+  /** Le dossier personnel, où s'ouvrent les boîtes Linux ; celui de l'utilisateur par défaut. */
+  home?: string
+  /** Le journal du worker : l'échec d'un outil y est écrit (code de sortie, début de sa sortie d'erreur), jamais montré au panneau. */
+  log?: (message: string) => void
 }
 
 const UNAVAILABLE: ApiResult<never> = { ok: false, code: 'picker_unavailable', error: 'No file dialog is available on this computer.' }
@@ -60,13 +65,24 @@ function chosen(platform: NodeJS.Platform, stdout: string): ApiResult<PickedFile
 
 const isMissing = (error: unknown): boolean => typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ENOENT'
 
-/** Une ligne de commande par outil Linux, dans l'ordre d'essai ; le code 1 est l'annulation des deux. */
-function linuxTools(kind: 'file' | 'folder', prompt: string): { command: string; args: string[] }[] {
+/**
+ * Une ligne de commande par outil Linux, dans l'ordre d'essai ; le code 1 est l'annulation des deux. L'invite est
+ * collée à son option (`--title=<invite>`) : une invite qui commence par un tiret n'est jamais lue comme une option.
+ * La boîte s'ouvre dans le dossier personnel (`start` finit par `/`).
+ */
+function linuxTools(kind: 'file' | 'folder', prompt: string, start: string): { command: string; args: string[] }[] {
   return [
-    { command: 'zenity', args: ['--file-selection', ...(kind === 'folder' ? ['--directory'] : []), `--title=${prompt}`] },
-    { command: 'kdialog', args: [kind === 'folder' ? '--getexistingdirectory' : '--getopenfilename', '.', '--title', prompt] }
+    { command: 'zenity', args: ['--file-selection', ...(kind === 'folder' ? ['--directory'] : []), `--filename=${start}`, `--title=${prompt}`] },
+    { command: 'kdialog', args: [kind === 'folder' ? '--getexistingdirectory' : '--getopenfilename', start, `--title=${prompt}`] }
   ]
 }
+
+/** Le dossier système de Windows, où vit PowerShell : lancé par chemin absolu, jamais par recherche dans le PATH. */
+const windowsPowerShell = (env: NodeJS.ProcessEnv): string =>
+  win32.join(env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+
+/** Le début de la sortie d'erreur d'un outil, pour le journal seulement. */
+const ERROR_OUTPUT_LOG_LIMIT = 200
 
 /**
  * Le choix d'un fichier ou d'un dossier. Annuler la boîte rend `null` sans message ; un outil absent rend
@@ -80,31 +96,42 @@ export function createNativePicker(
 ): () => Promise<ApiResult<PickedFile | null>> {
   const { platform, run } = deps
   const { kind, prompt } = options
+  const env = deps.env ?? process.env
+  const log = deps.log ?? (() => {})
+
+  /** Un outil qui a tourné et échoué : le détail va au journal, le panneau ne reçoit que le message fixe. */
+  const failed = (command: string, output: ToolOutput): ApiResult<never> => {
+    log(`file picker: ${command} exited ${output.exitCode}: ${(output.stderr ?? '').trim().slice(0, ERROR_OUTPUT_LOG_LIMIT)}`)
+    return COULD_NOT_OPEN
+  }
 
   const pickOnMac = async (): Promise<ApiResult<PickedFile | null>> => {
-    // L'invite est le dernier argument, lu par `item 1 of argv` : elle n'entre jamais dans le texte AppleScript.
-    const output = await run('osascript', ['-e', 'on run argv', '-e', `POSIX path of (choose ${kind} with prompt (item 1 of argv))`, '-e', 'end run', prompt])
+    // L'invite est le dernier argument, après `--` (une invite qui commence par un tiret n'est pas une option) et
+    // lue par `item 1 of argv` : elle n'entre jamais dans le texte AppleScript.
+    const output = await run('osascript', ['-e', 'on run argv', '-e', `POSIX path of (choose ${kind} with prompt (item 1 of argv))`, '-e', 'end run', '--', prompt])
     if (output.exitCode === 0) {
       return chosen(platform, output.stdout)
     }
     // Annuler la boîte : `User canceled. (-128)` sur la sortie d'erreur.
-    return output.stderr?.includes('-128') ? CANCELLED : COULD_NOT_OPEN
+    return output.stderr?.includes('-128') ? CANCELLED : failed('osascript', output)
   }
 
   const pickOnWindows = async (): Promise<ApiResult<PickedFile | null>> => {
     const script = Buffer.from(WINDOWS_SCRIPTS[kind].join('\n'), 'utf16le').toString('base64')
-    const output = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', script], { env: { [PROMPT_VARIABLE]: prompt } })
+    const command = windowsPowerShell(env)
+    const output = await run(command, ['-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', script], { env: { [PROMPT_VARIABLE]: prompt } })
     // Annuler la boîte : rien n'est écrit, sortie 0.
-    return output.exitCode === 0 ? chosen(platform, output.stdout) : COULD_NOT_OPEN
+    return output.exitCode === 0 ? chosen(platform, output.stdout) : failed('powershell', output)
   }
 
   const pickOnLinux = async (): Promise<ApiResult<PickedFile | null>> => {
-    // Sans affichage, zenity sort aussi en 1 : ce serait pris pour une annulation, donc aucun outil n'est lancé.
-    const env = deps.env ?? process.env
+    // Sans affichage aucune boîte ne peut s'ouvrir, et zenity sortirait en 1 comme pour une annulation : le panneau passe à la saisie du chemin.
     if (!env.DISPLAY && !env.WAYLAND_DISPLAY) {
-      return COULD_NOT_OPEN
+      return UNAVAILABLE
     }
-    for (const { command, args } of linuxTools(kind, prompt)) {
+    const home = deps.home ?? homedir()
+    const start = home.endsWith('/') ? home : `${home}/`
+    for (const { command, args } of linuxTools(kind, prompt, start)) {
       let output: ToolOutput
       try {
         output = await run(command, args)
@@ -117,7 +144,7 @@ export function createNativePicker(
       if (output.exitCode === 0) {
         return chosen(platform, output.stdout)
       }
-      return output.exitCode === 1 ? CANCELLED : COULD_NOT_OPEN
+      return output.exitCode === 1 ? CANCELLED : failed(command, output)
     }
     return UNAVAILABLE
   }
@@ -135,7 +162,11 @@ export function createNativePicker(
           return UNAVAILABLE
       }
     } catch (error) {
-      return isMissing(error) ? UNAVAILABLE : COULD_NOT_OPEN
+      if (isMissing(error)) {
+        return UNAVAILABLE
+      }
+      log(`file picker: could not start the dialog tool: ${error instanceof Error ? error.message : String(error)}`)
+      return COULD_NOT_OPEN
     }
   }
 
