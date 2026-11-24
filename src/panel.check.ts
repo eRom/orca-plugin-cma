@@ -84,7 +84,12 @@ const AGENT_FORM: AgentForm = {
   mcpServers: [
     { name: 'github', url: 'https://api.githubcopilot.com/mcp/', policy: 'always_ask' },
     { name: 'linear', url: 'https://mcp.linear.app/mcp', policy: 'always_allow' }
-  ]
+  ],
+  multiagent: {
+    advisor: 'claude-opus-5',
+    subagents: { enabled: true, inlineAgents: true, predefinedCount: 2 },
+    workflows: { enabled: false, inlineAgents: true, predefinedCount: 0 }
+  }
 }
 
 /** Ce que l'écran d'un agent lit : les modèles de l'API et le dossier de brouillons (prêt, sans brouillon). */
@@ -564,7 +569,8 @@ function agentScenario(options: { unsaved?: boolean } = {}) {
       { name: 'linear', url: 'https://mcp.linear.app/mcp', enabled: true, policy: 'always_allow', overrides: [] }
     ],
     skills: ['skill_triage'],
-    multiagent: 'Multiagent: advisor claude-opus-5'
+    multiagent: 'Multiagent: advisor claude-opus-5, subagents (2 predefined)',
+    multiagentCoordinator: false
   }
   const scenario = configScenario('agent', detail)
   return {

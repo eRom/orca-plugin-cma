@@ -21,14 +21,34 @@ export const configErrors = atom<Partial<Record<ConfigKind, string | null>>>('co
 export const configDetail = atom<ConfigDetail | null>('configs.detail', null)
 export const configDetailError = atom<string | null>('configs.detail.error', null)
 
-/** Les modèles que le formulaire d'agent propose ; null tant que la lecture n'a pas abouti (le formulaire offre alors un champ libre). */
-export const agentModels = atom<string[] | null>(null)
+/** Durée de vie de la liste des modèles gardée : une lecture de `/v1/models` par jour au plus. */
+export const AGENT_MODELS_TTL_MS = 24 * 60 * 60 * 1000
+
+/**
+ * La dernière liste de modèles lue, avec son heure : persistée, elle survit aux rechargements du panneau. Une liste
+ * vide (lecture échouée côté worker) n'est jamais gardée, pour qu'un échec passager ne fige pas le champ libre.
+ */
+export const agentModelsCache = atom<{ models: string[]; fetchedAt: number } | null>('agent.models', null, { persist: 'plugin' })
+
+/**
+ * Les modèles que le formulaire d'agent propose, même périmés : un formulaire ouvert ne repasse pas au champ libre
+ * quand la liste vieillit ou que sa relecture échoue. Null sans aucune liste (le formulaire offre un champ libre).
+ */
+export function agentModels(): string[] | null {
+  return read(agentModelsCache)?.models ?? null
+}
+
+/** Vrai quand la liste gardée a moins de 24 h : elle n'est alors pas relue. */
+function agentModelsFresh(now: number = Date.now()): boolean {
+  const cache = read(agentModelsCache)
+  return cache !== null && now - cache.fetchedAt < AGENT_MODELS_TTL_MS
+}
 
 /** Oublie les listes lues (clé changée ou oubliée) : elles ne valent plus pour la nouvelle clé. */
 export function resetConfigs(): void {
   set(configRows, {})
   set(configErrors, {})
-  set(agentModels, null)
+  set(agentModelsCache, null)
 }
 
 /** Lit la liste de l'onglet d'accueil, s'il en montre une ; les sessions ont leur propre lecture. */
@@ -97,15 +117,18 @@ async function loadStoreDrafts(store: MemoryStoreDetail): Promise<void> {
 // --- Formulaire d'agent ---
 
 /**
- * Lit les modèles que l'API propose, une fois par clé. Une lecture de fond : un échec laisse la liste inconnue,
+ * Lit les modèles que l'API propose, au plus une fois par jour et par clé (`agentModelsCache`). Une lecture de fond : un échec laisse la liste inconnue,
  * et le formulaire offre un champ libre pour le modèle.
  */
 export async function loadAgentModels(): Promise<void> {
-  if (read(agentModels) !== null) return
+  if (agentModelsFresh()) return
   try {
     const result = await plugin.request('agent.formOptions')
-    if (result.ok) set(agentModels, result.value.models)
-    else if (result.code === 'unauthorized') await loadWorkspace()
+    if (!result.ok) {
+      if (result.code === 'unauthorized') await loadWorkspace()
+    } else if (result.value.models.length > 0) {
+      set(agentModelsCache, { models: result.value.models, fetchedAt: Date.now() })
+    }
   } catch {
     // Rien à montrer : le champ libre prend le relais.
   }

@@ -54,7 +54,9 @@ export function filterRows(rows: readonly ConfigRow[], query: string): ConfigRow
  */
 export async function restoreConfigView(): Promise<void> {
   const top = read(nav).at(-1)
-  if (top?.view === 'config' && read(configDetail)?.id !== top.id) {
+  // Un agent est toujours relu : un détail gardé d'un panneau ou d'un worker précédent peut manquer un champ (`multiagent`, 24/11)
+  // ou la liste des modèles ; sa relecture recharge aussi les modèles (`loadAgentExtras`).
+  if (top?.view === 'config' && (read(configDetail)?.id !== top.id || top.kind === 'agent')) {
     await loadDetail(top.kind, top.id)
   } else if (top?.view === 'credential' && read(configDetail)?.id !== top.vaultId) {
     await loadDetail('vault', top.vaultId)

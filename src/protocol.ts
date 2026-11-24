@@ -86,6 +86,23 @@ export type AgentToolsForm = {
   tools: { name: (typeof BUILTIN_TOOLS)[number]; enabled: boolean | null; policy: ToolPolicy | null }[]
 }
 
+/** Un membre `subagents` ou `workflows` du bloc `multiagent`. */
+export type MultiagentMemberForm = {
+  enabled: boolean
+  /** L'agent peut définir ses propres agents (non enregistrés). */
+  inlineAgents: boolean
+  /** Lecture seule : les agents enregistrés se modifient dans le YAML et sont conservés tels quels. */
+  predefinedCount: number
+}
+
+/** Le bloc `multiagent` (type `multiagent_20261001`) tel que le formulaire le modifie. */
+export type MultiagentForm = {
+  /** Le modèle conseiller ; null : désactivé ; `''` : activé sans modèle choisi (le panneau bloque l'envoi). */
+  advisor: string | null
+  subagents: MultiagentMemberForm
+  workflows: MultiagentMemberForm
+}
+
 /** L'agent tel que le formulaire le modifie. */
 export type AgentForm = {
   name: string
@@ -95,6 +112,8 @@ export type AgentForm = {
   /** null : l'agent n'a pas de toolset intégré. */
   builtinTools: AgentToolsForm | null
   mcpServers: { name: string; url: string; policy: ToolPolicy }[]
+  /** null : agent à un seul fil (pas de bloc `multiagent`, ou topologie `coordinator` que le formulaire n'édite pas). */
+  multiagent: MultiagentForm | null
 }
 
 export type AgentDetail = {
@@ -112,6 +131,8 @@ export type AgentDetail = {
   skills: string[]
   /** Une ligne de résumé du bloc `multiagent`, ou null s'il n'y en a pas. */
   multiagent: string | null
+  /** Vrai quand le bloc est l'ancienne topologie `coordinator` : le formulaire ne la propose pas (`form.multiagent` est null). */
+  multiagentCoordinator: boolean
 }
 
 export type KeyValueItem = { key: string; value: string }

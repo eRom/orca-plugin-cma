@@ -19,7 +19,8 @@ const FORM: AgentForm = {
     policy: 'always_allow',
     tools: BUILTIN_TOOLS.map((name) => ({ name, enabled: name === 'web_search' ? false : null, policy: null }))
   },
-  mcpServers: [{ name: 'github', url: 'https://api.githubcopilot.com/mcp/', policy: 'always_ask' }]
+  mcpServers: [{ name: 'github', url: 'https://api.githubcopilot.com/mcp/', policy: 'always_ask' }],
+  multiagent: null
 }
 
 const DETAIL: AgentDetail = {
@@ -43,7 +44,8 @@ const DETAIL: AgentDetail = {
     }
   ],
   skills: ['skill_triage'],
-  multiagent: 'Multiagent: advisor claude-opus-5'
+  multiagent: null,
+  multiagentCoordinator: false
 }
 
 const NEW_DETAIL: AgentDetail = {
@@ -143,6 +145,19 @@ async function openPerTool(view: View): Promise<void> {
   await view.toggle({ type: 'Collapsible', text: /Per-tool settings/ })
 }
 
+/** Ouvre la section « Tools (optional) » si elle est fermée (son état survit d'un montage à l'autre). */
+async function openTools(view: View): Promise<void> {
+  const section = view.find({ type: 'Collapsible', text: /Tools \(optional\)/ })
+  if (section !== null && section.props.open !== true) await view.toggle({ type: 'Collapsible', text: /Tools \(optional\)/ })
+}
+
+const multiagentSection =(view: View) => view.find({ type: 'Collapsible', text: /Multiagent \(optional\)/ })
+
+/** Ouvre la section « Multiagent (optional) » si elle est fermée (son état survit d'un montage à l'autre). */
+async function openMultiagent(view: View): Promise<void> {
+  if (multiagentSection(view)?.props.open !== true) await view.toggle({ type: 'Collapsible', text: /Multiagent \(optional\)/ })
+}
+
 function optionValues(view: View, label: string): string[] {
   const options = view.find({ type: 'Select', label })?.props.options
   assert.ok(Array.isArray(options))
@@ -160,6 +175,37 @@ test('offers the models of agent.formOptions plus the current model when it is m
   await view.press({ role: 'button', text: 'Review changes' })
   assert.equal(calls.prepares[0]?.form.model, 'claude-opus-5')
   assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** Le détail ouvert, avec une liste de modèles déjà gardée à l'heure `fetchedAt`. */
+const openDetailWithCache = (models: string[], fetchedAt: number) => ({ plugin: { ...OPEN_DETAIL.plugin, 'agent.models': { models, fetchedAt } } })
+
+test('a model list kept less than a day ago is offered without reading the API again', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: openDetailWithCache(['claude-haiku-5-5', 'claude-cached'], Date.now() - DAY_MS / 2) })
+  assert.deepEqual(optionValues(view, 'Model'), ['claude-haiku-5-5', 'claude-cached'])
+  await view.unmount()
+})
+
+test('a model list kept more than a day ago is read again from the API and kept with a new time', async () => {
+  const calls = newCalls()
+  const before = Date.now()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: openDetailWithCache(['claude-cached'], before - DAY_MS - 1000) })
+  assert.deepEqual(optionValues(view, 'Model'), ['claude-haiku-5-5', 'claude-sonnet-5', 'claude-opus-5'])
+  const kept = view.persisted.plugin['agent.models'] as { models: string[]; fetchedAt: number }
+  assert.deepEqual(kept.models, ['claude-sonnet-5', 'claude-opus-5'])
+  assert.ok(kept.fetchedAt >= before)
+  await view.unmount()
+})
+
+test('an expired model list whose reread fails is still offered, never the free text field', async () => {
+  const calls = newCalls()
+  const host = mockHost({ requests: requests(calls, { 'agent.formOptions': { ok: true, value: { models: [] } } }) })
+  const view = await mount(panel, { host, persisted: openDetailWithCache(['claude-haiku-5-5', 'claude-cached'], Date.now() - DAY_MS - 1000) })
+  assert.deepEqual(optionValues(view, 'Model'), ['claude-haiku-5-5', 'claude-cached'])
   await view.unmount()
 })
 
@@ -201,6 +247,7 @@ test('a new agent offers Default for the effort, which sends null', async () => 
 test('a new agent starts with the auto permission, like the console and the YAML template', async () => {
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_NEW })
+  await openTools(view)
   assert.equal(view.valueOf({ label: 'Default permission' }), 'auto')
   await view.type({ label: 'Name' }, 'plugin-test-agent')
   await view.select({ label: 'Model' }, 'claude-sonnet-5')
@@ -214,6 +261,7 @@ test('a new agent starts with the auto permission, like the console and the YAML
 test('built-in tools: the switch and the default permission stay visible, the per-tool rows are folded with a summary', async () => {
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  await openTools(view)
   assert.equal(view.valueOf({ label: 'Enabled' }), true)
   assert.equal(view.valueOf({ label: 'Default permission' }), 'always_allow')
   assert.deepEqual(optionValues(view, 'Default permission'), ['always_allow', 'always_ask', 'auto'])
@@ -237,6 +285,7 @@ test('built-in tools: the switch and the default permission stay visible, the pe
 test('the built-in tools zone is a titled group like the MCP servers zone, with the switch labelled Enabled', async () => {
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  await openTools(view)
   // Même bloc, donc même titre (semibold) et même surface que la zone des serveurs MCP.
   assert.equal(view.find({ type: 'Text', text: 'Built-in tools' })?.props.weight, 'semibold')
   assert.equal(view.find({ type: 'Text', text: 'MCP servers' })?.props.weight, 'semibold')
@@ -249,6 +298,7 @@ test('the built-in tools zone is a titled group like the MCP servers zone, with 
 test('per-tool selects send null for Default and the chosen value otherwise', async () => {
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  await openTools(view)
   await openPerTool(view)
   await view.select({ label: 'bash state' }, 'enabled')
   await view.select({ label: 'bash permission' }, 'always_ask')
@@ -270,6 +320,7 @@ test('per-tool selects send null for Default and the chosen value otherwise', as
 test('an MCP server row shows its name, its URL, its policy and a Remove action', async () => {
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  await openTools(view)
   const row = view.find({ text: /github/, type: 'Box' })
   assert.ok(row)
   assert.ok(view.find({ text: 'https://api.githubcopilot.com/mcp/' }))
@@ -289,6 +340,7 @@ test('an MCP server row shows its name, its URL, its policy and a Remove action'
 test('Add MCP server opens a compact form, closed by default, and appends the server with always_ask', async () => {
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  await openTools(view)
   // Fermé : seuls Name et URL de l'agent n'existent pas, le formulaire d'ajout non plus.
   assert.equal(view.find({ label: 'URL' }), null)
   assert.equal(view.findAll({ label: 'Name' }).length, 1)
@@ -319,6 +371,7 @@ test('Add MCP server opens a compact form, closed by default, and appends the se
 
 test('refuses an MCP server whose name is already used', async () => {
   const view = await mount(panel, { host: mockHost({ requests: requests(newCalls()) }), persisted: OPEN_DETAIL })
+  await openTools(view)
   await view.press({ role: 'button', text: 'Add MCP server' })
   await view.type(view.findAll({ label: 'Name' })[1] ?? { label: 'Name' }, 'github')
   await view.type({ label: 'URL' }, 'https://example.com/mcp')
@@ -332,6 +385,7 @@ test('refuses an MCP server whose name is already used', async () => {
 test('Review changes is disabled until something changed, then previews and applies the write', async () => {
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  await openTools(view)
   assert.equal(button(view, 'Review changes')?.disabled, true)
   // L'action principale se lit comme telle : pleine, ton d'accent.
   assert.equal(button(view, 'Review changes')?.props.variant, 'solid')
@@ -495,7 +549,7 @@ test('keeps the read-only summaries and one Edit in YAML link that opens the age
   const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
   assert.equal(view.find({ type: 'CodeView' })?.props.code, 'You are an incident commander.')
   assert.ok(view.find({ text: /skill_triage/ }))
-  assert.ok(view.find({ text: /advisor claude-opus-5/ }))
+
   assert.ok(view.find({ type: 'KeyValue', label: 'github tool settings' })?.text.includes('list_commits'))
   const links = view.findAll({ role: 'button', text: 'Edit in YAML' })
   assert.equal(links.length, 1)
@@ -505,6 +559,160 @@ test('keeps the read-only summaries and one Edit in YAML link that opens the age
   assert.deepEqual(calls.opens, [{ kind: 'agent', agentId: 'agent_a' }])
   // Une seule carte de brouillon : le brouillon ouvert propose Apply une fois.
   assert.equal(view.findAll({ role: 'button', text: 'Apply' }).length, 1)
+  await view.unmount()
+})
+
+
+// --- Multiagent ---
+
+/** Un détail d'agent dont le formulaire (et donc la base) porte ce bloc `multiagent`. */
+function detailWith(multiagent: AgentForm['multiagent'], extra: Partial<AgentDetail> = {}) {
+  const detail: AgentDetail = { ...DETAIL, form: { ...FORM, multiagent }, ...extra }
+  return { 'configs.detail': { ok: true, value: detail } }
+}
+
+const MEMBER_ON = { enabled: true, inlineAgents: true, predefinedCount: 0 }
+const MEMBER_OFF = { enabled: false, inlineAgents: true, predefinedCount: 0 }
+
+test('an agent without a block shows the three members off and no option under them', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  // Fermée, la section se résume ; ouverte, elle montre les trois membres.
+  if (multiagentSection(view)?.props.open !== true) assert.equal(multiagentSection(view)?.props.description, 'Off')
+  await openMultiagent(view)
+  for (const label of ['Dynamic workflows', 'Subagents', 'Advisor']) assert.equal(view.valueOf({ label }), false)
+  assert.ok(view.find({ text: 'Delegates tasks to other agents, each in its own thread.' }))
+  assert.equal(view.find({ label: 'Can define its own agents' }), null)
+  assert.equal(view.find({ label: 'Advisor model' }), null)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('switching Subagents on sends a block with subagents on and the two others off', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  await openMultiagent(view)
+  await view.toggle({ label: 'Subagents' })
+  assert.equal(view.valueOf({ label: 'Can define its own agents' }), true)
+  await view.press({ role: 'button', text: 'Review changes' })
+  assert.deepEqual(calls.prepares[0]?.form.multiagent, { advisor: null, subagents: MEMBER_ON, workflows: MEMBER_OFF })
+  assert.equal(calls.prepares[0]?.base?.multiagent, null)
+  await view.unmount()
+})
+
+test('switching the last member off returns to no block: nothing is left to review', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  await openMultiagent(view)
+  await view.toggle({ label: 'Dynamic workflows' })
+  await view.toggle({ label: 'Subagents' })
+  assert.equal(button(view, 'Review changes')?.disabled, false)
+  await view.toggle({ label: 'Dynamic workflows' })
+  await view.toggle({ label: 'Subagents' })
+  assert.equal(button(view, 'Review changes')?.disabled, true)
+  assert.equal(view.find({ text: 'Unsaved changes' }), null)
+  await view.unmount()
+})
+
+test('a form kept from before the multiagent field is ignored, so turning the block off really sends null', async () => {
+  const calls = newCalls()
+  const block = { advisor: null, subagents: MEMBER_ON, workflows: MEMBER_OFF }
+  const { multiagent: _dropped, ...legacy } = FORM
+  const persisted = { plugin: { ...OPEN_DETAIL.plugin, 'forms.drafts': { 'agent:agent_a': { form: legacy, base: legacy, baseStamp: DETAIL.version } } } }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, detailWith(block)) }), persisted })
+  await openMultiagent(view)
+  assert.equal(view.valueOf({ label: 'Subagents' }), true)
+  await view.toggle({ label: 'Subagents' })
+  await view.press({ role: 'button', text: 'Review changes' })
+  assert.equal(calls.prepares[0]?.form.multiagent, null)
+  assert.deepEqual(calls.prepares[0]?.base?.multiagent, block)
+  await view.unmount()
+})
+
+test('turning a member with saved agents off says they will be removed', async () => {
+  const calls = newCalls()
+  const block = { advisor: null, subagents: { enabled: true, inlineAgents: true, predefinedCount: 2 }, workflows: MEMBER_ON }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, detailWith(block)) }), persisted: OPEN_DETAIL })
+  await openMultiagent(view)
+  assert.equal(view.find({ text: 'Turning it off removes 2 saved agents.' }), null)
+  await view.toggle({ label: 'Subagents' })
+  assert.equal(view.find({ text: 'Turning it off removes 2 saved agents.' })?.props.tone, 'warning')
+  await view.unmount()
+})
+
+test('turning the last member of an existing block off sends no block, so the agent goes back to one thread', async () => {
+  const calls = newCalls()
+  const block = { advisor: null, subagents: MEMBER_ON, workflows: MEMBER_OFF }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, detailWith(block)) }), persisted: OPEN_DETAIL })
+  await openMultiagent(view)
+  assert.equal(view.valueOf({ label: 'Subagents' }), true)
+  await view.toggle({ label: 'Subagents' })
+  await view.press({ role: 'button', text: 'Review changes' })
+  assert.equal(calls.prepares[0]?.form.multiagent, null)
+  await view.unmount()
+})
+
+test('an advisor without a model blocks the primary button with its reason, and the chosen model is sent', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  await openMultiagent(view)
+  await view.toggle({ label: 'Advisor' })
+  assert.equal(button(view, 'Review changes')?.disabled, true)
+  assert.ok(view.find({ text: 'Choose an advisor model.' }))
+  assert.deepEqual(optionValues(view, 'Advisor model'), ['claude-sonnet-5', 'claude-opus-5'])
+  await view.select({ label: 'Advisor model' }, 'claude-opus-5')
+  assert.equal(button(view, 'Review changes')?.disabled, false)
+  assert.equal(view.find({ text: 'Choose an advisor model.' }), null)
+  await view.press({ role: 'button', text: 'Review changes' })
+  assert.deepEqual(calls.prepares[0]?.form.multiagent, { advisor: 'claude-opus-5', subagents: MEMBER_OFF, workflows: MEMBER_OFF })
+  await view.unmount()
+})
+
+test('a member without inline agents and without saved agents blocks the button, saved agents lift it', async () => {
+  const calls = newCalls()
+  const saved = { advisor: null, subagents: { enabled: true, inlineAgents: true, predefinedCount: 2 }, workflows: MEMBER_OFF }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, detailWith(saved)) }), persisted: OPEN_DETAIL })
+  await openMultiagent(view)
+  assert.ok(view.find({ text: '2 saved agents, edited in YAML' }))
+  // Avec deux agents enregistrés, décocher « inline » est permis.
+  await view.toggle({ label: 'Can define its own agents' })
+  assert.equal(button(view, 'Review changes')?.disabled, false)
+  // Les workflows allumés sans agents enregistrés : leur case « inline » décochée bloque l'envoi.
+  await view.toggle({ label: 'Dynamic workflows' })
+  const boxes = view.findAll({ label: 'Can define its own agents' })
+  assert.equal(boxes.length, 2)
+  await view.toggle(boxes[0]!)
+  assert.equal(button(view, 'Review changes')?.disabled, true)
+  assert.ok(view.find({ text: 'Dynamic workflows need inline agents or at least one saved agent.' }))
+  await view.unmount()
+})
+
+test('the closed Tools section sums up the built-in tools and the MCP servers', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  await openTools(view)
+  await view.toggle({ type: 'Collapsible', text: /Tools \(optional\)/ })
+  assert.equal(view.find({ type: 'Collapsible', text: /Tools \(optional\)/ })?.props.description, 'Built-in tools on, 1 MCP server')
+  assert.equal(view.find({ label: 'Default permission' }), null)
+  await view.unmount()
+})
+
+test('the closed Multiagent section sums up the members that are on', async () => {
+  const calls = newCalls()
+  const block = { advisor: 'claude-opus-5', subagents: MEMBER_ON, workflows: MEMBER_OFF }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, detailWith(block)) }), persisted: OPEN_DETAIL })
+  await openMultiagent(view)
+  await view.toggle({ type: 'Collapsible', text: /Multiagent \(optional\)/ })
+  assert.equal(multiagentSection(view)?.props.description, 'Subagents, Advisor claude-opus-5')
+  await view.unmount()
+})
+
+test('a coordinator agent shows the read-only line and no control', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, detailWith(null, { multiagentCoordinator: true })) }), persisted: OPEN_DETAIL })
+  await openMultiagent(view)
+  assert.ok(view.find({ text: 'Coordinator topology, edited in YAML.' }))
+  for (const label of ['Dynamic workflows', 'Subagents', 'Advisor']) assert.equal(view.find({ label }), null)
   await view.unmount()
 })
 
@@ -814,6 +1022,7 @@ test('a workspace switch forgets the new agent flow and the MCP server form of t
   await view.select({ label: 'Model' }, 'claude-sonnet-5')
   await view.press({ role: 'button', text: 'Create' })
   assert.ok(view.find({ type: 'Callout', text: /Plugin test refusal/ }))
+  await openTools(view)
   await view.press({ role: 'button', text: 'Add MCP server' })
   assert.ok(view.find({ label: 'URL' }))
   // Un autre panneau a basculé : celui-ci revient à l'accueil du nouvel actif.
@@ -823,6 +1032,7 @@ test('a workspace switch forgets the new agent flow and the MCP server form of t
   assert.equal(view.find({ type: 'Callout', text: /Plugin test refusal/ }), null)
   assert.equal(view.find({ label: 'URL' }), null)
   assert.equal(view.valueOf({ label: 'Name' }), '')
+  await openTools(view)
   assert.ok(view.find({ role: 'button', text: 'Add MCP server' }))
   assert.deepEqual(view.errors, [])
   await view.unmount()

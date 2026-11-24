@@ -40,7 +40,8 @@ const AGENT: AgentDetail = {
       policy: 'always_allow',
       tools: BUILTIN_TOOLS.map((name) => ({ name, enabled: name === 'web_search' ? false : null, policy: null }))
     },
-    mcpServers: [{ name: 'github', url: 'https://api.githubcopilot.com/mcp/', policy: 'always_ask' }]
+    mcpServers: [{ name: 'github', url: 'https://api.githubcopilot.com/mcp/', policy: 'always_ask' }],
+    multiagent: null
   },
   model: 'claude-haiku-5-5',
   effort: 'high',
@@ -61,7 +62,8 @@ const AGENT: AgentDetail = {
     }
   ],
   skills: ['skill_triage'],
-  multiagent: 'Multiagent: advisor claude-opus-5'
+  multiagent: 'Multiagent: advisor claude-opus-5',
+  multiagentCoordinator: false
 }
 
 const STORE: MemoryStoreDetail = {
@@ -248,13 +250,17 @@ test('shows the agent detail as a form, with the read-only summaries kept', asyn
   assert.ok(prompt)
   assert.equal(prompt.props.code, 'You are an incident commander.')
   // Outils intégrés : le réglage par défaut est un champ, un outil réglé un par un se dit dans le résumé du pli.
+  const tools = view.find({ type: 'Collapsible', text: /Tools \(optional\)/ })
+  if (tools?.props.open !== true) await view.toggle({ type: 'Collapsible', text: /Tools \(optional\)/ })
   assert.equal(view.valueOf({ label: 'Default permission' }), 'always_allow')
   assert.ok(String(view.find({ type: 'Collapsible', text: /Per-tool settings/ })?.props.description).includes('1 tool customised'))
   // Serveur MCP : son nom, son URL et sa politique dans le groupe ; ses réglages par outil restent en lecture seule.
   assert.equal(view.valueOf({ label: 'Policy of github' }), 'always_ask')
   assert.ok(view.find({ type: 'KeyValue', label: 'github tool settings' })?.text.includes('list_commits'))
   assert.ok(view.find({ text: /skill_triage/ }))
-  assert.ok(view.find({ text: /advisor claude-opus-5/ }))
+  // `multiagent` s'édite dans le formulaire, dans une section repliable ; plus de ligne de résumé en lecture seule.
+  assert.ok(view.find({ type: 'Collapsible', text: /Multiagent \(optional\)/ }))
+  assert.equal(view.find({ text: /advisor claude-opus-5/ }), null)
   assert.equal(view.find({ text: 'Truncated, open in Console for the full text' }), null)
   assert.deepEqual(view.errors, [])
   await view.unmount()

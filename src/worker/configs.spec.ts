@@ -140,6 +140,8 @@ test('summarizes both multiagent shapes on one line', () => {
     }
   })
   expect(coordinator.multiagent).toBe('Coordinator: 2 agents, advisor claude-opus-5-5')
+  expect(coordinator.multiagentCoordinator).toBe(true)
+  expect(coordinator.form.multiagent).toBe(null)
 
   const unified = toAgentDetail({
     ...agent,
@@ -155,6 +157,8 @@ test('summarizes both multiagent shapes on one line', () => {
     }
   })
   expect(unified.multiagent).toBe('Multiagent: advisor claude-opus-5-5, subagents (1 predefined)')
+  expect(unified.multiagentCoordinator).toBe(false)
+  expect(unified.form.multiagent?.advisor).toBe('claude-opus-5-5')
 
   const none = toAgentDetail({
     ...agent,
