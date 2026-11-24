@@ -1,6 +1,7 @@
 // Pilotage de l'éditeur d'Orca depuis le worker : retrouver le dossier de brouillons parmi les
-// workspaces, montrer ce workspace, y ouvrir un fichier. Aucun hôte ne sait ajouter un workspace :
-// c'est Romain qui ajoute le dossier (`orca repo add --path X --kind folder`).
+// workspaces, montrer ce workspace, y ouvrir un fichier. Le dossier de brouillons vit dans un projet de
+// la barre latérale d'Orca (`project.list`), choisi dans la section Drafts de l'accueil : aucun hôte n'ajoute
+// de workspace, le projet doit donc déjà être ouvert dans Orca.
 import type { OrcaWorkerApi } from 'orca/worker'
 
 export type EditorHost = {

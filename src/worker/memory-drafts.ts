@@ -202,7 +202,7 @@ export function createMemoryRename(
     })
     if (renamed.ok && current) {
       // Le brouillon propre garde l'ancien chemin : on l'oublie, pour que ce chemin serve à une autre mémoire.
-      await releaseDrafts(() => current,(ref) => ref.kind === 'memory' && ref.memoryStoreId === input.memoryStoreId && ref.memoryId === input.memoryId, log)
+      await releaseDrafts(() => current, (ref) => ref.kind === 'memory' && ref.memoryStoreId === input.memoryStoreId && ref.memoryId === input.memoryId, log)
     }
     return renamed
   }

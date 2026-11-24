@@ -25,7 +25,7 @@ export type ApiErrorCode =
   | 'expired'
   /** Le formulaire est refusé avant tout appel réseau. */
   | 'invalid'
-  /** Le dossier de brouillons n'est pas un projet d'Orca : il faut l'y ajouter. */
+  /** Aucun projet de brouillons choisi, ou le projet choisi n'est pas ouvert dans Orca : il faut le (re)choisir dans la section Drafts de l'accueil. */
   | 'drafts_missing'
   /** Le projet cible contient déjà des brouillons : le changement de dossier est refusé. */
   | 'drafts_occupied'
