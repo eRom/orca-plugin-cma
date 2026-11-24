@@ -153,6 +153,7 @@ export default defineCheck({
   },
   // La section des workspaces : deux lignes, le badge Active sur la première, ✓ et ✎ sur la seconde.
   workspaces: workspacesScenario(),
+  'workspaces-folded': { ...workspacesScenario(), persisted: { plugin: { workspacesOpen: false } } },
   // La clé de l'actif a disparu du Mac : badge Key missing, détail ouvert d'office sur New API key, onglets absents.
   'key missing': {
     requests: { 'workspace.info': { ...WORKSPACES_INFO, hasKey: false, workspaceId: null } }
