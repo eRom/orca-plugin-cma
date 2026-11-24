@@ -3,69 +3,15 @@
 // le panneau ne voit que des chemins, et ni journal ni message d'erreur ne porte un contenu ou un chemin absolu.
 import type Anthropic from '@anthropic-ai/sdk'
 import type { BetaManagedAgentsMemory, BetaManagedAgentsMemoryListItem } from '@anthropic-ai/sdk/resources/beta/memory-stores/memories'
-import { execFile } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
-import { promisify } from 'node:util'
-import type { ApiResult, Committed, FieldChange, PickedFile, PreparedWrite, UploadItem } from '../protocol'
+import type { ApiResult, Committed, FieldChange, PreparedWrite, UploadItem } from '../protocol'
 import { INVALID_MEMORY_PATH, isSafeMemoryPath, MEMORY_PATH_TAKEN, overlaps } from '../shared/memory-path'
 import { attempt, describeError, type ClientStore } from './client'
 import { abbreviate, summarizeLines } from './diff'
 import type { PendingWrites } from './pending-writes'
 
-const PICK_PROMPT = 'Choose a file to upload as a memory'
-const NOT_MACOS_MESSAGE = 'File picking works on macOS only.'
-const PICK_FAILED_MESSAGE = 'Could not open the file picker.'
 const NOT_TEXT_MESSAGE = 'This file is not text: memories hold UTF-8 text.'
-
-export type FilePickerDeps = {
-  platform: string
-  /** Lance `osascript` avec ces arguments et rend sa sortie standard ; rejette quand il sort en erreur. */
-  run: (args: string[]) => Promise<string>
-}
-
-const execFileAsync = promisify(execFile)
-
-/** L'exécution réelle : `osascript`. Les tests injectent la leur, aucun ne ouvre de vraie boîte de dialogue. */
-export const runOsascript = async (args: string[]): Promise<string> => (await execFileAsync('osascript', args)).stdout
-
-/**
- * Le choix d'un fichier ou d'un dossier (`options.kind`, fichier par défaut). macOS seulement ; annuler la boîte (erreur -128 d'`osascript`) rend `null`.
- * Une seule boîte à la fois : tant qu'elle est ouverte, un nouvel appel rejoint la même promesse (il reçoit la même
- * réponse). Sans cela, un appui après le délai du panneau empilerait une seconde boîte et la réponse de la première serait perdue.
- */
-export function createFilePicker(
-  deps: FilePickerDeps,
-  options: { kind?: 'file' | 'folder'; prompt?: string } = {}
-): () => Promise<ApiResult<PickedFile | null>> {
-  const kind = options.kind ?? 'file'
-  const prompt = options.prompt ?? PICK_PROMPT
-  let inFlight: Promise<ApiResult<PickedFile | null>> | null = null
-  const pickOnce = async (): Promise<ApiResult<PickedFile | null>> => {
-    try {
-      const output = await deps.run(['-e', `POSIX path of (choose ${kind} with prompt "${prompt}")`])
-      const file = output.replace(/\r?\n$/, '')
-      return { ok: true, value: file === '' ? null : { file, name: basename(file) } }
-    } catch (error) {
-      if (error instanceof Error && error.message.includes('-128')) {
-        return { ok: true, value: null }
-      }
-      return { ok: false, code: 'other', error: PICK_FAILED_MESSAGE }
-    }
-  }
-  return async () => {
-    if (deps.platform !== 'darwin') {
-      return { ok: false, code: 'other', error: NOT_MACOS_MESSAGE }
-    }
-    if (inFlight === null) {
-      // `pickOnce` ne rejette jamais : la boîte fermée (choix, annulation ou échec), l'appel suivant en ouvre une autre.
-      inFlight = pickOnce().finally(() => {
-        inFlight = null
-      })
-    }
-    return inFlight
-  }
-}
 
 /** Un refus qui nomme la ligne fautive par le chemin de sa mémoire : `/notes/a.md: <message>`. */
 const named = (path: string, message: string): string => `${path}: ${message}`

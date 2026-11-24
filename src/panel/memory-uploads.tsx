@@ -12,6 +12,7 @@ import { INVALID_MEMORY_PATH, isSafeMemoryPath, MEMORY_PATH_TAKEN, overlaps } fr
 import { clipBytes } from '../shared/text'
 import { ChangesPreview } from './changes'
 import { configDetail, loadConfigs, loadDetail } from './config-state'
+import { FILE_PATH_PLACEHOLDER, PATH_MAX_LENGTH, pickedFromPath, pickerUnavailable } from './picker-fallback'
 import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, run } from './state'
 
 /** Titre de l'avis d'un conflit : le même texte que celui du worker. */
@@ -115,6 +116,8 @@ function removeRow(storeId: string, rowId: string): void {
   clearNotice(storeId)
   setRows(storeId, (rows) => rows.filter((row) => row.id !== rowId))
   update(pickFailures, ({ [rowId]: _dropped, ...rest }) => rest)
+  update(pathDrafts, ({ [rowId]: _dropped, ...rest }) => rest)
+  update(pathOpenRows, ({ [rowId]: _dropped, ...rest }) => rest)
 }
 
 /**
@@ -145,8 +148,18 @@ const isComplete = (row: UploadRow, messages: Record<string, string>): boolean =
 
 /** La ligne dont la boîte de choix de fichier est ouverte : une seule à la fois. */
 const pickingRow = atom<string | null>(null)
-/** Refus du choix d'un fichier, par ligne (hors macOS, boîte impossible à ouvrir) : il ne bloque pas Apply. */
+/** Refus du choix d'un fichier, par ligne (boîte impossible à ouvrir) : il ne bloque pas Apply. */
 const pickFailures = atom<Record<string, string>>({})
+/** Le chemin en cours de saisie par ligne, sans boîte de choix sur l'ordinateur ; absent : le champ montre le fichier de la ligne. */
+const pathDrafts = atom<Record<string, string>>({})
+/** Les lignes dont le champ de chemin est ouvert parce que leur boîte de choix n'a pas pu s'ouvrir (échec autre que « aucune boîte ») : jamais d'impasse. */
+const pathOpenRows = atom<Record<string, boolean>>({})
+
+/** Vrai quand le champ de chemin de la ligne contient autre chose que son fichier : tant que « Use » n'est pas pressé, le fichier de la ligne n'est pas celui qu'on lit. */
+const hasPendingPath = (row: UploadRow): boolean => {
+  const draft = read(pathDrafts)[row.id]
+  return draft !== undefined && draft !== row.file
+}
 
 type Notice = { tone: 'warning' | 'danger'; title: string; message: string }
 
@@ -188,8 +201,15 @@ async function pickFile(storeId: string, rowId: string): Promise<void> {
       update(pickFailures, (failures) => ({ ...failures, [rowId]: PICK_STILL_OPEN }))
       return
     }
+    // Aucune boîte sur cet ordinateur : pas une erreur, le champ de chemin prend la place du bouton sur toutes les lignes.
+    if (!result.ok && result.code === 'picker_unavailable') {
+      set(pickerUnavailable, true)
+      return
+    }
     if (!result.ok) {
+      // L'erreur s'affiche et le champ de chemin de la ligne s'ouvre aussi. Le drapeau de session reste intact : un appui suivant peut réussir.
       update(pickFailures, (failures) => ({ ...failures, [rowId]: clipBytes(result.error, ERROR_TEXT_LIMIT_BYTES).text }))
+      update(pathOpenRows, (open) => ({ ...open, [rowId]: true }))
       return
     }
     // Boîte annulée : rien ne change. Ligne retirée pendant l'attente : `patchRow` ne trouve plus rien.
@@ -197,6 +217,16 @@ async function pickFile(storeId: string, rowId: string): Promise<void> {
   } finally {
     set(pickingRow, null)
   }
+}
+
+/** « Use » d'une ligne : le chemin collé remplit la ligne comme le ferait un fichier choisi dans la boîte. */
+function usePastedFile(storeId: string, rowId: string, value: string): void {
+  const picked = pickedFromPath(value)
+  if (picked === null) return
+  patchRow(storeId, rowId, { file: picked.file, name: picked.name })
+  update(pathDrafts, ({ [rowId]: _dropped, ...rest }) => rest)
+  // Le chemin est pris : l'échec de la boîte, s'il y en avait un, n'a plus rien à dire.
+  update(pickFailures, ({ [rowId]: _dropped, ...rest }) => rest)
 }
 
 /** Relit la liste puis le détail de la banque (le détail est en place une fois la relecture finie). */
@@ -327,6 +357,10 @@ function UploadLine({ storeId, row, message, locked }: LineProps) {
   const picking = read(pickingRow)
   const failure = read(pickFailures)[row.id]
   const replaces = row.memoryId !== null
+  // Le champ de chemin remplace le bouton : sur toutes les lignes quand l'ordinateur n'a pas de boîte, sur la ligne dont la boîte a échoué sinon.
+  const noDialog = read(pickerUnavailable) || read(pathOpenRows)[row.id] === true
+  const pathDraft = read(pathDrafts)[row.id] ?? row.file
+  const pending = hasPendingPath(row)
   // Deux lignes à toute largeur, sans retour à la ligne laissé au hasard : le chemin sur toute la largeur, puis le fichier
   // (qui prend la place libre) et le × collé à la fin. `paddingY` donne au filet entre deux lignes (GroupCard) de l'air des deux côtés.
   return (
@@ -341,18 +375,40 @@ function UploadLine({ storeId, row, message, locked }: LineProps) {
           disabled={locked || replaces}
           onChange={(value) => patchRow(storeId, row.id, { path: value })}
         />
+        {noDialog ? (
+          <Input
+            label={FILE_PATH_PLACEHOLDER}
+            labelHidden
+            placeholder={FILE_PATH_PLACEHOLDER}
+            maxLength={PATH_MAX_LENGTH}
+            value={pathDraft}
+            disabled={locked}
+            onChange={(value) => update(pathDrafts, (drafts) => ({ ...drafts, [row.id]: value }))}
+          />
+        ) : null}
         <Row gap="sm" align="center">
           <Box key="file" grow minWidth={0}>
-            <Button
-              variant="outline"
-              size="sm"
-              icon="file"
-              tooltip={row.file === '' ? CHOOSE_TOOLTIP : clipLabel(row.file)}
-              disabled={locked || picking !== null}
-              onPress={() => run(() => pickFile(storeId, row.id))}
-            >
-              {row.name === '' ? CHOOSE_LABEL : middleClip(row.name, FILE_NAME_LIMIT)}
-            </Button>
+            {noDialog ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={locked || pathDraft.trim() === ''}
+                onPress={() => usePastedFile(storeId, row.id, pathDraft)}
+              >
+                Use
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                icon="file"
+                tooltip={row.file === '' ? CHOOSE_TOOLTIP : clipLabel(row.file)}
+                disabled={locked || picking !== null}
+                onPress={() => run(() => pickFile(storeId, row.id))}
+              >
+                {row.name === '' ? CHOOSE_LABEL : middleClip(row.name, FILE_NAME_LIMIT)}
+              </Button>
+            )}
           </Box>
           <Box key="remove" shrink={false}>
             <IconButton icon="close" label="Remove" variant="ghost" size="sm" disabled={locked} onPress={() => removeRow(storeId, row.id)} />
@@ -365,6 +421,10 @@ function UploadLine({ storeId, row, message, locked }: LineProps) {
         ) : failure !== undefined ? (
           <Text tone="danger" size="xs">
             {failure}
+          </Text>
+        ) : pending ? (
+          <Text muted size="xs">
+            Press Use to take this path.
           </Text>
         ) : replaces ? (
           <Text muted size="xs">
@@ -440,7 +500,8 @@ export function UploadsSection({ store }: { store: MemoryStoreDetail }) {
   const messages = rowMessages(rows, store.memories)
   const ready = rows.filter((row) => isComplete(row, messages)).length
   // Tant qu'une boîte de choix de fichier est ouverte, la ligne qu'elle remplit n'est pas à jour : Apply attend.
-  const blocked = rows.length === 0 || ready !== rows.length || read(pickingRow) !== null
+  // Un champ de chemin qui diffère du fichier de sa ligne attend « Use » : sinon Apply enverrait un autre fichier que celui qu'on lit.
+  const blocked = rows.length === 0 || ready !== rows.length || read(pickingRow) !== null || rows.some(hasPendingPath)
   // Pendant un récapitulatif ou un conflit, `Apply` laisse la place à leurs boutons.
   const showApply = rows.length > 0 && !locked
   return (

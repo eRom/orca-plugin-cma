@@ -10,7 +10,8 @@ import { createDrafts, type Drafts } from './worker/drafts'
 import { LEGACY_DRAFTS_FOLDER, createDraftsLocation, guardDrafts } from './worker/drafts-location'
 import { createEditorHost } from './worker/editor-host'
 import { createMemoryAdapter, createMemoryRename, releaseDeletedDrafts } from './worker/memory-drafts'
-import { createFilePicker, createMemoryUploads, runOsascript } from './worker/memory-uploads'
+import { createMemoryUploads } from './worker/memory-uploads'
+import { createNativePicker, runTool } from './worker/native-picker'
 import { createPendingWrites } from './worker/pending-writes'
 import { createResourceHandlers } from './worker/resources'
 import { createSessionHandlers } from './worker/session-actions'
@@ -253,20 +254,15 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   }
   await currentDrafts()
   // Le choix d'un fichier et l'envoi groupé de mémoires : le contenu des fichiers reste dans le worker.
-  orca.panels.handle('file.pick', createFilePicker({ platform: process.platform, run: runOsascript }))
+  const pickerDeps = { platform: process.platform, run: runTool, log: (message: string) => orca.log(message) }
+  orca.panels.handle('file.pick', createNativePicker(pickerDeps, { kind: 'file', prompt: 'Choose a file to upload as a memory' }))
   // Les skills et les fichiers de l'espace : listes, envois (le contenu est lu ici) et suppressions.
   const resources = createResourceHandlers(store)
   orca.panels.handle(
     'skills.pickFolder',
-    createFilePicker(
-      { platform: process.platform, run: runOsascript },
-      { kind: 'folder', prompt: 'Choose a skill folder (it must contain SKILL.md)' }
-    )
+    createNativePicker(pickerDeps, { kind: 'folder', prompt: 'Choose a skill folder (it must contain SKILL.md)' })
   )
-  orca.panels.handle(
-    'files.pickFile',
-    createFilePicker({ platform: process.platform, run: runOsascript }, { kind: 'file', prompt: 'Choose a file to upload' })
-  )
+  orca.panels.handle('files.pickFile', createNativePicker(pickerDeps, { kind: 'file', prompt: 'Choose a file to upload' }))
   orca.panels.handle('skills.list', resources.listSkills)
   orca.panels.handle('skills.listAnthropic', resources.listAnthropicSkills)
   orca.panels.handle('skills.upload', resources.uploadSkill)

@@ -802,16 +802,28 @@ test('the file dialog waits as long as Orca allows, and a cancelled dialog chang
   await view.unmount()
 })
 
-test('a file picker refusal shows under its row and does not block the others', async () => {
+test('a picker failure shows the error and the path field', async () => {
   const calls = newCalls()
   const host = mockHost({
-    requests: requests(calls, newWorld(), { ...NO_DRAFT, 'file.pick': { ok: false, code: 'other', error: 'File picking works on macOS only.' } })
+    requests: requests(calls, newWorld(), { ...NO_DRAFT, 'file.pick': { ok: false, code: 'other', error: 'Could not open the file picker.' } })
   })
   const view = await mount(panel, { host, persisted: OPEN_STORE })
-  await addRows(view, 1)
+  await addRows(view, 2)
   await view.press(fileButtons(view)[0]!)
-  assert.ok(view.find({ text: 'File picking works on macOS only.' }))
-  assert.equal(fileButtons(view)[0]?.text, 'Choose file…')
+  assert.ok(view.find({ text: 'Could not open the file picker.' }))
+  // Pas d'impasse : la ligne en échec montre son champ de chemin, la seconde garde sa boîte (l'échec n'est pas « aucune boîte »).
+  assert.equal(fileFields(view).length, 1)
+  assert.equal(fileButtons(view).length, 1)
+  await view.type(pathFields(view)[0]!, '/notes/today.md')
+  await view.type(fileFields(view)[0]!, '/home/r/today.md')
+  await view.press(useButtons(view)[0]!)
+  const rows = (view.persisted.plugin['memory.uploads'] as Record<string, { file: string; name: string }[]>).memstore_a
+  assert.deepEqual(rows?.map((row) => [row.file, row.name]), [['/home/r/today.md', 'today.md'], ['', '']])
+  // Le chemin est pris : l'erreur de la boîte s'efface.
+  assert.equal(view.find({ text: 'Could not open the file picker.' }), null)
+  const pickCalls = host.calls.filter((call) => call.method === 'plugin.request' && (call.params as { name?: string }).name === 'file.pick')
+  assert.equal(pickCalls.length, 1)
+  assert.deepEqual(view.errors, [])
   await view.unmount()
 })
 
@@ -1386,5 +1398,74 @@ test('Apply stays disabled while a file dialog is open', async () => {
   await view.press(fileButtons(view)[0]!)
   assert.equal(duringPick, true)
   assert.equal(view.find({ role: 'button', text: 'Apply (1)' })?.disabled, false)
+  await view.unmount()
+})
+
+// --- Aucune boîte de choix sur cet ordinateur : le chemin se colle ---
+
+const PICKER_UNAVAILABLE = { ok: false, code: 'picker_unavailable', error: 'No file dialog is available on this computer.' }
+const fileFields = (view: View) => view.findAll({ label: 'Paste the full path of the file' })
+const useButtons = (view: View) => view.findAll({ role: 'button', text: 'Use' })
+
+test('an unavailable picker shows a path field on a memory upload line and Use fills the line', async () => {
+  const calls = newCalls()
+  const host = mockHost({ requests: requests(calls, newWorld(), { ...NO_DRAFT, 'file.pick': PICKER_UNAVAILABLE }) })
+  const view = await mount(panel, { host, persisted: OPEN_STORE })
+  await addRows(view, 1)
+  await view.type(pathFields(view)[0]!, '/notes/today.md')
+  await view.press(fileButtons(view)[0]!)
+  // Le refus n'est pas une erreur : le champ prend la place du bouton, rien en rouge.
+  assert.equal(fileButtons(view).length, 0)
+  assert.equal(view.find({ text: /No file dialog/ }), null)
+  assert.equal(fileFields(view)[0]?.props.placeholder, 'Paste the full path of the file')
+  assert.equal(useButtons(view)[0]?.disabled, true)
+  await view.type(fileFields(view)[0]!, '  C:\\Users\\romain\\Mes documents\\today.md  ')
+  await view.press(useButtons(view)[0]!)
+  const rows = (view.persisted.plugin['memory.uploads'] as Record<string, unknown[]>).memstore_a
+  assert.deepEqual(rows?.map((row) => ({ path: (row as { path: string }).path, file: (row as { file: string }).file, name: (row as { name: string }).name })), [
+    { path: '/notes/today.md', file: 'C:\\Users\\romain\\Mes documents\\today.md', name: 'today.md' }
+  ])
+  // La ligne est complète : elle part comme une ligne choisie par la boîte.
+  assert.equal(view.find({ role: 'button', text: 'Apply (1)' })?.disabled, false)
+  await view.press({ role: 'button', text: 'Apply (1)' })
+  assert.deepEqual(calls.stages, [{ memoryStoreId: 'memstore_a', items: [{ path: '/notes/today.md', file: 'C:\\Users\\romain\\Mes documents\\today.md', memoryId: null }] }])
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('once a dialog was refused, a second memory line shows the path field without asking for a dialog', async () => {
+  const calls = newCalls()
+  const host = mockHost({ requests: requests(calls, newWorld(), { ...NO_DRAFT, 'file.pick': PICKER_UNAVAILABLE }) })
+  const view = await mount(panel, { host, persisted: OPEN_STORE })
+  await addRows(view, 1)
+  await view.press(fileButtons(view)[0]!)
+  await addRows(view, 1)
+  assert.equal(fileFields(view).length, 2)
+  assert.equal(fileButtons(view).length, 0)
+  const pickCalls = host.calls.filter((call) => call.method === 'plugin.request' && (call.params as { name?: string }).name === 'file.pick')
+  assert.equal(pickCalls.length, 1)
+  await view.unmount()
+})
+
+test('a path typed in the field blocks Apply until Use is pressed', async () => {
+  const calls = newCalls()
+  const host = mockHost({ requests: requests(calls, newWorld(), { ...NO_DRAFT, 'file.pick': PICKER_UNAVAILABLE }) })
+  const view = await mount(panel, { host, persisted: OPEN_STORE })
+  await addRows(view, 1)
+  await view.type(pathFields(view)[0]!, '/notes/today.md')
+  await view.press(fileButtons(view)[0]!)
+  await view.type(fileFields(view)[0]!, '/home/r/today.md')
+  await view.press(useButtons(view)[0]!)
+  assert.equal(view.find({ role: 'button', text: 'Apply (1)' })?.disabled, false)
+  // Le champ change : le fichier de la ligne n'est plus celui qu'on lit, Apply attend « Use ».
+  await view.type(fileFields(view)[0]!, '/home/r/other.md', { replace: true })
+  assert.equal(view.find({ role: 'button', text: 'Apply (1)' })?.disabled, true)
+  assert.ok(view.find({ text: 'Press Use to take this path.' }))
+  await view.press(useButtons(view)[0]!)
+  assert.equal(view.find({ role: 'button', text: 'Apply (1)' })?.disabled, false)
+  assert.equal(view.find({ text: 'Press Use to take this path.' }), null)
+  await view.press({ role: 'button', text: 'Apply (1)' })
+  assert.deepEqual(calls.stages, [{ memoryStoreId: 'memstore_a', items: [{ path: '/notes/today.md', file: '/home/r/other.md', memoryId: null }] }])
+  assert.deepEqual(view.errors, [])
   await view.unmount()
 })
