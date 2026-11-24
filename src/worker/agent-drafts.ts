@@ -174,7 +174,7 @@ export function createAgentAdapter(
       const returnTo = template.ok ? (template.value?.returnTo ?? null) : null
       await drafts().rewrite(created, written, { version: agent.version }, sent, returnTo)
       await drafts().rewrite(NEW_AGENT_REF, NEW_AGENT_YAML, null, sent)
-      const opened = await drafts().open(created)
+      const opened = await drafts().open(created, { keepReturnTo: true })
       if (!opened.ok) {
         log(`agent created, but its file could not be opened: ${opened.error}`)
       }

@@ -3,14 +3,12 @@
 // base de lecture, workspace de retour), et sait donc dire si le fichier a été modifié depuis.
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { ApiErrorCode, ApiResult, DraftInfo, DraftRef, DraftsStatus, PreparedWrite } from '../protocol'
 import { NO_KEY_MESSAGE, failure } from './client'
-import type { EditorHost } from './editor-host'
+import type { DraftsHost } from './editor-host'
 import type { PendingWrites } from './pending-writes'
 
-export const DRAFTS_FOLDER = join(homedir(), '.config', 'agent-claude-managed', 'managed-agents')
 export const REGISTRY_FILE = '.orca-drafts.json'
 
 /** Nom de fichier lisible tiré d'un nom d'objet ; sert aux adaptateurs (agents, mémoires). */
@@ -63,7 +61,13 @@ export type DraftAdapter<R extends DraftRef> = {
 
 export type Drafts = {
   status(): Promise<DraftsStatus>
-  open(ref: DraftRef): Promise<ApiResult<DraftInfo>>
+  /**
+   * Ouvre le brouillon dans l'éditeur. Son workspace de retour est celui qui avait le focus quand il diffère de
+   * celui des brouillons, sinon null : le bouton de retour n'existe que si cette ouverture a changé de workspace.
+   * `keepReturnTo` : une réouverture interne, faite alors que le focus est déjà aux brouillons (le fichier d'un
+   * agent qui vient d'être créé), garde le retour de l'entrée au lieu de l'effacer.
+   */
+  open(ref: DraftRef, options?: { keepReturnTo?: boolean }): Promise<ApiResult<DraftInfo>>
   /** Null quand le brouillon n'a jamais été ouvert ou que son fichier a disparu. */
   state(ref: DraftRef): Promise<ApiResult<DraftInfo | null>>
   prepare(ref: DraftRef): Promise<ApiResult<PreparedWrite>>
@@ -118,10 +122,9 @@ type RegistryEntry = {
   workspace: string
 }
 
+/** Un ancien registre peut encore porter un `lastReturnTo` : il est ignoré à la lecture et disparaît à la prochaine écriture. */
 type Registry = {
   entries: Record<string, RegistryEntry>
-  /** Le dernier workspace de travail vu au focus : le retour d'un brouillon ouvert depuis les brouillons eux-mêmes. */
-  lastReturnTo: ReturnTo | null
 }
 
 const NOT_AVAILABLE: ApiResult<never> = { ok: false, code: 'other', error: 'Not available yet.' }
@@ -177,7 +180,7 @@ function parseRegistry(raw: Buffer): Registry {
   if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
     throw new Error('no entries object')
   }
-  return { entries, lastReturnTo: parsed.lastReturnTo ?? null }
+  return { entries }
 }
 
 async function readOrNull(path: string): Promise<Buffer | null> {
@@ -209,7 +212,7 @@ async function resolvedOrSelf(path: string): Promise<string> {
 
 export function createDrafts(deps: {
   folder: string
-  host: EditorHost
+  host: DraftsHost
   adapters: { agent?: DraftAdapter<AgentRef>; memory?: DraftAdapter<MemoryRef> }
   workspace: DraftsWorkspace
   pending: PendingWrites
@@ -283,7 +286,7 @@ export function createDrafts(deps: {
   async function readRegistry(): Promise<Registry> {
     const raw = await readOrNull(registryPath)
     if (raw === null) {
-      return { entries: {}, lastReturnTo: null }
+      return { entries: {} }
     }
     let registry: Registry
     try {
@@ -293,23 +296,38 @@ export function createDrafts(deps: {
       const aside = `${registryPath}.corrupt-${stamp()}`
       await rename(registryPath, aside)
       log(`drafts registry unreadable (${messageOf(error)}); moved to ${aside}`)
-      return { entries: {}, lastReturnTo: null }
+      return { entries: {} }
     }
     return withWorkspaces(registry, true)
   }
 
   const writeRegistry = (registry: Registry): Promise<void> => writeAtomic(registryPath, JSON.stringify(registry, null, 2))
 
-  /** Le workspace d'Orca dont le dossier est celui des brouillons (comparé par `realpath`), ou null. */
-  async function findWorkspace(): Promise<{ id: string; name: string } | null> {
-    await mkdir(folder, { recursive: true })
+  /**
+   * Le workspace d'Orca qui contient le dossier des brouillons (comparé par `realpath`), le plus proche s'il y en
+   * a plusieurs, ou null. `prefix` est le chemin du dossier relatif au workspace, en `/` ('' si c'est le workspace).
+   */
+  async function findWorkspace(): Promise<{ id: string; name: string; prefix: string } | null> {
+    // Seul le dernier niveau se crée : un projet supprimé du disque ne doit pas renaître sous son ancien chemin.
+    try {
+      await mkdir(folder)
+    } catch (error) {
+      const code = (error as { code?: unknown } | null)?.code
+      if (code === 'ENOENT') return null
+      if (code !== 'EEXIST') throw error
+    }
     const target = await realpath(folder)
+    let best: { id: string; name: string; prefix: string } | null = null
     for (const candidate of await host.folders()) {
-      if ((await resolvedOrSelf(candidate.path)) === target) {
-        return { id: candidate.id, name: candidate.name }
+      const inside = relative(await resolvedOrSelf(candidate.path), target)
+      if (inside !== '' && (inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside))) {
+        continue
+      }
+      if (best === null || inside.length < best.prefix.length) {
+        best = { id: candidate.id, name: candidate.name, prefix: inside.split(sep).join('/') }
       }
     }
-    return null
+    return best
   }
 
   async function describe(ref: DraftRef, file: string, entry: RegistryEntry): Promise<DraftInfo | null> {
@@ -498,7 +516,7 @@ export function createDrafts(deps: {
       }
     },
 
-    open: (ref) =>
+    open: (ref, options) =>
       serial(async () => {
         const adapter = adapterFor(ref)
         if (!adapter) {
@@ -509,14 +527,14 @@ export function createDrafts(deps: {
           if (active === null) {
             return refuse('no_key', NO_KEY_MESSAGE)
           }
-          let workspace: { id: string; name: string } | null
+          let workspace: { id: string; name: string; prefix: string } | null
           try {
             workspace = await findWorkspace()
           } catch (error) {
             return refuse('other', `Orca could not list its workspaces: ${messageOf(error)}`)
           }
           if (!workspace) {
-            return refuse('drafts_missing', 'Add the drafts folder to Orca first.')
+            return refuse('drafts_missing', 'The drafts project is not open in Orca. Choose it again in the Drafts section of the home.')
           }
           const located = await locate(adapter, ref)
           if (!('file' in located)) {
@@ -535,13 +553,11 @@ export function createDrafts(deps: {
           // Un fichier modifié depuis l'écriture du worker est le travail de Romain : on n'y touche pas.
           const keep = known !== undefined && onDisk !== null && sha256(onDisk) !== known.writtenSha256
 
-          // Le workspace de retour : celui qui a le focus ; depuis les brouillons eux-mêmes, le précédent.
+          // Le bouton de retour n'existe que si cette ouverture a changé de workspace : le workspace qui avait le
+          // focus quand il diffère de celui des brouillons, sinon rien (déjà dans les brouillons, ou aucun focus).
           const focus = await host.focused().catch(() => null)
           const away = focus && focus.workspaceId !== workspace.id ? focus : null
-          if (away) {
-            registry.lastReturnTo = away
-          }
-          const returnTo = away ?? known?.returnTo ?? registry.lastReturnTo
+          const returnTo = away ?? (options?.keepReturnTo ? (known?.returnTo ?? null) : null)
 
           let entry: RegistryEntry
           if (keep) {
@@ -567,7 +583,8 @@ export function createDrafts(deps: {
 
           try {
             await host.show(workspace.id)
-            await host.open(workspace.id, file)
+            const inWorkspace = file.split(sep).join('/')
+            await host.open(workspace.id, workspace.prefix === '' ? inWorkspace : `${workspace.prefix}/${inWorkspace}`)
           } catch (error) {
             return refuse('other', `Orca could not open the draft: ${messageOf(error)}`)
           }
@@ -671,7 +688,7 @@ export function createDrafts(deps: {
           if (live.recordedGone) {
             delete registry.entries[file]
           }
-          const entry = await writeDraft(registry, ref, file, live.text, live.base, known?.returnTo ?? registry.lastReturnTo, active)
+          const entry = await writeDraft(registry, ref, file, live.text, live.base, known?.returnTo ?? null, active)
           const info = await describe(ref, file, entry)
           return info ? { ok: true, value: info } : FILE_GONE
         } catch (error) {
@@ -713,7 +730,7 @@ export function createDrafts(deps: {
             throw new Error(claimed.error)
           }
           const { file, known } = claimed
-          const returnTo = known?.returnTo ?? inheritedReturnTo ?? registry.lastReturnTo
+          const returnTo = known?.returnTo ?? inheritedReturnTo ?? null
           const onDisk = await readOrNull(join(folder, file))
           if (onDisk === null || sha256(onDisk) === sha256(sent)) {
             await writeDraft(registry, ref, file, text, base, returnTo, active)

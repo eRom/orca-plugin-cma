@@ -8,7 +8,7 @@ import type { DraftRef, ResourceRef } from '../protocol'
 import { INVALID_MEMORY_PATH, isSafeMemoryPath } from '../shared/memory-path'
 import { CONFLICT_MESSAGE, type ClientStore } from './client'
 import { REGISTRY_FILE, createDrafts, type Drafts } from './drafts'
-import type { EditorHost } from './editor-host'
+import type { DraftsHost } from './editor-host'
 import { fakeWorkspace } from './fake-workspace'
 import { createMemoryAdapter, createMemoryRename, memoryFile, releaseDeletedDrafts } from './memory-drafts'
 import { createPendingWrites } from './pending-writes'
@@ -91,9 +91,9 @@ function cleanup(): void {
   }
 }
 
-function fakeHost(folder: string): { host: EditorHost; calls: string[] } {
+function fakeHost(folder: string): { host: DraftsHost; calls: string[] } {
   const calls: string[] = []
-  const host: EditorHost = {
+  const host: DraftsHost = {
     async folders() {
       return [{ id: 'ws-drafts', name: 'managed-agents', path: realpathSync(folder) }]
     },
@@ -844,5 +844,13 @@ test('a longest accepted segment keeps its recovery copy: written directly from 
   expect(recovered.length).toBe(1)
   expect(names.some((name) => name.endsWith('.tmp'))).toBe(false)
   expect(readFileSync(join(folder, 'memories', 'notes--memstore_1', recovered[0] ?? '')).equals(bytes)).toBe(true)
+  cleanup()
+})
+
+test('memory.rename still renames when no drafts project is chosen', async () => {
+  const { api } = setup()
+  const rename = createMemoryRename(api.store, () => null)
+  expect(await rename(RENAME)).toEqual({ ok: true, value: { id: 'mem_1', updatedAt: '2026-11-22T10:00:01Z' } })
+  expect(api.calls.map((call) => call.method)).toEqual(['memories.update'])
   cleanup()
 })

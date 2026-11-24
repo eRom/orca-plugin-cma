@@ -1,8 +1,8 @@
-import { Stack, type PanelContext } from 'orca'
+import { Stack } from 'orca'
 import { assert, mockHost, mount, test } from 'orca/testing'
-import type { DraftInfo, DraftRef, FieldChange, PreparedWrite } from '../protocol'
+import type { DraftInfo, DraftRef, DraftsProject, FieldChange, PreparedWrite } from '../protocol'
 import { ChangesPreview, describeChange } from './changes'
-import { DRAFTS_POLL_MS, DraftControls, draftKey, loadDraftControls, setDraftsPollInterval, setupDrafts } from './drafts'
+import { DraftControls, DraftsSection, draftKey, loadDraftControls, loadDraftsSection, refreshDraftsStatus } from './drafts'
 import { run } from './state'
 
 const REF: DraftRef = { kind: 'agent', agentId: 'agent_a' }
@@ -46,11 +46,10 @@ function Controls() {
   )
 }
 
-/** What a view hosting the controls does: wire the panel close, then load once. */
+/** What a view hosting the controls does: load once. */
 const harness = {
   default: Controls,
-  setup(ctx: PanelContext) {
-    setupDrafts(ctx)
+  setup() {
     run(() => loadDraftControls(REF))
   }
 }
@@ -129,63 +128,25 @@ test('draftKey is stable and tells drafts apart', () => {
   )
 })
 
-test('a folder that is not a project shows the setup card, and Check again removes it once it is', async () => {
+test('outside the home, a missing project points to the Drafts section', async () => {
   const calls = newCalls()
   const state = { ready: false }
   const view = await mount(harness, { host: mockHost({ requests: requests(calls, {}, state) }) })
-  const card = view.find({ type: 'Callout', text: /Add the drafts folder to Orca/ })
+  const card = view.find({ type: 'Callout', text: /Choose a drafts workspace/ })
   assert.ok(card)
-  assert.equal(card.props.title, 'Add the drafts folder to Orca')
-  assert.match(card.text, /Orca opens drafts from a project folder\. Add this folder once \(Add project, then Folder\), then come back:/)
-  assert.equal(view.find({ type: 'CodeView' })?.props.code, FOLDER)
-  // Without the folder in Orca the draft cannot be opened.
+  assert.equal(card.props.title, 'Choose a drafts workspace')
+  assert.match(card.text, /Pick the Orca workspace that holds your drafts in the Drafts section of the home\./)
+  // The path is no longer shown: the choice is made on the home.
+  assert.equal(view.find({ type: 'CodeView' }), null)
+  assert.equal(view.find({ role: 'button', text: 'Check again' }), null)
+  // Without a project the draft cannot be opened.
   assert.equal(view.find({ role: 'button', text: 'Edit YAML' })?.disabled, true)
-  state.ready = true
-  await view.press({ role: 'button', text: 'Check again' })
-  assert.equal(view.find({ type: 'Callout', text: /Add the drafts folder to Orca/ }), null)
-  assert.equal(view.find({ role: 'button', text: 'Edit YAML' })?.disabled, false)
+  // Nothing rereads the status by itself.
+  const settled = calls.statuses
+  await sleep(60)
+  assert.equal(calls.statuses, settled)
   assert.deepEqual(view.errors, [])
   await view.unmount()
-})
-
-test('the setup card reads the folder again by itself, and stops once the card is gone', async () => {
-  setDraftsPollInterval(20)
-  try {
-    const calls = newCalls()
-    const state = { ready: false }
-    const view = await mount(harness, { host: mockHost({ requests: requests(calls, {}, state) }) })
-    await sleep(100)
-    assert.ok(calls.statuses >= 3, `expected several rereads, got ${calls.statuses}`)
-    state.ready = true
-    await sleep(100)
-    await view.rerender()
-    assert.equal(view.find({ type: 'Callout', text: /Add the drafts folder to Orca/ }), null)
-    // Nothing reads the status any more.
-    const settled = calls.statuses
-    await sleep(120)
-    assert.equal(calls.statuses, settled)
-    await view.unmount()
-  } finally {
-    setDraftsPollInterval(DRAFTS_POLL_MS)
-  }
-})
-
-test('closing the panel stops the reread while the card is still shown', async () => {
-  setDraftsPollInterval(20)
-  try {
-    const calls = newCalls()
-    const view = await mount(harness, { host: mockHost({ requests: requests(calls, {}, { ready: false }) }) })
-    await sleep(80)
-    assert.ok(calls.statuses >= 2)
-    await view.unmount()
-    // One reread may have been in flight at the close; none starts after.
-    await sleep(30)
-    const settled = calls.statuses
-    await sleep(120)
-    assert.equal(calls.statuses, settled)
-  } finally {
-    setDraftsPollInterval(DRAFTS_POLL_MS)
-  }
 })
 
 test('the label button opens the draft, then Apply and Discard are offered', async () => {
@@ -208,7 +169,7 @@ test('a kept draft says when it was saved and offers Apply and Discard', async (
   await view.unmount()
 })
 
-test('a refused open shows a warning, and a missing folder brings the setup card back', async () => {
+test('a refused open shows a warning, and a missing project brings the Drafts section pointer back', async () => {
   const calls = newCalls()
   const state = { ready: true }
   const view = await mount(harness, {
@@ -217,16 +178,16 @@ test('a refused open shows a warning, and a missing folder brings the setup card
         ...(requests(calls, {}, state) as object),
         'draft.open': () => {
           state.ready = false
-          return { ok: false, code: 'drafts_missing', error: 'Add the drafts folder to Orca first.' }
+          return { ok: false, code: 'drafts_missing', error: 'The drafts project is not open in Orca. Choose it again in the Drafts section of the home.' }
         }
       } as never
     })
   })
   await view.press({ role: 'button', text: 'Edit YAML' })
-  const warning = view.find({ type: 'Callout', text: /Add the drafts folder to Orca first\./ })
+  const warning = view.find({ type: 'Callout', text: /The drafts project is not open in Orca\./ })
   assert.ok(warning)
   assert.equal(warning.props.tone, 'warning')
-  assert.ok(view.find({ type: 'Callout', text: /Orca opens drafts from a project folder/ }))
+  assert.ok(view.find({ type: 'Callout', text: /Choose a drafts workspace/ }))
   await view.unmount()
 })
 
@@ -531,4 +492,239 @@ test('Confirm and Cancel call back, and are disabled while busy', async () => {
   assert.equal(busy.find({ role: 'button', text: 'Confirm' })?.disabled, true)
   assert.equal(busy.find({ role: 'button', text: 'Cancel' })?.disabled, true)
   await busy.unmount()
+})
+
+// --- Drafts section of the home ---
+
+const ALPHA: DraftsProject = { id: 'p_alpha', name: 'alpha', path: '/x/alpha', current: false }
+const BETA: DraftsProject = { id: 'p_beta', name: 'beta', path: '/x/beta', current: false }
+
+type ChooseResult = { ok: true; value: { folder: string; ready: boolean } } | { ok: false; code: string; error: string }
+
+/** The fake worker of the section: `current` is the chosen project id, moved by a successful `drafts.choose`. */
+type SectionState = {
+  current: string | null
+  reads: number
+  chosen: string[]
+  choose?: ChooseResult
+  /** Set: the next reads are refused with this text. */
+  failReads?: string
+  projects?: DraftsProject[]
+}
+
+function sectionRequests(state: SectionState) {
+  return {
+    'drafts.projects': () => {
+      state.reads += 1
+      if (state.failReads !== undefined) return { ok: false, code: 'other', error: state.failReads }
+      return { ok: true, value: (state.projects ?? [ALPHA, BETA]).map((project) => ({ ...project, current: project.id === state.current })) }
+    },
+    'drafts.choose': (input: { projectId: string }) => {
+      state.chosen.push(input.projectId)
+      const result = state.choose ?? { ok: true, value: { folder: `/x/${input.projectId}/managed-agents`, ready: true } }
+      if (result.ok) state.current = input.projectId
+      return result
+    }
+  } as never
+}
+
+const sectionHarness = {
+  default: DraftsSection,
+  setup() {
+    run(loadDraftsSection)
+  }
+}
+
+test('without a project, Drafts shows the empty view', async () => {
+  const state = { current: null, reads: 0, chosen: [] }
+  const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
+  assert.equal(view.find({ type: 'Collapsible' })?.props.title, 'Drafts')
+  assert.equal(view.find({ type: 'EmptyState' })?.props.title, 'No drafts workspace')
+  assert.equal(
+    view.find({ type: 'EmptyState' })?.props.description,
+    "Edit agents and memories as files in Orca's editor. They live in a folder workspace you choose."
+  )
+  assert.ok(view.find({ role: 'button', text: 'Add Orca workspace' }))
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
+  await view.unmount()
+})
+
+test('Add Orca workspace lists the projects and Cancel closes them', async () => {
+  const state = { current: null, reads: 0, chosen: [] }
+  const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
+  assert.equal(state.reads, 1)
+  await view.press({ role: 'button', text: 'Add Orca workspace' })
+  assert.ok(view.find({ text: 'Choose a workspace' }))
+  assert.ok(view.find({ type: 'IconButton', label: 'Use alpha' }))
+  assert.ok(view.find({ type: 'IconButton', label: 'Use beta' }))
+  assert.equal(view.findAll({ type: 'IconButton' }).length, 2)
+  assert.equal(view.find({ type: 'EmptyState', text: /No drafts workspace/ }), null)
+  await view.press({ role: 'button', text: 'Cancel' })
+  assert.equal(view.find({ text: 'Choose a workspace' }), null)
+  // Opening the list reads the projects again each time.
+  await view.press({ role: 'button', text: 'Add Orca workspace' })
+  assert.equal(state.reads, 3)
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
+  await view.unmount()
+})
+
+test('choosing a project shows it with Change workspace', async () => {
+  const state = { current: null, reads: 0, chosen: [] as string[] }
+  const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
+  await view.press({ role: 'button', text: 'Add Orca workspace' })
+  await view.press({ type: 'IconButton', label: 'Use alpha' })
+  assert.deepEqual(state.chosen, ['p_alpha'])
+  assert.equal(view.find({ text: 'Choose a workspace' }), null)
+  assert.ok(view.find({ text: 'alpha' }))
+  assert.ok(view.find({ text: '/x/alpha/managed-agents' }))
+  assert.ok(view.find({ type: 'IconButton', label: 'Change workspace' }))
+  // Changing opens the list again, the current project says so and cannot be picked again.
+  await view.press({ type: 'IconButton', label: 'Change workspace' })
+  assert.ok(view.find({ text: 'Current' }))
+  assert.equal(view.find({ type: 'IconButton', label: 'Use alpha' }), null)
+  assert.ok(view.find({ type: 'IconButton', label: 'Use beta' }))
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
+  await view.unmount()
+})
+
+test('a refused move keeps the list and shows why', async () => {
+  const error = 'The folder already holds other files: move them away first.'
+  const state = { current: null, reads: 0, chosen: [] as string[], choose: { ok: false, code: 'drafts_occupied', error } as ChooseResult }
+  const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
+  await view.press({ role: 'button', text: 'Add Orca workspace' })
+  await view.press({ type: 'IconButton', label: 'Use alpha' })
+  const refusal = view.find({ type: 'Callout', text: new RegExp(error) })
+  assert.ok(refusal)
+  assert.equal(refusal.props.tone, 'danger')
+  assert.equal(refusal.props.title, 'Could not change the drafts workspace')
+  // The list stays open, with nothing chosen.
+  assert.ok(view.find({ text: 'Choose a workspace' }))
+  assert.ok(view.find({ type: 'IconButton', label: 'Use beta' }))
+  // Cancel closes the list and the refusal with it.
+  await view.press({ role: 'button', text: 'Cancel' })
+  assert.equal(view.find({ type: 'Callout' }), null)
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
+  await view.unmount()
+})
+
+test('folded, Drafts sums up the project', async () => {
+  const chosen = await mount(sectionHarness, {
+    host: mockHost({ requests: sectionRequests({ current: 'p_alpha', reads: 0, chosen: [] }) }),
+    persisted: { plugin: { draftsSectionOpen: false } }
+  })
+  assert.equal(chosen.find({ type: 'Collapsible' })?.props.description, 'alpha')
+  await chosen.unmount()
+  const unset = await mount(sectionHarness, {
+    host: mockHost({ requests: sectionRequests({ current: null, reads: 0, chosen: [] }) }),
+    persisted: { plugin: { draftsSectionOpen: false } }
+  })
+  assert.equal(unset.find({ type: 'Collapsible' })?.props.description, 'Not set')
+  await unset.unmount()
+})
+
+const NO_ERRORS = [[], [], []]
+const READ_ERROR = 'Orca is not reachable.'
+
+test('a failed projects read shows the error and Retry reads again', async () => {
+  const state: SectionState = { current: null, reads: 0, chosen: [], failReads: READ_ERROR }
+  const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
+  const failure = view.find({ type: 'Callout', text: /Could not list Orca projects/ })
+  assert.ok(failure)
+  assert.equal(failure.props.title, 'Could not list Orca projects')
+  assert.match(failure.text, new RegExp(READ_ERROR))
+  // A failed read is not an empty list: neither the empty view nor its button.
+  assert.equal(view.find({ type: 'EmptyState' }), null)
+  assert.equal(view.find({ role: 'button', text: 'Add Orca workspace' }), null)
+  assert.equal(state.reads, 1)
+  // Retry reads again; still refused: the error stays.
+  await view.press({ role: 'button', text: 'Retry' })
+  assert.equal(state.reads, 2)
+  assert.ok(view.find({ type: 'Callout', text: /Could not list Orca projects/ }))
+  // Then it succeeds: the section is back.
+  delete state.failReads
+  await view.press({ role: 'button', text: 'Retry' })
+  assert.equal(state.reads, 3)
+  assert.equal(view.find({ type: 'Callout', text: /Could not list Orca projects/ }), null)
+  assert.equal(view.find({ type: 'EmptyState' })?.props.title, 'No drafts workspace')
+  assert.deepEqual([view.errors, view.warnings, view.refusals], NO_ERRORS)
+  await view.unmount()
+})
+
+test('a rejected request at setup ends in the same error state, without a notice', async () => {
+  const view = await mount(sectionHarness, { host: mockHost({ requests: {} as never }) })
+  assert.ok(view.find({ type: 'Callout', text: /Could not list Orca projects/ }))
+  assert.equal(view.find({ type: 'EmptyState' }), null)
+  assert.equal(view.find({ type: 'Callout', text: /Something went wrong/ }), null)
+  await view.unmount()
+})
+
+test('a failed read when the list opens shows the error, never the empty-list message', async () => {
+  const state: SectionState = { current: null, reads: 0, chosen: [] }
+  const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
+  state.failReads = READ_ERROR
+  await view.press({ role: 'button', text: 'Add Orca workspace' })
+  assert.ok(view.find({ type: 'Callout', text: /Could not list Orca projects/ }))
+  assert.equal(view.find({ text: /No Orca project yet/ }), null)
+  assert.equal(view.find({ text: 'Choose a workspace' }), null)
+  delete state.failReads
+  await view.press({ role: 'button', text: 'Retry' })
+  // The list was open when the read failed: it comes back with its rows.
+  assert.ok(view.find({ type: 'IconButton', label: 'Use alpha' }))
+  assert.deepEqual([view.errors, view.warnings, view.refusals], NO_ERRORS)
+  await view.unmount()
+})
+
+test('a failed read after choosing shows the error, not the old project', async () => {
+  const state: SectionState = { current: 'p_beta', reads: 0, chosen: [] }
+  const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
+  assert.ok(view.find({ text: 'beta' }))
+  await view.press({ type: 'IconButton', label: 'Change workspace' })
+  state.failReads = READ_ERROR
+  await view.press({ type: 'IconButton', label: 'Use alpha' })
+  assert.deepEqual(state.chosen, ['p_alpha'])
+  assert.ok(view.find({ type: 'Callout', text: /Could not list Orca projects/ }))
+  assert.equal(view.find({ text: 'beta' }), null)
+  assert.equal(view.find({ type: 'IconButton', label: 'Change workspace' }), null)
+  delete state.failReads
+  await view.press({ role: 'button', text: 'Retry' })
+  assert.ok(view.find({ text: 'alpha' }))
+  assert.ok(view.find({ type: 'IconButton', label: 'Change workspace' }))
+  assert.deepEqual([view.errors, view.warnings, view.refusals], NO_ERRORS)
+  await view.unmount()
+})
+
+test('a successful read with no project says so in the list', async () => {
+  const state: SectionState = { current: null, reads: 0, chosen: [], projects: [] }
+  const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
+  await view.press({ role: 'button', text: 'Add Orca workspace' })
+  assert.ok(view.find({ text: 'No Orca project yet. Add one in Orca (Add project), then try again.' }))
+  assert.ok(view.find({ role: 'button', text: 'Cancel' }))
+  assert.equal(view.find({ type: 'Callout' }), null)
+  assert.deepEqual([view.errors, view.warnings, view.refusals], NO_ERRORS)
+  await view.unmount()
+})
+
+test('a current project that is not ready can be chosen again', async () => {
+  const state = { current: 'p_alpha' as string | null, reads: 0, chosen: [] as string[] }
+  const status = { folder: '/x/alpha/managed-agents', ready: false }
+  const requests = { ...(sectionRequests(state) as object), 'drafts.status': () => status } as never
+  const view = await mount(
+    {
+      default: DraftsSection,
+      setup() {
+        run(loadDraftsSection)
+        run(refreshDraftsStatus)
+      }
+    },
+    { host: mockHost({ requests }) }
+  )
+  await view.press({ type: 'IconButton', label: 'Change workspace' })
+  assert.ok(view.find({ text: 'Current' }))
+  // The worker says the drafts folder is not open in Orca: choosing the current project again is the way out.
+  assert.ok(view.find({ type: 'IconButton', label: 'Use alpha' }))
+  await view.press({ type: 'IconButton', label: 'Use alpha' })
+  assert.deepEqual(state.chosen, ['p_alpha'])
+  assert.equal(view.find({ text: 'Choose a workspace' }), null)
+  assert.deepEqual([view.errors, view.warnings, view.refusals], NO_ERRORS)
+  await view.unmount()
 })

@@ -9,7 +9,7 @@ import { NEW_AGENT_YAML, agentToDocument, renderAgentYaml, type AgentDocument } 
 import { agentFile, createAgentAdapter, newAgentFile, releaseArchivedDrafts, sendAgent } from './agent-drafts'
 import type { ClientStore } from './client'
 import { REGISTRY_FILE, createDrafts, type Drafts } from './drafts'
-import type { EditorHost } from './editor-host'
+import type { DraftsHost } from './editor-host'
 import { fakeWorkspace } from './fake-workspace'
 import { createPendingWrites } from './pending-writes'
 
@@ -50,7 +50,7 @@ function cleanup(): void {
 function fakeHost(folder: string) {
   const calls: string[] = []
   const focus = { workspaceId: 'ws-other', name: 'my-project' }
-  const host: EditorHost = {
+  const host: DraftsHost = {
     async folders() {
       return [{ id: 'ws-drafts', name: 'managed-agents', path: realpathSync(folder) }]
     },

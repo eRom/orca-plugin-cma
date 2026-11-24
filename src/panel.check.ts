@@ -255,8 +255,12 @@ export default defineCheck({
       'sessions.list': { ok: true as const, value: [] }
     }
   },
-  // Une mémoire ouverte : le dossier de brouillons n'est pas un projet d'Orca, la carte d'installation s'affiche.
-  'drafts setup card': memoryDraftScenario({ ready: false, info: null }),
+  // Le bloc Drafts de la home : aucun projet retenu (état vide), puis un projet retenu (ligne et ✎).
+  // La liste de choix s'ouvre à l'appui d'un bouton : un scénario ne sait que rendre, elle est jouée par `drafts.test.tsx`.
+  'drafts section empty': draftsSectionScenario(false),
+  'drafts section chosen': draftsSectionScenario(true),
+  // Une mémoire ouverte sans projet de brouillons : le renvoi vers le bloc Drafts de la home s'affiche.
+  'drafts missing project': memoryDraftScenario({ ready: false, info: null }),
   // Un brouillon gardé (fichier sauvegardé, pas appliqué) : « Unapplied draft from HH:MM », Apply et Discard.
   'drafts kept draft': memoryDraftScenario({
     ready: true,
@@ -633,6 +637,25 @@ function configScenario(kind: ConfigKind, detail: ConfigDetail) {
       'sessions.list': { ok: true as const, value: [] },
       'configs.list': { ok: true as const, value: [] },
       'configs.detail': { ok: true as const, value: detail }
+    }
+  }
+}
+
+/** L'accueil avec le bloc Drafts : deux projets d'Orca candidats, le premier retenu ou aucun. */
+function draftsSectionScenario(chosen: boolean) {
+  return {
+    requests: {
+      'workspace.info': WITH_KEY,
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'configs.list': { ok: true as const, value: [] },
+      'sessions.list': { ok: true as const, value: [] },
+      'drafts.projects': {
+        ok: true as const,
+        value: [
+          { id: 'p_alpha', name: 'alpha', path: '/Users/someone/dev/alpha', current: chosen },
+          { id: 'p_beta', name: 'a-project-with-a-rather-long-folder-name', path: '/Users/someone/dev/a-project-with-a-rather-long-folder-name', current: false }
+        ]
+      }
     }
   }
 }

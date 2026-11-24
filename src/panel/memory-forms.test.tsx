@@ -1155,10 +1155,10 @@ test('a refused open from the list shows its notice and the setup card under the
   })
   const view = await mount(panel, { host, persisted: OPEN_STORE })
   // Avant tout refus, la carte d'installation ne s'affiche pas dans la liste.
-  assert.equal(view.find({ type: 'Callout', text: /Add the drafts folder to Orca/ }), null)
+  assert.equal(view.find({ type: 'Callout', text: /Choose a drafts workspace/ }), null)
   await view.press({ role: 'button', label: 'Edit /runbooks/deploy.md in editor' })
   assert.ok(view.find({ type: 'Callout', text: /Could not open the draft/ }))
-  assert.ok(view.find({ type: 'Callout', text: /Add the drafts folder to Orca/ }))
+  assert.ok(view.find({ type: 'Callout', text: /Choose a drafts workspace/ }))
   await view.unmount()
 })
 

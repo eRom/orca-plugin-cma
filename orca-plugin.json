@@ -11,7 +11,7 @@
   "execution": "trusted-worker",
   "pluginApi": 1,
   "main": "dist/worker.mjs",
-  "capabilities": [{ "kind": "secrets:own" }, { "kind": "workspace:read" }, { "kind": "workspace:write" }],
+  "capabilities": [{ "kind": "secrets:own" }, { "kind": "storage:own" }, { "kind": "workspace:read" }, { "kind": "workspace:write" }],
   "contributes": {
     "panels": [
       { "id": "managed", "title": "Claude Managed Agents", "icon": "cloud", "entry": "src/panel.tsx", "ui": "components" }

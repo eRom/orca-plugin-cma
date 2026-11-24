@@ -175,16 +175,20 @@ export function createMemoryAdapter(
  */
 export function createMemoryRename(
   store: ClientStore,
-  drafts: () => Drafts,
+  drafts: () => Drafts | null,
   log: (message: string) => void = () => {}
 ): (input: MemoryRenameInput) => Promise<ApiResult<Saved>> {
   return async (input) => {
     if (!isSafeMemoryPath(input.path)) {
       return { ok: false, code: 'invalid', error: INVALID_MEMORY_PATH }
     }
-    const open = await drafts().find(
-      (ref) => ref.kind === 'memory' && ref.memoryStoreId === input.memoryStoreId && ref.memoryId === input.memoryId
-    )
+    // Sans projet de brouillons retenu, il n'y a aucun brouillon à protéger ni à libérer : le renommage seul se fait.
+    const current = drafts()
+    const open = current
+      ? await current.find(
+          (ref) => ref.kind === 'memory' && ref.memoryStoreId === input.memoryStoreId && ref.memoryId === input.memoryId
+        )
+      : []
     if (open.some((draft) => draft.unapplied)) {
       return { ok: false, code: 'invalid', error: OPEN_DRAFT_MESSAGE }
     }
@@ -196,9 +200,9 @@ export function createMemoryRename(
       })
       return { id: updated.id, updatedAt: updated.updated_at }
     })
-    if (renamed.ok) {
+    if (renamed.ok && current) {
       // Le brouillon propre garde l'ancien chemin : on l'oublie, pour que ce chemin serve à une autre mémoire.
-      await releaseDrafts(drafts, (ref) => ref.kind === 'memory' && ref.memoryStoreId === input.memoryStoreId && ref.memoryId === input.memoryId, log)
+      await releaseDrafts(() => current, (ref) => ref.kind === 'memory' && ref.memoryStoreId === input.memoryStoreId && ref.memoryId === input.memoryId, log)
     }
     return renamed
   }
