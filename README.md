@@ -4,6 +4,8 @@
 
 ![Orca](https://img.shields.io/badge/Orca-%E2%89%A51.4.259-blue) ![macOS](https://img.shields.io/badge/platform-macOS-lightgrey) ![Linux](https://img.shields.io/badge/platform-Linux-lightgrey) ![Windows](https://img.shields.io/badge/platform-Windows-lightgrey) ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
+![The Managed Agents panel listing four sessions, beside a session waiting for approval to open a release pull request.](media/cover.png)
+
 [Install](#install) · [Usage](#usage) · [Drafts](#drafts-edit-as-files) · [Files](#what-it-writes) · [Access](#what-it-can-access) · [Limits](#requirements-and-limits) · [Development](#development)
 
 Claude Managed Agents run on Anthropic's infrastructure: you configure an agent, an environment and its tools, then start sessions that work on their own. This plugin puts that console inside Orca. A **Managed Agents** panel lists your sessions and follows them live, lets you answer their approval requests, and edits every configuration the API exposes. A status bar item tells you how many sessions are running and when one waits for you.
