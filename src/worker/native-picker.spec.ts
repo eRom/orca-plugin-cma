@@ -4,8 +4,11 @@ import { expect, test } from 'bun:test'
 import { win32 } from 'node:path'
 import { createNativePicker, runTool, type RunTool } from './native-picker'
 
-/** PowerShell est lancé par chemin absolu sous le dossier système, jamais par recherche dans le PATH. */
-const POWERSHELL = win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+/**
+ * PowerShell est lancé par chemin absolu sous le dossier système, jamais par recherche dans le PATH. Chaque test
+ * injecte son `env` : sans `SystemRoot` le chemin est celui-ci, quel que soit l'hôte qui exécute la suite.
+ */
+const POWERSHELL = win32.join('C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 
 type Call = { command: string; args: string[]; env?: Record<string, string> }
 type Answer = { stdout?: string; exitCode?: number; stderr?: string } | Error
@@ -32,7 +35,7 @@ const HOME = '/home/r'
 const PROMPT = 'Choose a file to upload'
 const CANCELLED = { ok: true, value: null }
 const UNAVAILABLE = { ok: false, code: 'picker_unavailable', error: 'No file dialog is available on this computer.' }
-const COULD_NOT_OPEN ={ ok: false, code: 'other', error: 'Could not open the file picker.' }
+const COULD_NOT_OPEN = { ok: false, code: 'other', error: 'Could not open the file picker.' }
 
 /** Le script PowerShell décodé de `-EncodedCommand` (UTF-16LE en base64). */
 const decodeScript = (args: string[]): string => Buffer.from(args[args.indexOf('-EncodedCommand') + 1] ?? '', 'base64').toString('utf16le')
@@ -51,7 +54,7 @@ test('darwin uses osascript and maps -128 to cancel', async () => {
 
 test('win32 runs powershell with the prompt in the environment and returns the path', async () => {
   const { run, calls } = fakeRun({ [POWERSHELL]: { stdout: 'C:\\Users\\romain\\Mes documents\\notes.md' } })
-  const pick = createNativePicker({ platform: 'win32', run }, { kind: 'file', prompt: PROMPT })
+  const pick = createNativePicker({ platform: 'win32', run, env: {} }, { kind: 'file', prompt: PROMPT })
   expect(await pick()).toEqual({ ok: true, value: { file: 'C:\\Users\\romain\\Mes documents\\notes.md', name: 'notes.md' } })
   expect(calls.length).toBe(1)
   expect(calls[0]?.env).toEqual({ PICK_PROMPT: PROMPT })
@@ -63,7 +66,7 @@ test('win32 runs powershell with the prompt in the environment and returns the p
 
 test('win32 empty output is a cancel', async () => {
   const { run } = fakeRun({ [POWERSHELL]: { stdout: '' } })
-  expect(await createNativePicker({ platform: 'win32', run }, { kind: 'file', prompt: PROMPT })()).toEqual(CANCELLED)
+  expect(await createNativePicker({ platform: 'win32', run, env: {} }, { kind: 'file', prompt: PROMPT })()).toEqual(CANCELLED)
 })
 
 test('linux uses zenity, exit 1 is a cancel', async () => {
@@ -109,7 +112,7 @@ test('a folder pick passes the folder flag to each tool', async () => {
   expect(mac.calls[0]?.args.join(' ')).toContain('choose folder')
 
   const win = fakeRun({ [POWERSHELL]: { stdout: 'C:\\skills\\teach' } })
-  expect(await createNativePicker({ platform: 'win32', run: win.run }, folder)()).toEqual({ ok: true, value: { file: 'C:\\skills\\teach', name: 'teach' } })
+  expect(await createNativePicker({ platform: 'win32', run: win.run, env: {} }, folder)()).toEqual({ ok: true, value: { file: 'C:\\skills\\teach', name: 'teach' } })
   expect(decodeScript(win.calls[0]?.args ?? [])).toContain('FolderBrowserDialog')
 
   const zenity = fakeRun({ zenity: { stdout: '/home/r/skills/teach\n' } })
@@ -130,7 +133,7 @@ test('a path with spaces, accents and a quote comes back intact', async () => {
   })
   const windows = "C:\\Users\\romain\\Mes documents\\l'été.md"
   const win = fakeRun({ [POWERSHELL]: { stdout: windows } })
-  expect(await createNativePicker({ platform: 'win32', run: win.run }, { kind: 'file', prompt: PROMPT })()).toEqual({
+  expect(await createNativePicker({ platform: 'win32', run: win.run, env: {} }, { kind: 'file', prompt: PROMPT })()).toEqual({
     ok: true,
     value: { file: windows, name: "l'été.md" }
   })
@@ -152,7 +155,7 @@ test('prompt with quotes is passed safely', async () => {
   expect(macArgs.slice(0, -1).some((arg) => arg.includes('quoted'))).toBe(false)
 
   const win = fakeRun({ [POWERSHELL]: { stdout: 'C:\\x.md' } })
-  await createNativePicker({ platform: 'win32', run: win.run }, { kind: 'file', prompt })()
+  await createNativePicker({ platform: 'win32', run: win.run, env: {} }, { kind: 'file', prompt })()
   expect(win.calls[0]?.env).toEqual({ PICK_PROMPT: prompt })
   expect((win.calls[0]?.args ?? []).some((arg) => arg.includes('quoted'))).toBe(false)
   expect(decodeScript(win.calls[0]?.args ?? []).includes('quoted')).toBe(false)
@@ -218,11 +221,11 @@ test('a missing osascript or PowerShell answers picker_unavailable, another spaw
   const noMac = fakeRun({})
   expect(await createNativePicker({ platform: 'darwin', run: noMac.run }, { kind: 'file', prompt: PROMPT })()).toEqual(UNAVAILABLE)
   const noWin = fakeRun({})
-  expect(await createNativePicker({ platform: 'win32', run: noWin.run }, { kind: 'file', prompt: PROMPT })()).toEqual(UNAVAILABLE)
+  expect(await createNativePicker({ platform: 'win32', run: noWin.run, env: {} }, { kind: 'file', prompt: PROMPT })()).toEqual(UNAVAILABLE)
   const brokenMac = fakeRun({ osascript: new Error('spawn osascript EACCES') })
   expect(await createNativePicker({ platform: 'darwin', run: brokenMac.run }, { kind: 'file', prompt: PROMPT })()).toEqual(COULD_NOT_OPEN)
   const brokenWin = fakeRun({ [POWERSHELL]: new Error('spawn powershell.exe EPERM') })
-  expect(await createNativePicker({ platform: 'win32', run: brokenWin.run }, { kind: 'file', prompt: PROMPT })()).toEqual(COULD_NOT_OPEN)
+  expect(await createNativePicker({ platform: 'win32', run: brokenWin.run, env: {} }, { kind: 'file', prompt: PROMPT })()).toEqual(COULD_NOT_OPEN)
 })
 
 test('a tool failure is logged with its exit code and the start of its error output, and never shown to the panel', async () => {
