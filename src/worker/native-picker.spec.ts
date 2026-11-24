@@ -37,8 +37,8 @@ const CANCELLED = { ok: true, value: null }
 const UNAVAILABLE = { ok: false, code: 'picker_unavailable', error: 'No file dialog is available on this computer.' }
 const COULD_NOT_OPEN = { ok: false, code: 'other', error: 'Could not open the file picker.' }
 
-/** Le script PowerShell décodé de `-EncodedCommand` (UTF-16LE en base64). */
-const decodeScript = (args: string[]): string => Buffer.from(args[args.indexOf('-EncodedCommand') + 1] ?? '', 'base64').toString('utf16le')
+/** Le script PowerShell passé à `-Command`. */
+const decodeScript = (args: string[]): string => args[args.indexOf('-Command') + 1] ?? ''
 
 test('darwin uses osascript and maps -128 to cancel', async () => {
   const chosen = fakeRun({ osascript: { stdout: '/Users/test/Documents/notes today.md\n' } })
@@ -62,6 +62,21 @@ test('win32 runs powershell with the prompt in the environment and returns the p
   expect(script.includes('$env:PICK_PROMPT')).toBe(true)
   expect(script.includes('OpenFileDialog')).toBe(true)
   expect(script.includes('UTF8')).toBe(true)
+  // Le script voyage en clair dans `-Command` (pas de base64) et sans guillemet double, que Windows doublerait en ligne de commande.
+  expect(calls[0]?.args.slice(0, 4)).toEqual(['-NoProfile', '-NonInteractive', '-STA', '-Command'])
+  expect(calls[0]?.args.length).toBe(5)
+  expect(script.includes('"')).toBe(false)
+  expect(script.includes('\n')).toBe(false)
+  expect(script.startsWith('[Console]::OutputEncoding')).toBe(true)
+})
+
+test('both PowerShell scripts carry no double quote and no line break', async () => {
+  for (const kind of ['file', 'folder'] as const) {
+    const { run, calls } = fakeRun({ [POWERSHELL]: { stdout: '' } })
+    await createNativePicker({ platform: 'win32', run, env: {} }, { kind, prompt: PROMPT })()
+    const script = decodeScript(calls[0]?.args ?? [])
+    expect({ kind, quote: script.includes('"'), newline: /[\r\n]/.test(script) }).toEqual({ kind, quote: false, newline: false })
+  }
 })
 
 test('win32 empty output is a cancel', async () => {
@@ -182,11 +197,15 @@ test('a dialog tool that fails says it could not open', async () => {
   }
 })
 
-/** Un faux système de fichiers : un dossier connu liste ses entrées, un fichier connu existe, le reste n'existe pas. */
-function fakeFiles(dirs: Record<string, string[]>, files: string[] = []): { listDir: (path: string) => Promise<string[]>; exists: (path: string) => Promise<boolean> } {
+/** Un faux système de fichiers : seuls les chemins donnés sont des sockets, le reste n'existe pas. Les chemins sondés sont notés. */
+function fakeSockets(sockets: string[] = []): { isSocket: (path: string) => Promise<boolean>; probed: string[] } {
+  const probed: string[] = []
   return {
-    listDir: async (path) => dirs[path] ?? [],
-    exists: async (path) => files.includes(path)
+    isSocket: async (path) => {
+      probed.push(path)
+      return sockets.includes(path)
+    },
+    probed
   }
 }
 
@@ -195,37 +214,41 @@ const FILE = { kind: 'file', prompt: PROMPT } as const
 
 test('linux without any display answers picker_unavailable, with or without a tool, and runs no tool', async () => {
   const withTool = fakeRun({ zenity: { exitCode: 1 } })
-  expect(await createNativePicker({ ...LINUX, run: withTool.run, env: {}, ...fakeFiles({}) }, FILE)()).toEqual(UNAVAILABLE)
+  expect(await createNativePicker({ ...LINUX, run: withTool.run, env: {}, ...fakeSockets() }, FILE)()).toEqual(UNAVAILABLE)
   const noTool = fakeRun({})
-  expect(await createNativePicker({ ...LINUX, run: noTool.run, env: {}, ...fakeFiles({}) }, FILE)()).toEqual(UNAVAILABLE)
+  expect(await createNativePicker({ ...LINUX, run: noTool.run, env: {}, ...fakeSockets() }, FILE)()).toEqual(UNAVAILABLE)
   expect([...withTool.calls, ...noTool.calls]).toEqual([])
   const wayland = fakeRun({ zenity: { stdout: '/x.md\n' } })
   expect((await createNativePicker({ ...LINUX, run: wayland.run, env: { WAYLAND_DISPLAY: 'wayland-0' } }, FILE)()).ok).toBe(true)
 })
 
 test('linux without any display socket answers picker_unavailable', async () => {
-  // Des fichiers qui ressemblent à des sockets sans en être, et des dossiers vides : rien à trouver.
-  const files = fakeFiles({ '/run/user/1000': ['wayland-0.lock', 'bus', 'pulse'], '/tmp/.X11-unix': ['X0.lock', 'notes'] })
+  // Une entrée de même nom qui n'est pas un socket (un fichier, un `.lock`) n'en est pas un : `isSocket` dit non, rien à trouver.
+  const files = fakeSockets(['/run/user/1000/wayland-0.lock', '/tmp/.X11-unix/X0.lock', '/tmp/.X11-unix/X10'])
   const { run, calls } = fakeRun({ zenity: { stdout: '/x.md\n' } })
   expect(await createNativePicker({ ...LINUX, run, env: { XDG_RUNTIME_DIR: '/run/user/1000' }, ...files }, FILE)()).toEqual(UNAVAILABLE)
   expect(calls).toEqual([])
+  // Seuls les numéros 0 à 9 sont sondés, jamais un dossier listé.
+  expect(files.probed.length).toBe(20)
+  expect(files.probed[0]).toBe('/run/user/1000/wayland-0')
+  expect(files.probed.includes('/tmp/.X11-unix/X10')).toBe(false)
 })
 
-test('linux discovers an X11 display when DISPLAY is missing', async () => {
-  const files = fakeFiles({ '/tmp/.X11-unix': ['X1', 'X0'] }, ['/home/r/.Xauthority'])
+test('linux discovers the lowest X11 display when DISPLAY is missing, and adds nothing but DISPLAY', async () => {
+  const files = fakeSockets(['/tmp/.X11-unix/X1', '/tmp/.X11-unix/X0'])
   const { run, calls } = fakeRun({ zenity: { stdout: '/home/r/x.md\n' } })
   const answer = await createNativePicker({ ...LINUX, run, env: { PATH: '/usr/bin' }, ...files }, FILE)()
   expect(answer).toEqual({ ok: true, value: { file: '/home/r/x.md', name: 'x.md' } })
-  expect(calls[0]?.env).toEqual({ DISPLAY: ':0', XAUTHORITY: '/home/r/.Xauthority' })
+  // Pas de XAUTHORITY : Xlib retrouve `$HOME/.Xauthority` seul, Orca passe HOME.
+  expect(calls[0]?.env).toEqual({ DISPLAY: ':0' })
 
-  // Sans fichier d'autorisation, seul DISPLAY est ajouté.
-  const bare = fakeRun({ zenity: { stdout: '/x.md\n' } })
-  await createNativePicker({ ...LINUX, run: bare.run, env: {}, ...fakeFiles({ '/tmp/.X11-unix': ['X3', 'X12'] }) }, FILE)()
-  expect(bare.calls[0]?.env).toEqual({ DISPLAY: ':3' })
+  const higher = fakeRun({ zenity: { stdout: '/x.md\n' } })
+  await createNativePicker({ ...LINUX, run: higher.run, env: {}, ...fakeSockets(['/tmp/.X11-unix/X3', '/tmp/.X11-unix/X9']) }, FILE)()
+  expect(higher.calls[0]?.env).toEqual({ DISPLAY: ':3' })
 })
 
 test('linux prefers a wayland socket from XDG_RUNTIME_DIR', async () => {
-  const files = fakeFiles({ '/run/user/1000': ['wayland-1', 'wayland-0', 'wayland-0.lock', 'bus'], '/tmp/.X11-unix': ['X0'] }, ['/home/r/.Xauthority'])
+  const files = fakeSockets(['/run/user/1000/wayland-1', '/run/user/1000/wayland-0', '/tmp/.X11-unix/X0'])
   const { run, calls } = fakeRun({ zenity: { stdout: '/x.md\n' }, kdialog: { stdout: '/x.md\n' } })
   await createNativePicker({ ...LINUX, run, env: { XDG_RUNTIME_DIR: '/run/user/1000' }, ...files }, FILE)()
   expect(calls[0]?.env).toEqual({ WAYLAND_DISPLAY: 'wayland-0' })
@@ -237,19 +260,39 @@ test('linux prefers a wayland socket from XDG_RUNTIME_DIR', async () => {
 })
 
 test('a DISPLAY already in the environment wins and nothing is probed or added', async () => {
-  let probed = 0
-  const files = { listDir: async () => (probed++, ['X7']), exists: async () => (probed++, true) }
+  const files = fakeSockets(['/tmp/.X11-unix/X7'])
   const { run, calls } = fakeRun({ zenity: { stdout: '/x.md\n' } })
   await createNativePicker({ ...LINUX, run, env: DISPLAY, ...files }, FILE)()
   expect(calls[0]?.env).toBe(undefined)
-  expect(probed).toBe(0)
+  expect(files.probed).toEqual([])
 })
 
 test('discovering a display never changes the process environment', async () => {
   const before = JSON.stringify(process.env)
   const { run } = fakeRun({ zenity: { stdout: '/x.md\n' } })
-  await createNativePicker({ ...LINUX, run, env: {}, ...fakeFiles({ '/tmp/.X11-unix': ['X0'] }) }, FILE)()
+  await createNativePicker({ ...LINUX, run, env: {}, ...fakeSockets(['/tmp/.X11-unix/X0']) }, FILE)()
   expect(JSON.stringify(process.env)).toBe(before)
+})
+
+test('a discovered display that cannot be opened answers picker_unavailable', async () => {
+  const files = fakeSockets(['/tmp/.X11-unix/X0'])
+  const stale = ['Gtk-WARNING **: cannot open display: :0', 'kdialog: Could not connect to display :0', 'Failed to open display', 'cannot connect to display :0']
+  for (const stderr of stale) {
+    const logs: string[] = []
+    const { run } = fakeRun({ zenity: { exitCode: 1, stderr } })
+    const answer = await createNativePicker({ ...LINUX, run, env: {}, ...files, log: (message) => logs.push(message) }, FILE)()
+    expect({ stderr, answer }).toEqual({ stderr, answer: UNAVAILABLE })
+    expect(logs.length).toBe(1)
+    expect(logs[0]).toContain('discovered display')
+  }
+  // Un vrai refus d'ouvrir sur un affichage donné par l'environnement reste une annulation : seul l'affichage découvert est suspect.
+  const given = fakeRun({ zenity: { exitCode: 1, stderr: 'cannot open display' } })
+  expect(await createNativePicker({ ...LINUX, run: given.run, env: DISPLAY }, FILE)()).toEqual(CANCELLED)
+  // Une annulation sans ce message, sur l'affichage découvert, reste une annulation.
+  const cancelled = fakeRun({ zenity: { exitCode: 1, stderr: '' } })
+  expect(await createNativePicker({ ...LINUX, run: cancelled.run, env: {}, ...files }, FILE)()).toEqual(CANCELLED)
+  const quiet = fakeRun({ zenity: { exitCode: 1 } })
+  expect(await createNativePicker({ ...LINUX, run: quiet.run, env: {}, ...files }, FILE)()).toEqual(CANCELLED)
 })
 
 test('a prompt starting with a dash is not read as an option', async () => {

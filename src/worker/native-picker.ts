@@ -2,7 +2,7 @@
 // PowerShell (System.Windows.Forms) sous Windows, `zenity` puis `kdialog` sous Linux. Aucun autre processus n'est lancé.
 // Sans outil de dialogue, la réponse est `picker_unavailable` : le panneau propose alors de coller un chemin.
 import { execFile } from 'node:child_process'
-import { access, readdir } from 'node:fs/promises'
+import { stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { posix, win32 } from 'node:path'
 import type { ApiResult, PickedFile } from '../protocol'
@@ -24,10 +24,8 @@ export type NativePickerDeps = {
   env?: NodeJS.ProcessEnv
   /** Le dossier personnel, où s'ouvrent les boîtes Linux ; celui de l'utilisateur par défaut. */
   home?: string
-  /** Les entrées d'un dossier, `[]` s'il n'existe pas ; sert à chercher l'affichage Linux (par défaut le vrai système de fichiers). */
-  listDir?: (path: string) => Promise<string[]>
-  /** Vrai si le chemin existe ; sert à trouver `~/.Xauthority` (par défaut le vrai système de fichiers). */
-  exists?: (path: string) => Promise<boolean>
+  /** Vrai si le chemin existe et est un socket ; sert à chercher l'affichage Linux (par défaut le vrai système de fichiers). */
+  isSocket?: (path: string) => Promise<boolean>
   /** Le journal du worker : l'échec d'un outil y est écrit (code de sortie, début de sa sortie d'erreur), jamais montré au panneau. */
   log?: (message: string) => void
 }
@@ -39,7 +37,10 @@ const CANCELLED: ApiResult<null> = { ok: true, value: null }
 /** La variable d'environnement qui porte l'invite vers PowerShell : elle n'est jamais écrite dans le script. */
 const PROMPT_VARIABLE = 'PICK_PROMPT'
 
-/** Le script PowerShell, en guillemets simples seulement ; l'invite y arrive par `$env:PICK_PROMPT`. */
+/**
+ * Le script PowerShell, en guillemets simples seulement (aucun guillemet double : il voyage tel quel dans `-Command`) ;
+ * l'invite y arrive par `$env:PICK_PROMPT`. Les lignes sont jointes par `; `.
+ */
 const WINDOWS_SCRIPTS = {
   file: [
     '[Console]::OutputEncoding = [Text.Encoding]::UTF8',
@@ -86,46 +87,40 @@ function linuxTools(kind: 'file' | 'folder', prompt: string, start: string): { c
 const windowsPowerShell = (env: NodeJS.ProcessEnv): string =>
   win32.join(env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 
-/** Le plus petit numéro parmi les entrées qui s'appellent `<prefix><n>` (rien d'autre : pas de `.lock`), ou null. */
-function lowestSocket(names: string[], pattern: RegExp): string | null {
-  let best: { name: string; n: number } | null = null
-  for (const name of names) {
-    const match = pattern.exec(name)
-    const n = match?.[1] === undefined ? NaN : Number(match[1])
-    if (!Number.isNaN(n) && (best === null || n < best.n)) {
-      best = { name, n }
+/** Combien de numéros d'affichage on essaie (`wayland-0` à `wayland-9`, `X0` à `X9`) : jamais un dossier n'est listé. */
+const DISPLAY_NUMBERS = 10
+
+/** Le premier numéro (le plus bas) dont `<dossier>/<prefix><n>` est un socket, ou null. */
+async function lowestSocket(isSocket: (path: string) => Promise<boolean>, folder: string, prefix: string): Promise<number | null> {
+  for (let n = 0; n < DISPLAY_NUMBERS; n++) {
+    if (await isSocket(posix.join(folder, `${prefix}${n}`))) {
+      return n
     }
   }
-  return best?.name ?? null
+  return null
 }
 
 /**
- * L'affichage de la session quand le worker n'en reçoit pas (Orca ne lui donne ni DISPLAY, ni WAYLAND_DISPLAY, ni
- * XAUTHORITY) : d'abord un socket Wayland `wayland-<n>` dans `XDG_RUNTIME_DIR`, sinon le plus petit socket X11 de
- * `/tmp/.X11-unix` (`DISPLAY=:<n>`, avec `~/.Xauthority` s'il existe). Rend les seules variables à ajouter, vides si rien ne se trouve.
+ * L'affichage de la session quand le worker n'en reçoit pas (Orca ne lui donne ni DISPLAY ni WAYLAND_DISPLAY) :
+ * d'abord un socket Wayland `wayland-<n>` dans `XDG_RUNTIME_DIR`, sinon le plus petit socket X11 `/tmp/.X11-unix/X<n>`
+ * (`DISPLAY=:<n>` ; Xlib retrouve `~/.Xauthority` par `HOME`). Rend les seules variables à ajouter, vides si rien ne se trouve.
  */
-async function discoverDisplay(
-  env: NodeJS.ProcessEnv,
-  home: string,
-  listDir: (path: string) => Promise<string[]>,
-  exists: (path: string) => Promise<boolean>
-): Promise<Record<string, string>> {
+async function discoverDisplay(env: NodeJS.ProcessEnv, isSocket: (path: string) => Promise<boolean>): Promise<Record<string, string>> {
   if (env.XDG_RUNTIME_DIR) {
-    const wayland = lowestSocket(await listDir(env.XDG_RUNTIME_DIR), /^wayland-(\d+)$/)
+    const wayland = await lowestSocket(isSocket, env.XDG_RUNTIME_DIR, 'wayland-')
     if (wayland !== null) {
-      return { WAYLAND_DISPLAY: wayland }
+      return { WAYLAND_DISPLAY: `wayland-${wayland}` }
     }
   }
-  const x11 = lowestSocket(await listDir('/tmp/.X11-unix'), /^X(\d+)$/)
-  if (x11 === null) {
-    return {}
-  }
-  const authority = posix.join(home, '.Xauthority')
-  return { DISPLAY: `:${x11.slice(1)}`, ...((await exists(authority)) && { XAUTHORITY: authority }) }
+  const x11 = await lowestSocket(isSocket, '/tmp/.X11-unix', 'X')
+  return x11 === null ? {} : { DISPLAY: `:${x11}` }
 }
 
-const listDirectory = (path: string): Promise<string[]> => readdir(path).catch(() => [])
-const pathExists = (path: string): Promise<boolean> => access(path).then(() => true, () => false)
+const socketExists = (path: string): Promise<boolean> =>
+  stat(path).then((entry) => entry.isSocket(), () => false)
+
+/** Ce que dit un outil qui n'arrive pas à se connecter à l'affichage découvert : sortie 1 comme une annulation, mais ce n'en est pas une. */
+const DISPLAY_REFUSED = /cannot open display|failed to open display|could not connect to display|cannot connect to display/i
 
 /** Le début de la sortie d'erreur d'un outil, pour le journal seulement. */
 const ERROR_OUTPUT_LOG_LIMIT = 200
@@ -163,9 +158,9 @@ export function createNativePicker(
   }
 
   const pickOnWindows = async (): Promise<ApiResult<PickedFile | null>> => {
-    const script = Buffer.from(WINDOWS_SCRIPTS[kind].join('\n'), 'utf16le').toString('base64')
+    const script = WINDOWS_SCRIPTS[kind].join('; ')
     const command = windowsPowerShell(env)
-    const output = await run(command, ['-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', script], { env: { [PROMPT_VARIABLE]: prompt } })
+    const output = await run(command, ['-NoProfile', '-NonInteractive', '-STA', '-Command', script], { env: { [PROMPT_VARIABLE]: prompt } })
     // Annuler la boîte : rien n'est écrit, sortie 0.
     return output.exitCode === 0 ? chosen(platform, output.stdout) : failed('powershell', output)
   }
@@ -174,7 +169,7 @@ export function createNativePicker(
     const home = deps.home ?? homedir()
     // Orca ne donne pas DISPLAY au worker : on cherche l'affichage de la session, pour le seul outil lancé.
     const hasDisplay = Boolean(env.DISPLAY || env.WAYLAND_DISPLAY)
-    const discovered = hasDisplay ? {} : await discoverDisplay(env, home, deps.listDir ?? listDirectory, deps.exists ?? pathExists)
+    const discovered = hasDisplay ? {} : await discoverDisplay(env, deps.isSocket ?? socketExists)
     // Sans affichage aucune boîte ne peut s'ouvrir, et zenity sortirait en 1 comme pour une annulation : le panneau passe à la saisie du chemin.
     if (!hasDisplay && Object.keys(discovered).length === 0) {
       return UNAVAILABLE
@@ -194,7 +189,15 @@ export function createNativePicker(
       if (output.exitCode === 0) {
         return chosen(platform, output.stdout)
       }
-      return output.exitCode === 1 ? CANCELLED : failed(command, output)
+      if (output.exitCode !== 1) {
+        return failed(command, output)
+      }
+      // Sortie 1 : l'annulation, sauf si l'affichage découvert n'a pas pu être ouvert (socket resté d'une session morte).
+      if (!hasDisplay && DISPLAY_REFUSED.test(output.stderr ?? '')) {
+        log(`file picker: ${command} could not open the discovered display: ${(output.stderr ?? '').trim().slice(0, ERROR_OUTPUT_LOG_LIMIT)}`)
+        return UNAVAILABLE
+      }
+      return CANCELLED
     }
     return UNAVAILABLE
   }
