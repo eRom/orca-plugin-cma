@@ -99,4 +99,4 @@ Claude Managed Agents is a community plugin, not made or endorsed by Stably or b
 
 ## License
 
-MIT
+[MIT](LICENSE)
