@@ -17,12 +17,33 @@ export const resourceErrors = atom<{ skills: string | null; files: string | null
 /** Les deux cartes de l'onglet. */
 export type CardKey = 'skills' | 'files'
 
-/** L'avis d'une carte : il reste jusqu'à la prochaine action sur cette carte. `message` est le corps d'un refus. */
+/** L'avis d'une carte : il s'efface seul au bout de sa durée de vie, ou à la prochaine action sur la carte. `message` est le corps d'un refus. */
 export type CardNotice = { tone: 'success' | 'warning' | 'danger'; title: string; message: string | null }
 
 type PerCard<T> = Record<CardKey, T>
 
 export const resourceNotices = atom<PerCard<CardNotice | null>>('resources.notices', { skills: null, files: null })
+
+/** Durée d'affichage d'un avis : 3 s pour un succès ; 5 s pour une erreur ou un avertissement, qui demandent une lecture. */
+export const NOTICE_LIFETIME_MS: Record<CardNotice['tone'], number> = { success: 3000, warning: 5000, danger: 5000 }
+
+const noticeTimers: PerCard<ReturnType<typeof setTimeout> | null> = { skills: null, files: null }
+
+/**
+ * Pose (ou retire, avec `null`) l'avis d'une carte et programme son effacement. Le minuteur précédent de la carte est
+ * annulé ; à l'échéance, l'avis n'est retiré que s'il est encore celui posé ici, jamais un avis plus récent.
+ */
+export function showNotice(card: CardKey, notice: CardNotice | null, lifetimes = NOTICE_LIFETIME_MS): void {
+  const previous = noticeTimers[card]
+  if (previous !== null) clearTimeout(previous)
+  noticeTimers[card] = null
+  setCardValue(resourceNotices, card, notice)
+  if (notice === null) return
+  noticeTimers[card] = setTimeout(() => {
+    noticeTimers[card] = null
+    if (read(resourceNotices)[card] === notice) setCardValue(resourceNotices, card, null)
+  }, lifetimes[notice.tone])
+}
 /** Le libellé de l'envoi en route de chaque carte (`null` au repos) : il grise les boutons d'envoi et nourrit le spinner. */
 export const resourceUploading = atom<PerCard<string | null>>('resources.uploading', { skills: null, files: null })
 /** Vrai tant que la boîte de choix d'une carte est ouverte : le worker n'en garde qu'une, un second choix serait le même. */
@@ -61,7 +82,8 @@ export function resetResources(): void {
   set(skillRows, null)
   set(fileRows, null)
   set(resourceErrors, { skills: null, files: null })
-  set(resourceNotices, { skills: null, files: null })
+  showNotice('skills', null)
+  showNotice('files', null)
   set(resourceUploading, { skills: null, files: null })
   set(resourcePicking, { skills: false, files: false })
   const pending = read(pendingConfirmation)

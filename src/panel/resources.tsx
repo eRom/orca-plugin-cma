@@ -25,6 +25,7 @@ import {
   resourcePicking,
   resourceUploading,
   setCardValue,
+  showNotice,
   skillRows,
   type CardKey,
   type CardNotice
@@ -56,7 +57,7 @@ const isHostTimeout = (error: unknown): boolean => error instanceof Error && (er
 // --- Actions ---
 
 function setNotice(card: CardKey, notice: CardNotice | null): void {
-  setCardValue(resourceNotices, card, notice)
+  showNotice(card, notice)
 }
 
 const refusal = (title: string, message: string): CardNotice => ({ tone: 'danger', title, message })

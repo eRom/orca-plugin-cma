@@ -4,6 +4,7 @@ import { RESOURCE_UPLOAD_WAIT_MS, UPLOAD_UNCONFIRMED, type FileRow, type Session
 import * as panel from '../panel'
 import { notice } from './state'
 import { PICK_TIMEOUT_MS } from './memory-uploads'
+import { resourceNotices, showNotice } from './resource-state'
 
 const FIRST: WorkspaceInfo = {
   hasKey: true,
@@ -657,6 +658,47 @@ test('a refusal before the API shows the worker text', async () => {
   await view.press(addSkill)
   assert.ok(callout(view, /Could not upload/))
   assert.ok(view.find({ type: 'Text', text: 'This folder has no SKILL.md at its root.' }))
+  await view.unmount()
+})
+
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+test('a success notice goes away after 3 s, an error after 5 s', async () => {
+  const host = mockHost({
+    requests: requests({
+      'skills.pickFolder': { ok: true, value: SKILL_FOLDER },
+      'skills.upload': { ok: true, value: skill({ name: 'plugin-test-skill' }) },
+      'files.pickFile': { ok: true, value: FILE_PICKED },
+      'files.upload': { ok: false, code: 'other', error: 'API error 500' }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN })
+  await view.press(addSkill)
+  await view.press(addFile)
+  assert.ok(callout(view, /Uploaded plugin-test-skill\./))
+  assert.ok(callout(view, /Could not upload/))
+  await wait(3300)
+  await view.rerender()
+  assert.equal(callout(view, /Uploaded plugin-test-skill\./), null)
+  assert.ok(callout(view, /Could not upload/))
+  await wait(2000)
+  await view.rerender()
+  assert.equal(callout(view, /Could not upload/), null)
+  await view.unmount()
+})
+
+test('the timer of an older notice never clears a newer one', async () => {
+  const view = await mount(panel, { host: mockHost({ requests: requests() }), persisted: OPEN })
+  const lifetimes = { success: 40, warning: 40, danger: 40 }
+  showNotice('skills', { tone: 'success', title: 'First.', message: null }, lifetimes)
+  await wait(25)
+  showNotice('skills', { tone: 'success', title: 'Second.', message: null }, { ...lifetimes, success: 200 })
+  await wait(40)
+  await view.rerender()
+  assert.equal(read(resourceNotices).skills?.title, 'Second.')
+  assert.ok(callout(view, /Second\./))
+  await wait(200)
+  assert.equal(read(resourceNotices).skills, null)
   await view.unmount()
 })
 
