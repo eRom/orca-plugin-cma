@@ -27,6 +27,8 @@ export type ApiErrorCode =
   | 'invalid'
   /** Le dossier de brouillons n'est pas un projet d'Orca : il faut l'y ajouter. */
   | 'drafts_missing'
+  /** Le projet cible contient déjà des brouillons : le changement de dossier est refusé. */
+  | 'drafts_occupied'
   /** Le fichier de brouillon n'a pas changé depuis l'écriture du worker : rien à envoyer. */
   | 'nothing_to_apply'
   | 'other'
@@ -414,7 +416,11 @@ export const FILE_MAX_BYTES = 100_000_000
 /** Lu par le worker (envoi coupé sans réponse) et par le panneau (délai de l'hôte dépassé) : il vit ici, pas dans `src/worker`. */
 export const UPLOAD_UNCONFIRMED = 'The upload may have gone through: check the list before trying again.'
 
+/** `folder` vaut `''` tant qu'aucun projet n'est retenu. */
 export type DraftsStatus = { folder: string; ready: boolean }
+
+/** Un projet de la barre latérale d'Orca, proposé pour héberger le dossier de brouillons. */
+export type DraftsProject = { id: string; name: string; path: string; current: boolean }
 
 export type DraftInfo = {
   ref: DraftRef
