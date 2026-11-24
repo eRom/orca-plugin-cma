@@ -113,6 +113,65 @@ const AGENT_READS = {
   ...NO_DRAFTS
 }
 
+/** Vitrine : un seul workspace Anthropic, au nom d'équipe neutre, et un projet de brouillons prêt. */
+const SHOWCASE_INFO = {
+  hasKey: true,
+  keyRejected: false,
+  workspaceId: 'wrkspc_01Hn4rPlatformTeam',
+  workspaces: [{ localId: 'ws_1', name: 'Platform team', workspaceId: 'wrkspc_01Hn4rPlatformTeam', active: true }]
+}
+
+const SHOWCASE_SESSIONS: SessionRow[] = [
+  {
+    id: 'sesn_01release',
+    title: 'Prepare the 2.4 release',
+    agentId: 'agent_01release',
+    agentName: 'Release captain',
+    status: 'idle',
+    badge: 'needs_approval',
+    cost: { minor: '42', currency: 'USD' },
+    budget: { minor: '100', currency: 'USD' },
+    updatedAt: '2026-11-24T15:42:00Z',
+    pendingApprovals: 1
+  },
+  {
+    id: 'sesn_01docs',
+    title: 'Update the API reference',
+    agentId: 'agent_01docs',
+    agentName: 'Docs writer',
+    status: 'running',
+    badge: 'running',
+    cost: { minor: '18', currency: 'USD' },
+    budget: null,
+    updatedAt: '2026-11-24T15:40:00Z',
+    pendingApprovals: 0
+  },
+  {
+    id: 'sesn_01deps',
+    title: 'Weekly dependency audit',
+    agentId: 'agent_01deps',
+    agentName: 'Dependency auditor',
+    status: 'idle',
+    badge: 'idle',
+    cost: { minor: '9', currency: 'USD' },
+    budget: null,
+    updatedAt: '2026-11-24T09:12:00Z',
+    pendingApprovals: 0
+  },
+  {
+    id: 'sesn_01triage',
+    title: 'Triage new issues',
+    agentId: 'agent_01triage',
+    agentName: 'Issue triager',
+    status: 'terminated',
+    badge: 'terminated',
+    cost: { minor: '27', currency: 'USD' },
+    budget: null,
+    updatedAt: '2026-11-23T18:05:00Z',
+    pendingApprovals: 0
+  }
+]
+
 export default defineCheck({
   'no key': {
     requests: { 'workspace.info': { hasKey: false, keyRejected: false, workspaceId: null, workspaces: [] } }
@@ -344,8 +403,199 @@ export default defineCheck({
       text('a1', 'agent_message', 'Starting with the parser module.'),
       { id: 's1', at: null, kind: 'status', text: 'Session stopped: budget reached.', tone: 'warning' }
     ]
+  }),
+  // Vitrine : les écrans des images de la fiche du plugin (media/shoot.sh), sur des données neutres et réalistes.
+  'showcase sessions': showcase({
+    persisted: { plugin: { workspacesOpen: false, draftsSectionOpen: false } },
+    requests: {
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'configs.list': { ok: true as const, value: [] },
+      'sessions.list': { ok: true as const, value: SHOWCASE_SESSIONS }
+    }
+  }),
+  'showcase approval': showcase(
+    sessionScenario({
+      row: SHOWCASE_SESSIONS[0]!,
+      rows: [
+        text('u1', 'user_message', 'Prepare the 2.4 release of **acme/web-app**: a changelog from the merged pull requests, then open the release pull request.'),
+        text(
+          'a1',
+          'agent_message',
+          "I'll gather what was merged since 2.3.\n\n1. List the merged pull requests\n2. Write the changelog\n3. Open the release pull request"
+        ),
+        tool('t1', 'list_pull_requests', 'running', {
+          input: '{\n  "owner": "acme",\n  "repo": "web-app",\n  "state": "closed",\n  "base": "main"\n}',
+          result: '[{"number":412,"title":"Faster cold start"},{"number":409,"title":"Dark mode for settings"}]',
+          state: 'done'
+        }),
+        text('a2', 'agent_message', '14 pull requests merged since 2.3. The changelog is ready, opening the release pull request.'),
+        tool('t2', 'create_pull_request', 'awaiting_approval', {
+          input: '{\n  "owner": "acme",\n  "repo": "web-app",\n  "title": "Release 2.4.0",\n  "head": "release/2.4.0",\n  "base": "main"\n}',
+          needsConfirmation: true
+        })
+      ]
+    })
+  ),
+  'showcase agents': showcase({
+    persisted: { plugin: { 'home.tab': 'agent', workspacesOpen: false, draftsSectionOpen: false } },
+    requests: {
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'sessions.list': { ok: true as const, value: SHOWCASE_SESSIONS },
+      'configs.list': {
+        ok: true as const,
+        value: [
+          { kind: 'agent', id: 'agent_01release', name: 'Release captain', summary: 'v6 · claude-sonnet-5-5' },
+          { kind: 'agent', id: 'agent_01docs', name: 'Docs writer', summary: 'v3 · claude-haiku-5-5' },
+          { kind: 'agent', id: 'agent_01deps', name: 'Dependency auditor', summary: 'v2 · claude-haiku-5-5' },
+          { kind: 'agent', id: 'agent_01triage', name: 'Issue triager', summary: 'v4 · claude-sonnet-5-5' }
+        ] satisfies ConfigRow[]
+      }
+    }
+  }),
+  'showcase agent form': showcase(showcaseAgentScenario()),
+  'showcase conflict': showcase(showcaseEnvironmentScenario()),
+  'showcase resources': showcase({
+    persisted: { plugin: { 'home.tab': 'resources', workspacesOpen: false, draftsSectionOpen: false } },
+    requests: {
+      'sessions.visibility': { bootId: 'boot-1', watching: null },
+      'configs.list': { ok: true as const, value: [] },
+      'sessions.list': { ok: true as const, value: SHOWCASE_SESSIONS },
+      'skills.list': {
+        ok: true as const,
+        value: [
+          { id: 'skill_01Hn4rReleaseNotes', name: 'release-notes', latestVersionId: '1763971200000001', updatedAt: '2026-11-21T10:00:00Z' },
+          { id: 'skill_01Hn4rChangelog', name: 'changelog-style', latestVersionId: '1763971200000002', updatedAt: '2026-11-20T10:00:00Z' },
+          { id: 'skill_01Hn4rApiReference', name: 'api-reference', latestVersionId: '1763971200000003', updatedAt: '2026-11-18T10:00:00Z' }
+        ] satisfies SkillRow[]
+      },
+      'files.list': {
+        ok: true as const,
+        value: [
+          { id: 'file_01Hn4rChecklist', name: 'release-checklist.md', sizeBytes: 3_150, createdAt: '2026-11-20T08:00:00Z', sessionId: null },
+          { id: 'file_01Hn4rSchema', name: 'api-schema.json', sizeBytes: 248_000, createdAt: '2026-11-21T08:00:00Z', sessionId: null },
+          { id: 'file_01Hn4rCoverage', name: 'coverage-report.html', sizeBytes: 1_420_000, createdAt: '2026-11-22T08:00:00Z', sessionId: 'sesn_01release' }
+        ] satisfies FileRow[]
+      }
+    }
   })
 })
+
+/** Pose le workspace et le projet de brouillons de la vitrine sur un scénario. */
+function showcase<T extends { persisted?: { plugin?: Record<string, unknown> }; requests: Record<string, unknown> }>(scenario: T) {
+  return {
+    ...scenario,
+    persisted: { plugin: { ...scenario.persisted?.plugin } },
+    requests: {
+      ...scenario.requests,
+      'workspace.info': SHOWCASE_INFO,
+      'drafts.status': { folder: '/Users/you/dev/web-app/managed-agents', ready: true },
+      'draft.state': { ok: true as const, value: null },
+      'drafts.projects': { ok: true as const, value: [{ id: 'p_web', name: 'web-app', path: '/Users/you/dev/web-app', current: true }] }
+    }
+  }
+}
+
+/** Vitrine : le formulaire d'un agent de release, outils GitHub et Linear, deux skills, un conseiller. */
+function showcaseAgentScenario() {
+  const form: AgentForm = {
+    name: 'Release captain',
+    model: 'claude-sonnet-5-5',
+    effort: 'high',
+    description: 'Prepares each release: changelog, version bump and release pull request.',
+    builtinTools: {
+      enabled: true,
+      policy: 'always_allow',
+      tools: BUILTIN_TOOLS.map((name) => ({ name, enabled: null, policy: name === 'bash' ? 'always_ask' : null }))
+    },
+    mcpServers: [
+      { name: 'github', url: 'https://api.githubcopilot.com/mcp/', policy: 'always_ask' },
+      { name: 'linear', url: 'https://mcp.linear.app/mcp', policy: 'always_allow' }
+    ],
+    multiagent: {
+      advisor: 'claude-opus-5-5',
+      subagents: { enabled: true, inlineAgents: true, savedAgents: [{ id: 'agent_01docs', version: 3 }] },
+      workflows: { enabled: false, inlineAgents: true, savedAgents: [] }
+    },
+    skills: [
+      { type: 'custom', skillId: 'skill_01Hn4rReleaseNotes', version: 'latest' },
+      { type: 'custom', skillId: 'skill_01Hn4rChangelog', version: 'latest' }
+    ]
+  }
+  const detail: AgentDetail = {
+    kind: 'agent',
+    id: 'agent_01release',
+    name: form.name,
+    version: 6,
+    form,
+    model: form.model,
+    effort: form.effort,
+    description: form.description,
+    system: { text: 'You are the release captain of the web app team.\n\nWrite changelogs for users, not for developers.', truncated: false },
+    builtinTools: { enabled: true, policy: 'always_allow', overrides: [{ name: 'bash', enabled: true, policy: 'always_ask' }] },
+    mcpServers: [
+      { name: 'github', url: 'https://api.githubcopilot.com/mcp/', enabled: true, policy: 'always_ask', overrides: [] },
+      { name: 'linear', url: 'https://mcp.linear.app/mcp', enabled: true, policy: 'always_allow', overrides: [] }
+    ],
+    multiagent: 'Multiagent: advisor claude-opus-5-5, subagents (1 predefined)',
+    multiagentCoordinator: false
+  }
+  const scenario = configScenario('agent', detail)
+  return {
+    persisted: scenario.persisted,
+    requests: {
+      ...scenario.requests,
+      'agent.formOptions': { ok: true as const, value: { models: ['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5'] } },
+      'skills.list': {
+        ok: true as const,
+        value: [
+          { id: 'skill_01Hn4rReleaseNotes', name: 'release-notes', latestVersionId: '1763971200000001', updatedAt: '2026-11-21T10:00:00Z' },
+          { id: 'skill_01Hn4rChangelog', name: 'changelog-style', latestVersionId: '1763971200000002', updatedAt: '2026-11-20T10:00:00Z' }
+        ] satisfies SkillRow[]
+      },
+      'skills.listAnthropic': { ok: true as const, value: [] as SkillRow[] }
+    }
+  }
+}
+
+/** Vitrine : un environnement modifié ailleurs pendant la saisie, l'avis de conflit en tête. */
+function showcaseEnvironmentScenario() {
+  const form: EnvironmentForm = {
+    name: 'Release sandbox',
+    description: 'Builds and tests the web app before a release.',
+    hosting: 'cloud',
+    network: { mode: 'limited', allowedHosts: ['registry.npmjs.org', 'github.com'], allowPackageManagers: true, allowMcpServers: true },
+    packages: { apt: [], cargo: [], gem: [], go: [], npm: ['pnpm'], pip: [] },
+    metadata: [{ key: 'team', value: 'platform' }]
+  }
+  const detail: EnvironmentDetail = {
+    kind: 'environment',
+    id: 'env_01release',
+    name: form.name,
+    description: form.description,
+    updatedAt: '2026-11-24T10:00:00Z',
+    form,
+    hosting: 'cloud',
+    network: form.network,
+    packages: [{ key: 'npm', value: 'pnpm' }],
+    metadata: form.metadata
+  }
+  const scenario = configScenario('environment', detail)
+  return {
+    ...scenario,
+    persisted: {
+      plugin: {
+        ...scenario.persisted.plugin,
+        'forms.drafts': {
+          'environment:env_01release': {
+            form: { ...form, description: 'Builds, tests and signs each release.' },
+            base: form,
+            baseStamp: '2026-11-23T09:00:00Z'
+          }
+        }
+      }
+    }
+  }
+}
 
 /** Ligne de session : l'état du sondeur du worker, dont le panneau tire son badge. */
 function sessionRow(over: Partial<SessionRow>): SessionRow {

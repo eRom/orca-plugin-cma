@@ -9,6 +9,39 @@
   "license": "MIT",
   "repository": "https://github.com/eRom/orca-plugin-cma",
   "icon": "media/icon.png",
+  "cover": {
+    "path": "media/cover.png",
+    "alt": "The Claude Managed Agents panel listing four sessions, beside a session waiting for approval to open a release pull request."
+  },
+  "screenshots": [
+    {
+      "path": "media/screenshot-dark.png",
+      "alt": "A session followed live in the dark panel: the agent's messages, a finished tool call and a pull request waiting for Allow or Deny.",
+      "caption": "Answer approvals from Orca",
+      "theme": "dark"
+    },
+    {
+      "path": "media/screenshot-light.png",
+      "alt": "The Sessions tab in Orca's light theme: four sessions with their agent, cost and state.",
+      "caption": "Every session at a glance",
+      "theme": "light"
+    },
+    {
+      "path": "media/screenshot-agents.png",
+      "alt": "The form of an agent: name, model, effort, description, then system prompt, tools, skills and multiagent sections.",
+      "caption": "Every setting the API exposes"
+    },
+    {
+      "path": "media/screenshot-conflict.png",
+      "alt": "An environment edited elsewhere since it was opened: a warning offers Reload or Save anyway above the form.",
+      "caption": "Never overwrites a change"
+    },
+    {
+      "path": "media/screenshot-resources.png",
+      "alt": "The Resources tab: three skills with upload and delete buttons, and three files with their size.",
+      "caption": "Skills and files of your workspace"
+    }
+  ],
   "engines": { "orca": ">=1.4.259" },
   "execution": "trusted-worker",
   "pluginApi": 1,

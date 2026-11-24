@@ -7,3 +7,6 @@ node_modules/
 .orca
 probe/
 docs/
+media/raw/
+media/build.sh
+media/shoot.sh
