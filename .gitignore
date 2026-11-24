@@ -4,3 +4,7 @@ _memory_
 docs/superpowers
 node_modules/
 dist/
+.superpowers
+.orca
+probe/
+docs/
