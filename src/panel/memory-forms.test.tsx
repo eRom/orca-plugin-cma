@@ -1388,3 +1388,49 @@ test('Apply stays disabled while a file dialog is open', async () => {
   assert.equal(view.find({ role: 'button', text: 'Apply (1)' })?.disabled, false)
   await view.unmount()
 })
+
+// --- Aucune boîte de choix sur cet ordinateur : le chemin se colle ---
+
+const PICKER_UNAVAILABLE = { ok: false, code: 'picker_unavailable', error: 'No file dialog is available on this computer.' }
+const fileFields = (view: View) => view.findAll({ label: 'Paste the full path of the file' })
+const useButtons = (view: View) => view.findAll({ role: 'button', text: 'Use' })
+
+test('an unavailable picker shows a path field on a memory upload line and Use fills the line', async () => {
+  const calls = newCalls()
+  const host = mockHost({ requests: requests(calls, newWorld(), { ...NO_DRAFT, 'file.pick': PICKER_UNAVAILABLE }) })
+  const view = await mount(panel, { host, persisted: OPEN_STORE })
+  await addRows(view, 1)
+  await view.type(pathFields(view)[0]!, '/notes/today.md')
+  await view.press(fileButtons(view)[0]!)
+  // Le refus n'est pas une erreur : le champ prend la place du bouton, rien en rouge.
+  assert.equal(fileButtons(view).length, 0)
+  assert.equal(view.find({ text: /No file dialog/ }), null)
+  assert.equal(fileFields(view)[0]?.props.placeholder, 'Paste the full path of the file')
+  assert.equal(useButtons(view)[0]?.disabled, true)
+  await view.type(fileFields(view)[0]!, '  C:\\Users\\romain\\Mes documents\\today.md  ')
+  await view.press(useButtons(view)[0]!)
+  const rows = (view.persisted.plugin['memory.uploads'] as Record<string, unknown[]>).memstore_a
+  assert.deepEqual(rows?.map((row) => ({ path: (row as { path: string }).path, file: (row as { file: string }).file, name: (row as { name: string }).name })), [
+    { path: '/notes/today.md', file: 'C:\\Users\\romain\\Mes documents\\today.md', name: 'today.md' }
+  ])
+  // La ligne est complète : elle part comme une ligne choisie par la boîte.
+  assert.equal(view.find({ role: 'button', text: 'Apply (1)' })?.disabled, false)
+  await view.press({ role: 'button', text: 'Apply (1)' })
+  assert.deepEqual(calls.stages, [{ memoryStoreId: 'memstore_a', items: [{ path: '/notes/today.md', file: 'C:\\Users\\romain\\Mes documents\\today.md', memoryId: null }] }])
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('once a dialog was refused, a second memory line shows the path field without asking for a dialog', async () => {
+  const calls = newCalls()
+  const host = mockHost({ requests: requests(calls, newWorld(), { ...NO_DRAFT, 'file.pick': PICKER_UNAVAILABLE }) })
+  const view = await mount(panel, { host, persisted: OPEN_STORE })
+  await addRows(view, 1)
+  await view.press(fileButtons(view)[0]!)
+  await addRows(view, 1)
+  assert.equal(fileFields(view).length, 2)
+  assert.equal(fileButtons(view).length, 0)
+  const pickCalls = host.calls.filter((call) => call.method === 'plugin.request' && (call.params as { name?: string }).name === 'file.pick')
+  assert.equal(pickCalls.length, 1)
+  await view.unmount()
+})

@@ -1,7 +1,7 @@
 // L'onglet Resources : deux cartes, les skills et les fichiers du workspace actif. Chaque carte téléverse (`+`), une
 // skill envoie une nouvelle version (`↑`), les deux suppriment (`X` après confirmation). Le champ de filtre est celui
 // de l'accueil (`FilterRow`), partagé par les deux cartes.
-import { Button, Callout, IconButton, plugin, read, Row, set, Spinner, Stack, Text, type OrcaElement } from 'orca'
+import { Button, Callout, IconButton, Input, plugin, read, Row, set, Spinner, Stack, Text, type OrcaElement } from 'orca'
 import { clipLabel } from '../blocks/clip-label'
 import { EmptyView } from '../blocks/empty-view'
 import { GroupCard } from '../blocks/group-card'
@@ -14,6 +14,7 @@ import { clipBytes } from '../shared/text'
 import { RENDER_ROW_CAP } from './config-state'
 import { askConfirmation, ConfirmPanel, deleteQuestion } from './confirm'
 import { PICK_TIMEOUT_MS } from './memory-uploads'
+import { FILE_PATH_PLACEHOLDER, FOLDER_PATH_PLACEHOLDER, pickedFromPath, pickerUnavailable } from './picker-fallback'
 import {
   currentGeneration,
   fileRows,
@@ -22,13 +23,16 @@ import {
   loadSkills,
   resourceErrors,
   resourceNotices,
+  resourcePathDraft,
+  resourcePathTarget,
   resourcePicking,
   resourceUploading,
   setCardValue,
   showNotice,
   skillRows,
   type CardKey,
-  type CardNotice
+  type CardNotice,
+  type PathTarget
 } from './resource-state'
 import {
   ERROR_TEXT_LIMIT_BYTES,
@@ -68,11 +72,26 @@ async function reread(card: CardKey, startedIn: number): Promise<void> {
   }
 }
 
+/** Ouvre le champ de chemin de la carte pour cet envoi (`skill` non nul : une nouvelle version de cette skill). */
+function openPathField(card: CardKey, skill: PathTarget['skill']): void {
+  const current = read(resourcePathTarget)[card]
+  // Le même geste une seconde fois garde ce qui est déjà tapé ; un autre envoi (autre skill) repart d'un champ vide.
+  if (current !== null && (current.skill?.id ?? null) === (skill?.id ?? null)) return
+  setCardValue(resourcePathTarget, card, { skill })
+  setCardValue(resourcePathDraft, card, '')
+}
+
+function closePathField(card: CardKey): void {
+  setCardValue(resourcePathTarget, card, null)
+  setCardValue(resourcePathDraft, card, '')
+}
+
 /**
  * Ouvre la boîte de choix de la carte. `null` : rien à envoyer (boîte annulée ou toujours ouverte, refus, bascule de
- * workspace, ou clé refusée). Un seul choix à la fois par carte : le worker rend la même boîte à chaque appel.
+ * workspace, clé refusée, ou aucune boîte sur cet ordinateur : le champ de chemin s'ouvre à la place). Un seul choix
+ * à la fois par carte : le worker rend la même boîte à chaque appel.
  */
-async function pick(card: CardKey, startedIn: number): Promise<PickedFile | null> {
+async function pick(card: CardKey, startedIn: number, skill: PathTarget['skill']): Promise<PickedFile | null> {
   setCardValue(resourcePicking, card, true)
   try {
     let result: ApiResult<PickedFile | null>
@@ -89,7 +108,11 @@ async function pick(card: CardKey, startedIn: number): Promise<PickedFile | null
     if (startedIn !== currentGeneration()) return null
     if (result.ok) return result.value
     if (result.code === 'unauthorized') await loadWorkspace()
-    else showNotice(card, refusal('Could not upload', clipBytes(result.error, ERROR_TEXT_LIMIT_BYTES).text))
+    else if (result.code === 'picker_unavailable') {
+      // Pas une erreur : l'ordinateur n'a pas de boîte, le champ de chemin prend la place du geste jusqu'à la fermeture du panneau.
+      set(pickerUnavailable, true)
+      openPathField(card, skill)
+    } else showNotice(card, refusal('Could not upload', clipBytes(result.error, ERROR_TEXT_LIMIT_BYTES).text))
     return null
   } finally {
     if (startedIn === currentGeneration()) setCardValue(resourcePicking, card, false)
@@ -126,8 +149,25 @@ async function startUpload(card: CardKey, skill: { id: string; name: string } | 
   if (read(resourcePicking)[card] || read(resourceUploading)[card] !== null) return
   const startedIn = currentGeneration()
   showNotice(card, null)
-  const picked = await pick(card, startedIn)
+  // Une boîte déjà refusée une fois ne se redemande pas : le champ de chemin s'ouvre directement.
+  if (read(pickerUnavailable)) return openPathField(card, skill)
+  const picked = await pick(card, startedIn, skill)
   if (picked === null) return
+  await uploadPicked(card, startedIn, picked, skill)
+}
+
+/** « Use » du champ de chemin : le chemin collé suit le parcours d'un choix de boîte. */
+async function usePastedPath(card: CardKey): Promise<void> {
+  const target = read(resourcePathTarget)[card]
+  const picked = pickedFromPath(read(resourcePathDraft)[card])
+  if (target === null || picked === null || read(resourceUploading)[card] !== null) return
+  closePathField(card)
+  showNotice(card, null)
+  await uploadPicked(card, currentGeneration(), picked, target.skill)
+}
+
+/** Envoie un choix (de la boîte ou collé), affiche l'avis et relit la liste. */
+async function uploadPicked(card: CardKey, startedIn: number, picked: PickedFile, skill: { id: string; name: string } | null): Promise<void> {
   setCardValue(resourceUploading, card, clipName(skill?.name ?? picked.name))
   try {
     const outcome = await sendUpload(card, picked, skill)
@@ -249,6 +289,40 @@ function NoticeView({ notice }: { notice: CardNotice }): OrcaElement {
 }
 
 /**
+ * Le champ de chemin d'une carte, ouvert par `+` ou `↑` quand l'ordinateur n'a pas de boîte de choix : le chemin collé,
+ * `Use` pour l'envoyer, `Cancel` pour fermer. Une ligne vide, ou un envoi en route, grise `Use`.
+ */
+function PathField({ card }: { card: CardKey }): OrcaElement | null {
+  const target = read(resourcePathTarget)[card]
+  if (target === null) return null
+  const draft = read(resourcePathDraft)[card]
+  const placeholder = card === 'skills' ? FOLDER_PATH_PLACEHOLDER : FILE_PATH_PLACEHOLDER
+  return (
+    <Stack gap="xs">
+      {target.skill === null ? null : (
+        <Text muted size="xs">
+          {`New version of ${clipName(target.skill.name)}`}
+        </Text>
+      )}
+      <Input label={placeholder} labelHidden placeholder={placeholder} value={draft} onChange={(value) => setCardValue(resourcePathDraft, card, value)} />
+      <Row gap="sm">
+        <Button
+          variant="solid"
+          size="sm"
+          disabled={draft.trim() === '' || read(resourceUploading)[card] !== null}
+          onPress={() => run(() => usePastedPath(card))}
+        >
+          Use
+        </Button>
+        <Button variant="ghost" size="sm" onPress={() => closePathField(card)}>
+          Cancel
+        </Button>
+      </Row>
+    </Stack>
+  )
+}
+
+/**
  * Une carte : son titre, son `+`, puis dans l'ordre l'erreur de lecture, l'avis, l'envoi en route, le chargement,
  * le vide ou les lignes. Chaque ligne a une clé fixe : une ligne qui apparaît ou disparaît ne décale pas les autres.
  */
@@ -319,6 +393,7 @@ function ResourceCard({
           ) : null
         },
         { key: 'notice', row: notice === null ? null : <NoticeView notice={notice} /> },
+        { key: 'path', row: read(resourcePathTarget)[card] === null ? null : <PathField card={card} /> },
         { key: 'uploading', row: uploading === null ? null : <Spinner label={`Uploading ${uploading}`} /> },
         {
           key: 'status',

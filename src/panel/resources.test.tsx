@@ -954,3 +954,148 @@ test('a delete the host rejects shows the text on the card, closes the question 
   assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
   await view.unmount()
 })
+
+// --- Aucune boîte de choix sur cet ordinateur : le chemin se colle ---
+
+const UNAVAILABLE = { ok: false, code: 'picker_unavailable', error: 'No file dialog is available on this computer.' }
+const FOLDER_FIELD = { label: 'Paste the full path of the folder' } as const
+const FILE_FIELD = { label: 'Paste the full path of the file' } as const
+
+/** Les appels d'un nom de requête, dans l'ordre. */
+const callsTo = (host: ReturnType<typeof mockHost>, name: string) =>
+  host.calls.filter((call) => call.method === 'plugin.request' && (call.params as { name?: string }).name === name)
+
+test('an unavailable picker shows a path field on the resources card and Use uploads the pasted path', async () => {
+  const uploads: { skills: unknown[]; files: unknown[] } = { skills: [], files: [] }
+  let skillLists = 0
+  const host = mockHost({
+    requests: requests({
+      'skills.list': () => {
+        skillLists += 1
+        return { ok: true, value: skillLists === 1 ? [] : [skill({ name: 'plugin-test-skill' })] }
+      },
+      'skills.pickFolder': UNAVAILABLE,
+      'files.pickFile': UNAVAILABLE,
+      'skills.upload': (input: unknown) => {
+        uploads.skills.push(input)
+        return { ok: true, value: skill({ name: 'plugin-test-skill' }) }
+      },
+      'files.upload': (input: unknown) => {
+        uploads.files.push(input)
+        return { ok: true, value: file({ name: 'plugin-test-file.md' }) }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN })
+  assert.equal(view.find(FOLDER_FIELD), null)
+  await view.press(addSkill)
+  // Le refus n'est pas une erreur : ni avis, ni texte rouge, le champ prend la place du geste.
+  assert.equal(view.find({ type: 'Callout' }), null)
+  const folderField = view.find(FOLDER_FIELD)
+  assert.ok(folderField)
+  assert.equal(folderField.props.placeholder, 'Paste the full path of the folder')
+  await view.type(folderField, '  /home/r/Été/plugin-test-skill  ')
+  await view.press({ role: 'button', text: 'Use' })
+  assert.deepEqual(uploads.skills, [{ folder: '/home/r/Été/plugin-test-skill' }])
+  assert.ok(callout(view, /Uploaded plugin-test-skill\./))
+  assert.equal(skillLists, 2)
+  assert.equal(view.find(FOLDER_FIELD), null)
+
+  await view.press(addFile)
+  const fileField = view.find(FILE_FIELD)
+  assert.ok(fileField)
+  assert.equal(fileField.props.placeholder, 'Paste the full path of the file')
+  await view.type(fileField, 'C:\\Users\\romain\\Mes documents\\plugin-test-file.md')
+  await view.press({ role: 'button', text: 'Use' })
+  assert.deepEqual(uploads.files, [{ file: 'C:\\Users\\romain\\Mes documents\\plugin-test-file.md' }])
+  assert.ok(callout(view, /Uploaded plugin-test-file\.md\./))
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
+  await view.unmount()
+})
+
+test('the up arrow on a skill pastes a path for its new version when no dialog is available', async () => {
+  const versions: unknown[] = []
+  const host = mockHost({
+    requests: requests({
+      'skills.list': { ok: true, value: [skill()] },
+      'skills.pickFolder': UNAVAILABLE,
+      'skills.uploadVersion': (input: unknown) => {
+        versions.push(input)
+        return { ok: true, value: skill() }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN })
+  await view.press({ type: 'IconButton', label: 'Upload a new version of teach' })
+  assert.ok(view.find({ text: 'New version of teach' }))
+  await view.type(view.find(FOLDER_FIELD)!, '/home/r/teach')
+  await view.press({ role: 'button', text: 'Use' })
+  assert.deepEqual(versions, [{ skillId: SKILL_ID, folder: '/home/r/teach' }])
+  assert.ok(callout(view, /New version of teach uploaded\./))
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
+  await view.unmount()
+})
+
+test('a pasted path that cannot be read shows the upload refusal on the card', async () => {
+  const host = mockHost({
+    requests: requests({
+      'files.pickFile': UNAVAILABLE,
+      'files.upload': { ok: false, code: 'other', error: 'This file cannot be read.' }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN })
+  await view.press(addFile)
+  await view.type(view.find(FILE_FIELD)!, '/nowhere/x.md')
+  await view.press({ role: 'button', text: 'Use' })
+  assert.ok(callout(view, /Could not upload/))
+  assert.ok(view.find({ type: 'Text', text: 'This file cannot be read.' }))
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
+  await view.unmount()
+})
+
+test('Use is disabled while the pasted path is empty', async () => {
+  const host = mockHost({ requests: requests({ 'files.pickFile': UNAVAILABLE }) })
+  const view = await mount(panel, { host, persisted: OPEN })
+  await view.press(addFile)
+  assert.equal(view.find({ role: 'button', text: 'Use' })?.disabled, true)
+  await view.type(view.find(FILE_FIELD)!, '   ')
+  assert.equal(view.find({ role: 'button', text: 'Use' })?.disabled, true)
+  await view.type(view.find(FILE_FIELD)!, '/x/a.md')
+  assert.equal(view.find({ role: 'button', text: 'Use' })?.disabled, false)
+  await view.type(view.find(FILE_FIELD)!, '', { replace: true })
+  assert.equal(view.find({ role: 'button', text: 'Use' })?.disabled, true)
+  assert.equal(callsTo(host, 'files.upload').length, 0)
+  await view.unmount()
+})
+
+test('the path field stays once shown for the rest of the panel session', async () => {
+  const host = mockHost({
+    requests: requests({
+      'skills.pickFolder': UNAVAILABLE,
+      'files.pickFile': { ok: true, value: FILE_PICKED },
+      'skills.upload': { ok: true, value: skill({ name: 'plugin-test-skill' }) },
+      'files.upload': { ok: true, value: file({ name: 'plugin-test-file.md' }) }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN })
+  await view.press(addSkill)
+  assert.equal(callsTo(host, 'skills.pickFolder').length, 1)
+  await view.press({ role: 'button', text: 'Cancel' })
+  assert.equal(view.find(FOLDER_FIELD), null)
+  // L'autre carte n'ouvre pas de boîte non plus : l'ordinateur n'en a pas.
+  await view.press(addFile)
+  assert.equal(callsTo(host, 'files.pickFile').length, 0)
+  assert.ok(view.find(FILE_FIELD))
+  // Un envoi fini ou un champ fermé : le geste suivant rouvre le champ sans redemander de boîte.
+  await view.type(view.find(FILE_FIELD)!, '/x/a.md')
+  await view.press({ role: 'button', text: 'Use' })
+  assert.equal(view.find(FILE_FIELD), null)
+  await view.press(addSkill)
+  assert.equal(callsTo(host, 'skills.pickFolder').length, 1)
+  assert.ok(view.find(FOLDER_FIELD))
+  await view.press(addFile)
+  assert.equal(callsTo(host, 'files.pickFile').length, 0)
+  assert.ok(view.find(FILE_FIELD))
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
+  await view.unmount()
+})

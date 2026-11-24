@@ -55,6 +55,12 @@ export const resourceUploading = atom<PerCard<string | null>>('resources.uploadi
 /** Vrai tant que la boîte de choix d'une carte est ouverte : le worker n'en garde qu'une, un second choix serait le même. */
 export const resourcePicking = atom<PerCard<boolean>>('resources.picking', { skills: false, files: false })
 
+/** Le champ de chemin d'une carte (sans boîte de choix sur l'ordinateur) : ce qu'il enverra. `skill` non nul : une nouvelle version de celle-ci. `null` : champ fermé. */
+export type PathTarget = { skill: { id: string; name: string } | null }
+export const resourcePathTarget = atom<PerCard<PathTarget | null>>('resources.pathTarget', { skills: null, files: null })
+/** Le texte tapé dans le champ de chemin de chaque carte. */
+export const resourcePathDraft = atom<PerCard<string>>('resources.pathDraft', { skills: '', files: '' })
+
 /** Écrit la valeur d'une seule carte dans un atome « par carte ». */
 export function setCardValue<T>(target: Atom<PerCard<T>>, card: CardKey, value: T): void {
   set(target, { ...read(target), [card]: value })
@@ -93,6 +99,8 @@ export function resetResources(): void {
   showNotice('files', null)
   set(resourceUploading, { skills: null, files: null })
   set(resourcePicking, { skills: false, files: false })
+  set(resourcePathTarget, { skills: null, files: null })
+  set(resourcePathDraft, { skills: '', files: '' })
   const pending = read(pendingConfirmation)
   if (pending?.startsWith('skill:') || pending?.startsWith('file:')) set(pendingConfirmation, null)
 }
