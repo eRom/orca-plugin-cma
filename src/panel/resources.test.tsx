@@ -1127,3 +1127,45 @@ test('a refused pasted path keeps the field and its text', async () => {
   assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
   await view.unmount()
 })
+
+test('a picker failure shows the error and the path field', async () => {
+  let picks = 0
+  const uploads: unknown[] = []
+  const host = mockHost({
+    requests: requests({
+      'files.pickFile': () => {
+        picks += 1
+        return picks === 1 ? { ok: false, code: 'other', error: 'Could not open the file picker.' } : { ok: true, value: FILE_PICKED }
+      },
+      'skills.pickFolder': { ok: false, code: 'other', error: 'Could not open the file picker.' },
+      'skills.list': { ok: true, value: [skill()] },
+      'files.upload': (input: unknown) => {
+        uploads.push(input)
+        return { ok: true, value: file({ name: 'a.md' }) }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN })
+  await view.press(addFile)
+  // L'erreur s'affiche et le champ de la carte s'ouvre : jamais d'impasse.
+  assert.ok(callout(view, /Could not upload/))
+  assert.ok(view.find({ type: 'Text', text: 'Could not open the file picker.' }))
+  assert.ok(view.find(FILE_FIELD))
+  assert.equal(view.find(FOLDER_FIELD), null)
+  await view.type(view.find(FILE_FIELD)!, '/x/a.md')
+  await view.press({ role: 'button', text: 'Use' })
+  assert.deepEqual(uploads, [{ file: '/x/a.md' }])
+  assert.equal(view.find(FILE_FIELD), null)
+  // Le drapeau de session n'est pas posé : l'appui suivant redemande la boîte, qui s'ouvre cette fois.
+  await view.press(addFile)
+  assert.equal(picks, 2)
+  assert.equal(callsTo(host, 'files.pickFile').length, 2)
+  assert.equal(view.find(FILE_FIELD), null)
+
+  // La skill : même repli, et le « ↑ » d'une skill garde sa cible.
+  await view.press({ type: 'IconButton', label: 'Upload a new version of teach' })
+  assert.ok(view.find({ text: 'New version of teach' }))
+  assert.ok(view.find(FOLDER_FIELD))
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
+  await view.unmount()
+})

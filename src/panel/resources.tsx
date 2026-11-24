@@ -112,7 +112,12 @@ async function pick(card: CardKey, startedIn: number, skill: PathTarget['skill']
       // Pas une erreur : l'ordinateur n'a pas de boîte, le champ de chemin prend la place du geste jusqu'à la fermeture du panneau.
       set(pickerUnavailable, true)
       openPathField(card, skill)
-    } else showNotice(card, refusal('Could not upload', clipBytes(result.error, ERROR_TEXT_LIMIT_BYTES).text))
+    } else {
+      // Une boîte qui ne s'ouvre pas : l'erreur s'affiche et le champ de chemin s'ouvre aussi, jamais d'impasse. Le drapeau de
+      // session reste intact : un appui suivant peut réussir et la boîte est alors redemandée.
+      showNotice(card, refusal('Could not upload', clipBytes(result.error, ERROR_TEXT_LIMIT_BYTES).text))
+      openPathField(card, skill)
+    }
     return null
   } finally {
     if (startedIn === currentGeneration()) setCardValue(resourcePicking, card, false)

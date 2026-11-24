@@ -17,11 +17,34 @@ export const FOLDER_PATH_PLACEHOLDER = 'Paste the full path of the folder'
 export const PATH_MAX_LENGTH = 4096
 
 /**
- * Le chemin collé devient un choix comme celui d'une boîte : le chemin sans espaces de bord, et son dernier segment pour
- * nom (après `/` ou `\`, séparateurs de fin ignorés). `null` quand il ne reste rien.
+ * Ce que collent l'Explorateur Windows (« Copier en tant que chemin » : le chemin entre guillemets doubles) et les
+ * gestionnaires de fichiers Linux (une URL `file://`, caractères encodés en %XX) : le chemin nu.
+ */
+function bareFilePath(value: string): string {
+  let path = value.trim()
+  if (path.length >= 2 && path.startsWith('"') && path.endsWith('"')) {
+    path = path.slice(1, -1).trim()
+  }
+  const url = /^file:\/\/(?:localhost(?=\/))?/i.exec(path)
+  if (url === null) return path
+  const rest = path.slice(url[0].length)
+  let decoded = rest
+  try {
+    decoded = decodeURIComponent(rest)
+  } catch {
+    // Un « % » qui n'encode rien : le texte reste tel que collé.
+  }
+  // `file:///C:/Users/x` : la barre qui précède la lettre du lecteur n'est pas une partie du chemin.
+  return /^\/[A-Za-z]:[\\/]/.test(decoded) ? decoded.slice(1) : decoded
+}
+
+/**
+ * Le chemin collé devient un choix comme celui d'une boîte : le chemin sans espaces de bord, ni guillemets doubles qui
+ * l'entourent, ni préfixe `file://` (décodé), et son dernier segment pour nom (après `/` ou `\`, séparateurs de fin
+ * ignorés). `null` quand il ne reste rien.
  */
 export function pickedFromPath(value: string): PickedFile | null {
-  const file = value.trim()
+  const file = bareFilePath(value)
   if (file === '') return null
   const segments = file.split(/[\\/]/).filter((segment) => segment !== '')
   return { file, name: segments.at(-1) ?? file }

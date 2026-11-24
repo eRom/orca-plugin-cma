@@ -802,16 +802,28 @@ test('the file dialog waits as long as Orca allows, and a cancelled dialog chang
   await view.unmount()
 })
 
-test('a file picker refusal shows under its row and does not block the others', async () => {
+test('a picker failure shows the error and the path field', async () => {
   const calls = newCalls()
   const host = mockHost({
     requests: requests(calls, newWorld(), { ...NO_DRAFT, 'file.pick': { ok: false, code: 'other', error: 'Could not open the file picker.' } })
   })
   const view = await mount(panel, { host, persisted: OPEN_STORE })
-  await addRows(view, 1)
+  await addRows(view, 2)
   await view.press(fileButtons(view)[0]!)
   assert.ok(view.find({ text: 'Could not open the file picker.' }))
-  assert.equal(fileButtons(view)[0]?.text, 'Choose file…')
+  // Pas d'impasse : la ligne en échec montre son champ de chemin, la seconde garde sa boîte (l'échec n'est pas « aucune boîte »).
+  assert.equal(fileFields(view).length, 1)
+  assert.equal(fileButtons(view).length, 1)
+  await view.type(pathFields(view)[0]!, '/notes/today.md')
+  await view.type(fileFields(view)[0]!, '/home/r/today.md')
+  await view.press(useButtons(view)[0]!)
+  const rows = (view.persisted.plugin['memory.uploads'] as Record<string, { file: string; name: string }[]>).memstore_a
+  assert.deepEqual(rows?.map((row) => [row.file, row.name]), [['/home/r/today.md', 'today.md'], ['', '']])
+  // Le chemin est pris : l'erreur de la boîte s'efface.
+  assert.equal(view.find({ text: 'Could not open the file picker.' }), null)
+  const pickCalls = host.calls.filter((call) => call.method === 'plugin.request' && (call.params as { name?: string }).name === 'file.pick')
+  assert.equal(pickCalls.length, 1)
+  assert.deepEqual(view.errors, [])
   await view.unmount()
 })
 
@@ -1432,5 +1444,28 @@ test('once a dialog was refused, a second memory line shows the path field witho
   assert.equal(fileButtons(view).length, 0)
   const pickCalls = host.calls.filter((call) => call.method === 'plugin.request' && (call.params as { name?: string }).name === 'file.pick')
   assert.equal(pickCalls.length, 1)
+  await view.unmount()
+})
+
+test('a path typed in the field blocks Apply until Use is pressed', async () => {
+  const calls = newCalls()
+  const host = mockHost({ requests: requests(calls, newWorld(), { ...NO_DRAFT, 'file.pick': PICKER_UNAVAILABLE }) })
+  const view = await mount(panel, { host, persisted: OPEN_STORE })
+  await addRows(view, 1)
+  await view.type(pathFields(view)[0]!, '/notes/today.md')
+  await view.press(fileButtons(view)[0]!)
+  await view.type(fileFields(view)[0]!, '/home/r/today.md')
+  await view.press(useButtons(view)[0]!)
+  assert.equal(view.find({ role: 'button', text: 'Apply (1)' })?.disabled, false)
+  // Le champ change : le fichier de la ligne n'est plus celui qu'on lit, Apply attend « Use ».
+  await view.type(fileFields(view)[0]!, '/home/r/other.md', { replace: true })
+  assert.equal(view.find({ role: 'button', text: 'Apply (1)' })?.disabled, true)
+  assert.ok(view.find({ text: 'Press Use to take this path.' }))
+  await view.press(useButtons(view)[0]!)
+  assert.equal(view.find({ role: 'button', text: 'Apply (1)' })?.disabled, false)
+  assert.equal(view.find({ text: 'Press Use to take this path.' }), null)
+  await view.press({ role: 'button', text: 'Apply (1)' })
+  assert.deepEqual(calls.stages, [{ memoryStoreId: 'memstore_a', items: [{ path: '/notes/today.md', file: '/home/r/other.md', memoryId: null }] }])
+  assert.deepEqual(view.errors, [])
   await view.unmount()
 })
