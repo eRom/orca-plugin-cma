@@ -109,6 +109,12 @@ export type MultiagentForm = {
   workflows: MultiagentMemberForm
 }
 
+/**
+ * Un skill d'un agent. `version` null : ajouté dans le formulaire, l'API épingle alors la dernière ; une version déjà
+ * posée sur l'agent est une épingle conservée telle quelle (même règle que `SavedAgentRef`).
+ */
+export type AgentSkillRef = { type: 'custom' | 'anthropic'; skillId: string; version: string | null }
+
 /** L'agent tel que le formulaire le modifie. */
 export type AgentForm = {
   name: string
@@ -120,6 +126,8 @@ export type AgentForm = {
   mcpServers: { name: string; url: string; policy: ToolPolicy }[]
   /** null : agent à un seul fil (pas de bloc `multiagent`, ou topologie `coordinator` que le formulaire n'édite pas). */
   multiagent: MultiagentForm | null
+  /** Les skills de l'agent, dans l'ordre. */
+  skills: AgentSkillRef[]
 }
 
 export type AgentDetail = {
@@ -134,7 +142,6 @@ export type AgentDetail = {
   system: ClippedText
   builtinTools: ToolsetView | null
   mcpServers: (ToolsetView & { name: string; url: string })[]
-  skills: string[]
   /** Une ligne de résumé du bloc `multiagent`, ou null s'il n'y en a pas. */
   multiagent: string | null
   /** Vrai quand le bloc est l'ancienne topologie `coordinator` : le formulaire ne la propose pas (`form.multiagent` est null). */
@@ -481,6 +488,8 @@ declare module 'orca' {
     'file.pick': { output: ApiResult<PickedFile | null> }
     'memory.stageUploads': { input: { memoryStoreId: string; items: UploadItem[] }; output: ApiResult<PreparedWrite> }
     'skills.list': { output: ApiResult<SkillRow[]> }
+    /** Les skills fournis par Anthropic (`source: 'anthropic'`), que le formulaire d'agent propose à côté de ceux de l'espace. */
+    'skills.listAnthropic': { output: ApiResult<SkillRow[]> }
     /** `null` : la boîte de dialogue a été annulée. */
     'skills.pickFolder': { output: ApiResult<PickedFile | null> }
     'skills.upload': { input: { folder: string }; output: ApiResult<SkillRow> }

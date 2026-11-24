@@ -202,7 +202,6 @@ export function toAgentDetail(agent: BetaManagedAgentsAgent): AgentDetail {
         : { enabled: false, policy: null, overrides: [] }
       return { name: server.name, url: server.url, ...view }
     }),
-    skills: agent.skills.map((skill) => skill.skill_id),
     multiagent: agent.multiagent ? summarizeMultiagent(agent.multiagent) : null,
     multiagentCoordinator: agent.multiagent?.type === 'coordinator'
   }

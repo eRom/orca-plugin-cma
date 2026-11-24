@@ -1,10 +1,12 @@
 // Formulaire d'un agent : création et modification. La saisie en cours est gardée par `form-state` (atome persisté,
 // avec la base et la version sur lesquelles elle a été commencée). « Review changes » met l'écriture en attente côté
 // worker (`agent.prepareForm`), montre les changements, puis « Confirm » l'envoie (`write.commit`) ; « Create »
-// crée l'agent d'un seul geste. Le bloc `multiagent` (workflows, sous-agents, conseiller) s'édite ici ; le prompt, les
-// skills et les réglages par outil MCP restent en lecture seule, avec un renvoi vers le brouillon YAML. Les blocs du kit (`src/blocks/`) sont copiés tels quels.
+// crée l'agent d'un seul geste. Le bloc `multiagent` (workflows, sous-agents, conseiller) et les skills (puces et menu
+// « + Add skill ») s'éditent ici ; le prompt et les réglages par outil MCP restent en lecture seule, avec un renvoi vers
+// le brouillon YAML. Les blocs du kit (`src/blocks/`) sont copiés tels quels.
 import {
   atom,
+  Badge,
   Box,
   Button,
   Callout,
@@ -39,6 +41,7 @@ import {
   type AgentDetail,
   type AgentEffort,
   type AgentForm,
+  type AgentSkillRef,
   type AgentToolsForm,
   type ApiErrorCode,
   type Committed,
@@ -48,6 +51,7 @@ import {
   type MultiagentMemberForm,
   type PreparedWrite,
   type SavedAgentRef,
+  type SkillRow,
   type ToolPolicy
 } from '../protocol'
 import { clipBytes } from '../shared/text'
@@ -56,7 +60,8 @@ import { agentModels, configDetail, configDetailError, configRows, loadConfigs, 
 import { archiveQuestion, askConfirmation, ConfirmPanel } from './confirm'
 import { carryDraftOutcome, DraftControls, draftIsBusy, startDraft } from './drafts'
 import { clearForm, editForm, formKey, isTouched, readForm, touchField } from './form-state'
-import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, nav, popIfTop, popView, run } from './state'
+import { anthropicSkillRows, loadResources, skillRows } from './resource-state'
+import { ERROR_TEXT_LIMIT_BYTES, homeTab, loadWorkspace, nav, popIfTop, popView, run } from './state'
 
 /** Mention affichée sous un texte coupé côté worker. */
 export const TRUNCATED_NOTICE = 'Truncated, open in Console for the full text'
@@ -67,8 +72,6 @@ const CONFLICT_TITLE = 'Changed elsewhere since you opened it.'
 /** Plafond d'un nom repris dans un libellé : un libellé de plus de 1 Kio fait refuser le rendu. */
 const TITLE_LIMIT_BYTES = 200
 const DESCRIPTION_LIMIT_BYTES = 300
-/** Plafond d'un texte long : sous les 16 Kio qu'Orca accepte par `Text`, avec marge. */
-const LONG_TEXT_LIMIT_BYTES = 4_000
 /** Largeur minimale d'un champ qui partage sa ligne : en dessous, le suivant passe dessous. */
 const FIELD_MIN_WIDTH = 140
 /** Valeur du choix « Default » des listes : il envoie `null`. */
@@ -101,7 +104,15 @@ const hasMultiagentKey = (value: unknown): boolean => typeof value === 'object' 
  * agent qui en a un, et « Off » n'enverrait rien (vu le 24/11 sur Incident commander, « Nothing to apply »).
  */
 const hasCurrentShape = (draft: { form: unknown; base: unknown }): boolean =>
-  hasMultiagentKey(draft.form) && hasMultiagentKey(draft.base) && hasSavedAgents(draft.form) && hasSavedAgents(draft.base)
+  hasMultiagentKey(draft.form) &&
+  hasMultiagentKey(draft.base) &&
+  hasSavedAgents(draft.form) &&
+  hasSavedAgents(draft.base) &&
+  hasSkills(draft.form) &&
+  hasSkills(draft.base)
+
+/** Une saisie gardée avant les skills éditables n'a pas de liste `skills` : elle est ignorée (sa base dirait « aucun skill » sur un agent qui en a). */
+const hasSkills = (value: unknown): boolean => Array.isArray((value as { skills?: unknown }).skills)
 
 /** Un bloc gardé avant les agents enregistrés éditables porte `predefinedCount`, pas `savedAgents` : sa saisie est ignorée. */
 function hasSavedAgents(value: unknown): boolean {
@@ -119,7 +130,7 @@ function defaultTools(): AgentToolsForm {
 }
 
 function emptyForm(): AgentForm {
-  return { name: '', model: '', effort: null, description: '', builtinTools: defaultTools(), mcpServers: [], multiagent: null }
+  return { name: '', model: '', effort: null, description: '', builtinTools: defaultTools(), mcpServers: [], multiagent: null, skills: [] }
 }
 
 // --- État éphémère ---
@@ -472,11 +483,12 @@ type MemberCardProps = {
 const lostSavedAgents = (member: MultiagentMemberForm, before: MultiagentMemberForm | undefined): number =>
   !member.enabled && before?.enabled ? before.savedAgents.length : 0
 
-/** Une puce d'agent enregistré : son nom et un bouton qui le retire. */
-function SavedAgentChip({ name, disabled, onRemove }: { name: string; disabled: boolean; onRemove: () => void }) {
+/** Une puce d'agent enregistré ou de skill : son nom, une pastille d'origine pour un skill, et un bouton qui le retire. */
+function SavedAgentChip({ name, badge, disabled, onRemove }: { name: string; badge?: { label: string; tone: 'neutral' | 'accent' }; disabled: boolean; onRemove: () => void }) {
   return (
     <Box direction="row" align="center" gap="xs" border radius="md" padding="xs">
       <Text size="sm">{name}</Text>
+      {badge ? <Badge tone={badge.tone}>{badge.label}</Badge> : null}
       <IconButton icon="close" label={`Remove ${name}`} variant="ghost" size="sm" disabled={disabled} onPress={onRemove} />
     </Box>
   )
@@ -908,23 +920,95 @@ function SystemPromptZone({ agent }: { agent: AgentDetail | null }) {
   )
 }
 
-/** Les skills, repliées : la liste lue ici (l'édition viendra dans ce bloc), écrite dans le YAML pour l'instant. */
-function SkillsZone({ agent }: { agent: AgentDetail | null }) {
-  const skills = agent?.skills ?? []
+/** Les valeurs réservées du menu des skills : le séparateur (désactivé) et la sortie vers l'onglet Resources. */
+const SKILL_SEPARATOR = 'separator'
+const SKILL_CREATE = 'create'
+const SKILL_SOURCE_LABELS: Record<AgentSkillRef['type'], string> = { custom: 'Custom', anthropic: 'Anthropic' }
+const SKILL_SOURCE_TONES: Record<AgentSkillRef['type'], 'neutral' | 'accent'> = { custom: 'neutral', anthropic: 'accent' }
+
+/** La valeur d'une option de skill : la source et l'identifiant (un même identifiant ne vaut que dans sa source). */
+const skillValue = (type: AgentSkillRef['type'], skillId: string): string => `${type}:${skillId}`
+
+/** Le nom affiché d'un skill : celui de la liste de sa source, sinon l'identifiant brut (liste pas encore lue ou skill supprimé). */
+function skillName(skill: AgentSkillRef, custom: SkillRow[] | null, anthropic: SkillRow[] | null): string {
+  const rows = skill.type === 'custom' ? custom : anthropic
+  return clipTitle(rows?.find((row) => row.id === skill.skillId)?.name ?? skill.skillId)
+}
+
+/** Les skills qu'un agent peut encore ajouter : ceux de l'espace, puis ceux d'Anthropic, un séparateur, puis la sortie vers Resources. */
+function addableSkills(taken: AgentSkillRef[], custom: SkillRow[] | null, anthropic: SkillRow[] | null): { value: string; label: string; disabled?: boolean }[] {
+  const used = new Set(taken.map((skill) => skillValue(skill.type, skill.skillId)))
+  const options: { value: string; label: string; disabled?: boolean }[] = []
+  for (const [type, rows] of [['custom', custom], ['anthropic', anthropic]] as const) {
+    for (const row of (rows ?? []).slice(0, RENDER_ROW_CAP)) {
+      if (!used.has(skillValue(type, row.id))) options.push({ value: skillValue(type, row.id), label: `${clipTitle(row.name)} · ${SKILL_SOURCE_LABELS[type]}` })
+    }
+  }
+  options.push({ value: SKILL_SEPARATOR, label: '──────────', disabled: true }, { value: SKILL_CREATE, label: '+ Create skill ↗' })
+  return options
+}
+
+/**
+ * « + Create skill » mène à l'onglet Resources, où l'on envoie un skill : l'écran de l'agent est quitté comme par
+ * Back (`leaveAgentView`), la pile revient à l'accueil. La saisie en cours reste gardée (`formDrafts`, persisté) : en
+ * rouvrant l'agent, ou « New agent », la personne la retrouve.
+ */
+function openResourcesTab(): void {
+  leaveAgentView()
+  update(nav, (stack) => stack.slice(0, 1))
+  set(homeTab, 'resources')
+  run(loadResources)
+}
+
+type SkillsZoneProps = {
+  skills: AgentSkillRef[]
+  /** Les skills à l'ouverture : un skill retiré puis rechoisi retrouve son épingle. */
+  before: AgentSkillRef[]
+  disabled: boolean
+  onChange: (skills: AgentSkillRef[]) => void
+}
+
+/** Les skills, repliées : des puces (nom, origine, retrait), puis un menu « + Add skill ». */
+function SkillsZone({ skills, before, disabled, onChange }: SkillsZoneProps) {
+  const custom = read(skillRows)
+  const anthropic = read(anthropicSkillRows)
   const summary = skills.length === 0 ? 'None' : `${String(skills.length)} skill${skills.length === 1 ? '' : 's'}`
   return (
     <SectionCollapsible title="Skills (optional)" summary={summary} open={read(skillsOpen)} onChange={(next) => set(skillsOpen, next)}>
       <Stack gap="xs">
         {skills.length > 0 ? (
-          <Text size="sm">{clipBytes(skills.join(', '), LONG_TEXT_LIMIT_BYTES).text}</Text>
-        ) : (
-          <Text muted size="sm">
-            No skills.
-          </Text>
-        )}
-        <Text muted size="xs">
-          Edited in YAML.
-        </Text>
+          <Box direction="row" wrap gap="xs">
+            {skills.slice(0, RENDER_ROW_CAP).map((skill) => (
+              <SavedAgentChip
+                key={skillValue(skill.type, skill.skillId)}
+                name={skillName(skill, custom, anthropic)}
+                badge={{ label: SKILL_SOURCE_LABELS[skill.type], tone: SKILL_SOURCE_TONES[skill.type] }}
+                disabled={disabled}
+                onRemove={() => onChange(skills.filter((entry) => entry !== skill))}
+              />
+            ))}
+          </Box>
+        ) : null}
+        <Select
+          // La clé suit la liste : le choix fait, la liste se remonte et revient au texte d'invite.
+          key={skills.length}
+          label="Add skill"
+          labelHidden
+          placeholder="+ Add skill"
+          disabled={disabled}
+          value={undefined}
+          options={addableSkills(skills, custom, anthropic)}
+          onChange={(value) => {
+            if (value === SKILL_CREATE) {
+              openResourcesTab()
+              return
+            }
+            const [type, ...rest] = value.split(':')
+            const skillId = rest.join(':')
+            if ((type !== 'custom' && type !== 'anthropic') || skillId === '') return
+            onChange([...skills, { type, skillId, version: before.find((entry) => entry.type === type && entry.skillId === skillId)?.version ?? null }])
+          }}
+        />
       </Stack>
     </SectionCollapsible>
   )
@@ -957,7 +1041,7 @@ function McpToolSettings({ agent }: { agent: AgentDetail }) {
   )
 }
 
-/** Le brouillon YAML de l'agent : tout ce que le formulaire n'écrit pas (prompt, skills, réglages par outil MCP...). */
+/** Le brouillon YAML de l'agent : tout ce que le formulaire n'écrit pas (prompt, réglages par outil MCP...). */
 function YamlZone({ agent }: { agent: AgentDetail }) {
   const ref = agentDraft(agent.id)
   const reread = (): void => run(async () => {
@@ -1137,7 +1221,7 @@ function AgentFormBody({ id, base, version, name, agent }: BodyProps) {
           {agent !== null ? <McpToolSettings agent={agent} /> : null}
         </Stack>
       </SectionCollapsible>
-      <SkillsZone agent={agent} />
+      <SkillsZone skills={form.skills} before={draftBase.skills} disabled={locked} onChange={(skills) => change({ skills })} />
       <MultiagentZone
         form={form}
         models={agentModels()}

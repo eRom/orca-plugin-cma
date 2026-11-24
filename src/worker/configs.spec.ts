@@ -57,7 +57,6 @@ test('maps the Incident commander agent', () => {
   expect(detail.mcpServers[0]?.enabled).toBe(true)
   expect(detail.mcpServers[0]?.policy).toBe('always_ask')
   expect(detail.mcpServers[0]?.overrides).toEqual([])
-  expect(detail.skills).toEqual([])
   expect(detail.multiagent).toBe(null)
 })
 
@@ -113,17 +112,6 @@ test('joins each MCP server with its toolset and per-tool settings', () => {
   expect(detail.mcpServers[1]?.name).toBe('linear')
   expect(detail.mcpServers[1]?.policy).toBe('always_allow')
   expect(detail.mcpServers[1]?.overrides).toEqual([{ name: 'delete_issue', enabled: false, policy: 'always_ask' }])
-})
-
-test('lists skill ids', () => {
-  const detail = toAgentDetail({
-    ...agent,
-    skills: [
-      { type: 'anthropic', skill_id: 'xlsx', version: 'latest' },
-      { type: 'custom', skill_id: 'skill_01abc', version: '3' }
-    ]
-  })
-  expect(detail.skills).toEqual(['xlsx', 'skill_01abc'])
 })
 
 // SYNTHÉTIQUES, jamais observés : aucun agent multiagent n'existe dans le workspace de test.

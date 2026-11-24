@@ -12,6 +12,7 @@ import {
   BUILTIN_TOOLS,
   MAX_SAVED_AGENTS,
   type AgentForm,
+  type AgentSkillRef,
   type AgentToolsForm,
   type ApiResult,
   POLICY_LABELS,
@@ -93,7 +94,9 @@ export function toAgentForm(agent: BetaManagedAgentsAgent): AgentForm {
       // Sans `mcp_toolset`, le serveur n'expose aucun outil : la politique du formulaire vaut la plus prudente.
       return { name: server.name, url: server.url, policy: toolset?.default_config.permission_policy.type ?? 'always_ask' }
     }),
-    multiagent: toMultiagentForm(agent.multiagent)
+    multiagent: toMultiagentForm(agent.multiagent),
+    // La réponse rend toujours la version épinglée de chaque skill : elle repart telle quelle tant que le skill reste.
+    skills: agent.skills.map((skill) => ({ type: skill.type, skillId: skill.skill_id, version: skill.version }))
   }
 }
 
@@ -283,6 +286,28 @@ function applyMultiagent(doc: AgentDocument, form: MultiagentForm | null, base: 
 }
 
 /**
+ * Les skills : seuls ceux que le formulaire a retirés ou ajoutés touchent la liste de l'agent vivant. Un skill resté
+ * garde l'entrée du document (donc son épingle, même changée ailleurs) ; un skill ajouté part sans version (l'API
+ * épingle alors la dernière). Une création écrit la liste du formulaire.
+ */
+function applySkills(doc: AgentDocument, form: AgentSkillRef[], base: AgentSkillRef[] | null): void {
+  const wanted = new Set(form.map((skill) => skill.skillId))
+  const known = new Set((base ?? []).map((skill) => skill.skillId))
+  const removed = (base ?? []).filter((skill) => !wanted.has(skill.skillId)).map((skill) => skill.skillId)
+  const added = form.filter((skill) => !known.has(skill.skillId))
+  if (removed.length === 0 && added.length === 0) {
+    return
+  }
+  const live: Mapping[] = Array.isArray(doc.skills) ? (doc.skills as Mapping[]).filter((entry) => !removed.includes(String(entry.skill_id))) : []
+  for (const skill of added) {
+    if (!live.some((entry) => entry.skill_id === skill.skillId)) {
+      live.push(skill.version === null ? { type: skill.type, skill_id: skill.skillId } : { type: skill.type, skill_id: skill.skillId, version: skill.version })
+    }
+  }
+  doc.skills = live
+}
+
+/**
  * Le formulaire reporté sur un document : seul ce qui diffère de `base` est écrit (tout, pour une création, `base`
  * valant `null`). Le reste du document, y compris ce qu'un autre éditeur a changé, passe tel quel. Le document
  * reçu n'est pas modifié.
@@ -300,6 +325,7 @@ export function applyAgentForm(doc: AgentDocument, form: AgentForm, base: AgentF
   applyBuiltinTools(next, form.builtinTools, base?.builtinTools ?? null)
   applyMcpServers(next, form.mcpServers, base?.mcpServers ?? [])
   applyMultiagent(next, form.multiagent ?? null, base?.multiagent ?? null)
+  applySkills(next, form.skills, base?.skills ?? null)
   if (Array.isArray(next.tools) && next.tools.length === 0 && !('tools' in doc)) {
     delete next.tools
   }
@@ -442,6 +468,22 @@ function multiagentChanges(form: MultiagentForm | null, base: MultiagentForm | n
   memberChange('Workflows', form.workflows, base.workflows, out)
 }
 
+/** Une ligne par skill ajouté ou retiré (le worker n'a que les identifiants : `nameSkills` les remplace par les noms). */
+function skillChanges(form: AgentSkillRef[], base: AgentSkillRef[], out: FieldChange[]): void {
+  const before = new Set(base.map((skill) => skill.skillId))
+  const after = new Set(form.map((skill) => skill.skillId))
+  for (const skill of form) {
+    if (!before.has(skill.skillId)) {
+      out.push({ path: SKILL_PATH, before: null, after: skill.skillId, lines: null })
+    }
+  }
+  for (const skill of base) {
+    if (!after.has(skill.skillId)) {
+      out.push({ path: SKILL_PATH, before: skill.skillId, after: null, lines: null })
+    }
+  }
+}
+
 /**
  * La revue d'un formulaire, dans ses propres mots : une ligne par réglage que la personne a changé (tout ce qui est
  * posé, pour une création). Le différentiel du document en donnerait davantage (un serveur ajouté y amène aussi son
@@ -472,6 +514,7 @@ export function formChanges(form: AgentForm, base: AgentForm | null): FieldChang
   builtinChanges(form.builtinTools, base?.builtinTools ?? null, out)
   serverChanges(form.mcpServers, base?.mcpServers ?? [], out)
   multiagentChanges(form.multiagent ?? null, base?.multiagent ?? null, out)
+  skillChanges(form.skills, base?.skills ?? [], out)
   return out
 }
 
@@ -490,6 +533,7 @@ export async function agentFormOptions(client: Anthropic, log: (message: string)
 }
 
 const SAVED_AGENT_SUFFIX = ' saved agent'
+const SKILL_PATH = 'Skill'
 
 /**
  * Les lignes « … saved agent » de la revue disent le nom de l'agent, pas son identifiant : une lecture de la liste
@@ -512,6 +556,29 @@ async function nameSavedAgents(store: ClientStore, agentId: string | null, chang
   return changes.map((change) =>
     change.path.endsWith(SAVED_AGENT_SUFFIX) ? { ...change, before: nameOf(change.before), after: nameOf(change.after) } : change
   )
+}
+
+/**
+ * Les lignes « Skill » de la revue disent le nom du skill, pas son identifiant : une lecture des skills de l'espace
+ * puis de ceux d'Anthropic, seulement quand il y a de telles lignes. Une liste qui échoue laisse les identifiants
+ * (la revue reste juste).
+ */
+async function nameSkills(store: ClientStore, changes: FieldChange[]): Promise<FieldChange[]> {
+  if (!changes.some((change) => change.path === SKILL_PATH)) {
+    return changes
+  }
+  const names = new Map<string, string>()
+  for (const source of ['custom', 'anthropic']) {
+    try {
+      for await (const skill of (await store.get()).skills.list({ source })) {
+        names.set(skill.id, skill.display_name)
+      }
+    } catch {
+      // Les identifiants de cette source restent : la revue est exacte, seulement moins lisible.
+    }
+  }
+  const nameOf = (id: string | null): string | null => (id === null ? null : abbreviate(names.get(id) ?? id))
+  return changes.map((change) => (change.path === SKILL_PATH ? { ...change, before: nameOf(change.before), after: nameOf(change.after) } : change))
 }
 
 export type PrepareAgentFormInput = { agentId: string | null; baseVersion: number | null; form: AgentForm; base: AgentForm | null }
@@ -570,7 +637,7 @@ export async function prepareAgentForm(
     // exactement l'envoi. Changé ailleurs depuis, l'envoi (forcé par « Apply anyway ») peut porter plus que cet
     // écart (un toolset recréé, une politique déjà posée) : la revue montre alors le document, exact.
     const described = liveVersion === baseVersion ? formChanges(form, agentId === null ? null : base) : []
-    const changes = await nameSavedAgents(store, agentId, described.length > 0 ? described : documentChanges)
+    const changes = await nameSkills(store, await nameSavedAgents(store, agentId, described.length > 0 ? described : documentChanges))
     const commit = async (force: boolean): Promise<ApiResult<Committed>> => {
       try {
         const agent = await sendAgent(await store.get(), agentId, baseVersion, before, after, force)

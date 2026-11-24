@@ -1,10 +1,11 @@
 import { read } from 'orca'
 import { assert, mockHost, mount, test } from 'orca/testing'
-import type { AgentDetail, AgentForm, ConfigKind, ConfigRow, DraftInfo, DraftRef, PreparedWrite } from '../protocol'
+import type { AgentDetail, AgentForm, ConfigKind, ConfigRow, DraftInfo, DraftRef, PreparedWrite, SkillRow } from '../protocol'
 import { BUILTIN_TOOLS } from '../protocol'
 import * as panel from '../panel'
 import { leaveAgentView, withoutTransientFlows } from './agent-form'
 import { formDrafts } from './form-state'
+import { homeTab, nav } from './state'
 
 const WITH_KEY = { hasKey: true, keyRejected: false, workspaceId: 'wrkspc_x', workspaces: [{ localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_x', active: true }] }
 const FOLDER = '/Users/someone/.config/agent-claude-managed/managed-agents'
@@ -20,7 +21,8 @@ const FORM: AgentForm = {
     tools: BUILTIN_TOOLS.map((name) => ({ name, enabled: name === 'web_search' ? false : null, policy: null }))
   },
   mcpServers: [{ name: 'github', url: 'https://api.githubcopilot.com/mcp/', policy: 'always_ask' }],
-  multiagent: null
+  multiagent: null,
+  skills: [{ type: 'custom', skillId: 'skill_triage', version: '1' }]
 }
 
 const DETAIL: AgentDetail = {
@@ -43,7 +45,6 @@ const DETAIL: AgentDetail = {
       overrides: [{ name: 'list_commits', enabled: true, policy: 'always_allow' }]
     }
   ],
-  skills: ['skill_triage'],
   multiagent: null,
   multiagentCoordinator: false
 }
@@ -57,6 +58,12 @@ const NEW_DETAIL: AgentDetail = {
 }
 
 const ROWS: ConfigRow[] = [{ kind: 'agent', id: 'agent_a', name: 'Incident commander', summary: 'v5 · claude-haiku-5-5' }]
+
+const skillRow = (id: string, name: string): SkillRow => ({ id, name, latestVersionId: '9', updatedAt: '2026-11-21T10:00:00Z' })
+/** Les skills de l'espace : celui que l'agent porte déjà (`skill_triage`) et un autre. */
+const CUSTOM_SKILLS: SkillRow[] = [skillRow('skill_triage', 'incident-triage'), skillRow('skill_vulgarise', 'vulgarise')]
+/** Ceux d'Anthropic, tels que l'API les liste. */
+const ANTHROPIC_SKILLS: SkillRow[] = [skillRow('xlsx', 'xlsx'), skillRow('pdf', 'pdf')]
 
 const PREPARED: PreparedWrite = {
   token: 'plugin-test-token-QUOKKA-xyz',
@@ -108,6 +115,8 @@ function requests(calls: Calls, over: Record<string, unknown> = {}) {
       return { ok: true, value: id === 'agent_new' ? NEW_DETAIL : DETAIL }
     },
     'agent.formOptions': { ok: true, value: { models: ['claude-sonnet-5', 'claude-opus-5'] } },
+    'skills.list': { ok: true, value: CUSTOM_SKILLS },
+    'skills.listAnthropic': { ok: true, value: ANTHROPIC_SKILLS },
     'agent.prepareForm': (input: PrepareInput) => {
       calls.prepares.push(input)
       return { ok: true, value: PREPARED }
@@ -566,7 +575,7 @@ test('keeps the read-only summaries and one Edit in YAML link that opens the age
   const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
   for (const title of [/System prompt \(optional\)/, /Skills \(optional\)/, /Tools \(optional\)/]) await openSection(view, title)
   assert.equal(view.find({ type: 'CodeView' })?.props.code, 'You are an incident commander.')
-  assert.ok(view.find({ text: /skill_triage/ }))
+  assert.ok(view.find({ text: 'incident-triage' }))
 
   assert.ok(view.find({ type: 'KeyValue', label: 'github tool settings' })?.text.includes('list_commits'))
   const links = view.findAll({ role: 'button', text: 'Edit in YAML' })
@@ -580,6 +589,169 @@ test('keeps the read-only summaries and one Edit in YAML link that opens the age
   await view.unmount()
 })
 
+
+// --- Skills ---
+
+const SKILLS_LABEL = 'Add skill'
+const ADD_SKILL = { label: SKILLS_LABEL }
+const WITH_RESOURCES = { 'files.list': { ok: true, value: [] } }
+
+/** Les options du menu des skills, telles que le panneau les rend. */
+function skillOptions(view: View): { value: string; label: string; disabled?: boolean }[] {
+  const options = view.find({ type: 'Select', label: SKILLS_LABEL })?.props.options
+  assert.ok(Array.isArray(options))
+  return options as { value: string; label: string; disabled?: boolean }[]
+}
+
+const skillsOf = (calls: Calls) => calls.prepares[0]?.form.skills
+
+/** Le résumé de la section Skills : il ne se montre que repliée, donc on la ferme le temps de le lire, puis on la rouvre. */
+async function skillsSummary(view: View): Promise<unknown> {
+  const section = { type: 'Collapsible', text: /Skills \(optional\)/ } as const
+  if (view.find(section)?.props.open === true) await view.toggle(section)
+  const summary = view.find(section)?.props.description
+  await view.toggle(section)
+  return summary
+}
+
+test('skills show as chips with their name and origin, and the menu lists the custom ones, then Anthropic ones, a separator and Create skill', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  await openSection(view, /Skills \(optional\)/)
+  assert.equal(await skillsSummary(view), '1 skill')
+  assert.ok(view.find({ text: 'incident-triage' }))
+  assert.ok(view.find({ type: 'Badge', text: 'Custom' }))
+  assert.ok(view.find({ role: 'button', label: 'Remove incident-triage' }))
+  assert.equal(view.find({ type: 'Select', label: SKILLS_LABEL })?.props.placeholder, '+ Add skill')
+  // L'agent porte déjà `skill_triage` : il ne se propose plus.
+  assert.deepEqual(
+    skillOptions(view).map((option) => option.label),
+    ['vulgarise · Custom', 'xlsx · Anthropic', 'pdf · Anthropic', '──────────', '+ Create skill ↗']
+  )
+  assert.deepEqual(
+    skillOptions(view).map((option) => option.disabled === true),
+    [false, false, false, true, false]
+  )
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('choosing a skill adds a chip with its origin badge, sends it without a version, and the menu returns to its prompt', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  await openSection(view, /Skills \(optional\)/)
+  await view.select(ADD_SKILL, 'anthropic:xlsx')
+  assert.ok(view.find({ type: 'Badge', text: 'Anthropic' }))
+  assert.ok(view.find({ role: 'button', label: 'Remove xlsx' }))
+  assert.equal(await skillsSummary(view), '2 skills')
+  assert.equal(skillOptions(view).some((option) => option.value === 'anthropic:xlsx'), false)
+  assert.equal(view.valueOf(ADD_SKILL), '')
+  await view.press({ role: 'button', text: 'Review changes' })
+  assert.deepEqual(skillsOf(calls), [
+    { type: 'custom', skillId: 'skill_triage', version: '1' },
+    { type: 'anthropic', skillId: 'xlsx', version: null }
+  ])
+  await view.unmount()
+})
+
+test('the close button of a chip removes only that skill, and picking it again keeps its pin so nothing changes', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_DETAIL })
+  await openSection(view, /Skills \(optional\)/)
+  await view.press({ role: 'button', label: 'Remove incident-triage' })
+  assert.equal(view.find({ text: 'incident-triage' }), null)
+  assert.equal(await skillsSummary(view), 'None')
+  assert.equal(button(view, 'Review changes')?.disabled, false)
+  await view.select(ADD_SKILL, 'custom:skill_triage')
+  assert.ok(view.find({ text: 'incident-triage' }))
+  assert.equal(button(view, 'Review changes')?.disabled, true)
+  await view.press({ role: 'button', label: 'Remove incident-triage' })
+  await view.press({ role: 'button', text: 'Review changes' })
+  assert.deepEqual(skillsOf(calls), [])
+  await view.unmount()
+})
+
+test('Create skill switches the home to the Resources tab, leaves the agent screen and adds no skill', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, WITH_RESOURCES) }), persisted: OPEN_DETAIL })
+  await openSection(view, /Skills \(optional\)/)
+  await view.select(ADD_SKILL, 'create')
+  assert.equal(read(homeTab), 'resources')
+  assert.deepEqual(read(nav), [{ view: 'home' }])
+  assert.deepEqual(read(formDrafts), {})
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('a skill added before Create skill is still in the kept input when the agent is opened again', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, WITH_RESOURCES) }), persisted: OPEN_DETAIL })
+  await openSection(view, /Skills \(optional\)/)
+  await view.select(ADD_SKILL, 'custom:skill_vulgarise')
+  await view.select(ADD_SKILL, 'create')
+  const drafts = read(formDrafts)
+  const kept = drafts['agent:agent_a']?.form as AgentForm | undefined
+  assert.deepEqual(
+    kept?.skills.map((skill) => skill.skillId),
+    ['skill_triage', 'skill_vulgarise']
+  )
+  await view.unmount()
+  // L'agent rouvert depuis la liste retrouve la saisie.
+  const again = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: { plugin: { ...OPEN_DETAIL.plugin, 'forms.drafts': drafts } } })
+  await openSection(again, /Skills \(optional\)/)
+  assert.ok(again.find({ text: 'vulgarise' }))
+  assert.ok(again.find({ text: 'Unsaved changes' }))
+  await again.unmount()
+})
+
+test('when the Anthropic skills cannot be listed, the menu still offers the custom ones and Create skill', async () => {
+  const calls = newCalls()
+  const failing = { 'skills.listAnthropic': { ok: false, code: 'other', error: 'Anthropic skills are unavailable.' } }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, failing) }), persisted: OPEN_DETAIL })
+  await openSection(view, /Skills \(optional\)/)
+  assert.deepEqual(
+    skillOptions(view).map((option) => option.label),
+    ['vulgarise · Custom', '──────────', '+ Create skill ↗']
+  )
+  await view.unmount()
+})
+
+test('a skill the lists do not know shows its raw id, and the menu is disabled while a review holds the form', async () => {
+  const calls = newCalls()
+  const unknown = { skills: [{ type: 'anthropic', skillId: 'docx', version: 'latest' }] }
+  const detail = { 'configs.detail': { ok: true, value: { ...DETAIL, form: { ...FORM, ...unknown } } } }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, { ...detail, 'skills.listAnthropic': { ok: false, code: 'other', error: 'x' } }) }), persisted: OPEN_DETAIL })
+  await openSection(view, /Skills \(optional\)/)
+  assert.ok(view.find({ text: 'docx' }))
+  assert.ok(view.find({ type: 'Badge', text: 'Anthropic' }))
+  assert.equal(view.find({ type: 'Select', label: SKILLS_LABEL })?.props.disabled, false)
+  await view.select(ADD_SKILL, 'custom:skill_vulgarise')
+  await view.press({ role: 'button', text: 'Review changes' })
+  assert.equal(view.find({ type: 'Select', label: SKILLS_LABEL })?.props.disabled, true)
+  assert.equal(view.find({ role: 'button', label: 'Remove docx' })?.disabled, true)
+  await view.unmount()
+})
+
+test('a form kept from before the skills field is ignored instead of breaking the section', async () => {
+  const calls = newCalls()
+  const { skills: _skills, ...old } = FORM
+  const persisted = { plugin: { ...OPEN_DETAIL.plugin, 'forms.drafts': { 'agent:agent_a': { form: old, base: old, baseStamp: DETAIL.version } } } }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted })
+  await openSection(view, /Skills \(optional\)/)
+  assert.ok(view.find({ text: 'incident-triage' }))
+  assert.equal(view.find({ text: 'Unsaved changes' }), null)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('a new agent starts without skills and offers the same menu', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls) }), persisted: OPEN_NEW })
+  await openSection(view, /Skills \(optional\)/)
+  assert.equal(await skillsSummary(view), 'None')
+  assert.equal(skillOptions(view).length, 6)
+  await view.unmount()
+})
 
 // --- Multiagent ---
 

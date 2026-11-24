@@ -41,7 +41,8 @@ const AGENT: AgentDetail = {
       tools: BUILTIN_TOOLS.map((name) => ({ name, enabled: name === 'web_search' ? false : null, policy: null }))
     },
     mcpServers: [{ name: 'github', url: 'https://api.githubcopilot.com/mcp/', policy: 'always_ask' }],
-    multiagent: null
+    multiagent: null,
+    skills: [{ type: 'custom', skillId: 'skill_triage', version: '1' }]
   },
   model: 'claude-haiku-5-5',
   effort: 'high',
@@ -61,7 +62,6 @@ const AGENT: AgentDetail = {
       overrides: [{ name: 'list_commits', enabled: true, policy: 'always_allow' }]
     }
   ],
-  skills: ['skill_triage'],
   multiagent: 'Multiagent: advisor claude-opus-5',
   multiagentCoordinator: false
 }
@@ -120,6 +120,8 @@ function requests(over: Record<string, unknown> = {}) {
     'sessions.visibility': { bootId: 'boot-1', watching: null },
     'sessions.list': { ok: true, value: [] },
     'configs.list': ({ kind }: { kind: ConfigKind }) => ({ ok: true, value: ROWS[kind] }),
+    'skills.list': { ok: true, value: [] },
+    'skills.listAnthropic': { ok: true, value: [] },
     ...over
   } as never
 }

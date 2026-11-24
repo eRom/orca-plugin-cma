@@ -17,6 +17,7 @@ export const UPLOAD_TIMEOUT_MS = 105_000
 
 export type ResourceHandlers = {
   listSkills(): Promise<ApiResult<SkillRow[]>>
+  listAnthropicSkills(): Promise<ApiResult<SkillRow[]>>
   uploadSkill(input: { folder: string }): Promise<ApiResult<SkillRow>>
   uploadSkillVersion(input: { skillId: string; folder: string }): Promise<ApiResult<{ versionId: string }>>
   deleteSkill(input: { skillId: string }): Promise<ApiResult<null>>
@@ -110,6 +111,13 @@ export function createResourceHandlers(
       attempt(store, async (client) => {
         const skills = await collect(client.skills.list({ source: 'custom' }))
         return newestFirst(skills.map(toSkillRow), (row) => row.updatedAt)
+      }),
+
+    // Les skills d'Anthropic (xlsx, pptx, ...) viennent de l'API : la liste n'est jamais écrite en dur ici.
+    listAnthropicSkills: () =>
+      attempt(store, async (client) => {
+        const skills = await collect(client.skills.list({ source: 'anthropic' }))
+        return skills.map(toSkillRow)
       }),
 
     // Les `File` partent sans type MIME, comme dans l'exemple du SDK (`createReadStream`). Si l'API en refuse un

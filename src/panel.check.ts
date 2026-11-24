@@ -89,12 +89,27 @@ const AGENT_FORM: AgentForm = {
     advisor: 'claude-opus-5',
     subagents: { enabled: true, inlineAgents: true, savedAgents: [{ id: 'agent_01helper', version: 2 }, { id: 'agent_01review', version: 1 }] },
     workflows: { enabled: false, inlineAgents: true, savedAgents: [] }
-  }
+  },
+  skills: [
+    { type: 'custom', skillId: 'skill_01Aa', version: '1759178010641129' },
+    { type: 'anthropic', skillId: 'xlsx', version: 'latest' }
+  ]
 }
 
-/** Ce que l'écran d'un agent lit : les modèles de l'API et le dossier de brouillons (prêt, sans brouillon). */
+/** Ce que l'écran d'un agent lit : les modèles de l'API, les skills (de l'espace et d'Anthropic) et le dossier de brouillons (prêt, sans brouillon). */
 const AGENT_READS = {
   'agent.formOptions': { ok: true as const, value: { models: ['claude-haiku-5-5', 'claude-sonnet-5', 'claude-opus-5'] } },
+  'skills.list': {
+    ok: true as const,
+    value: [{ id: 'skill_01Aa', name: 'incident-triage', latestVersionId: '1759178010641129', updatedAt: '2026-11-21T10:00:00Z' }] satisfies SkillRow[]
+  },
+  'skills.listAnthropic': {
+    ok: true as const,
+    value: [
+      { id: 'xlsx', name: 'xlsx', latestVersionId: '1', updatedAt: '2026-11-01T10:00:00Z' },
+      { id: 'pdf', name: 'pdf', latestVersionId: '1', updatedAt: '2026-11-01T10:00:00Z' }
+    ] satisfies SkillRow[]
+  },
   ...NO_DRAFTS
 }
 
@@ -568,7 +583,6 @@ function agentScenario(options: { unsaved?: boolean } = {}) {
       },
       { name: 'linear', url: 'https://mcp.linear.app/mcp', enabled: true, policy: 'always_allow', overrides: [] }
     ],
-    skills: ['skill_triage'],
     multiagent: 'Multiagent: advisor claude-opus-5, subagents (2 predefined)',
     multiagentCoordinator: false
   }
