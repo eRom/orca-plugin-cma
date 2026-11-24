@@ -53,16 +53,16 @@ test('badgeLabel and badgeTone cover every badge', () => {
   }
 })
 
-test('statusBarText says Claude Managed alone when nothing runs and nothing waits', () => {
+test('statusBarText says Managed Agents alone when nothing runs and nothing waits', () => {
   const result = statusBarText([row('a', 'idle', 1), row('b', 'blocked', 2, 1)])
-  assert.equal(result.text, 'Claude Managed')
+  assert.equal(result.text, 'Managed Agents')
   assert.equal(result.tone, 'neutral')
-  assert.equal(result.tooltip, 'Claude Managed Agents')
+  assert.equal(result.tooltip, 'Managed Agents')
 })
 
 test('statusBarText counts running sessions only, and lists their titles in the tooltip', () => {
   const result = statusBarText([row('a', 'running', 1, 0, 'Triage'), row('b', 'running', 2), row('c', 'idle', 3), row('d', 'rescheduling', 4)])
-  assert.equal(result.text, 'Claude Managed · 2 running')
+  assert.equal(result.text, 'Managed Agents · 2 running')
   assert.equal(result.tone, 'neutral')
   assert.equal(result.tooltip, 'Triage\nb')
 })

@@ -32356,13 +32356,13 @@ function createResourceHandlers(store, read = {
 init_sdk();
 
 // src/shared/sessions.ts
-var BAR_NAME = "Claude Managed";
+var BAR_NAME = "Managed Agents";
 function statusBarText(rows) {
   const waiting = rows.filter((row) => row.badge === "needs_approval");
   if (waiting.length === 0) {
     const running = rows.filter((row) => row.badge === "running");
     if (running.length === 0)
-      return { text: BAR_NAME, tone: "neutral", tooltip: "Claude Managed Agents" };
+      return { text: BAR_NAME, tone: "neutral", tooltip: "Managed Agents" };
     return { text: `${BAR_NAME} · ${running.length} running`, tone: "neutral", tooltip: running.map((row) => row.title ?? row.id).join(`
 `) };
   }

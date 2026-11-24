@@ -11,7 +11,7 @@
   "icon": "media/icon.png",
   "cover": {
     "path": "media/cover.png",
-    "alt": "The Claude Managed Agents panel listing four sessions, beside a session waiting for approval to open a release pull request."
+    "alt": "The Managed Agents panel listing four sessions, beside a session waiting for approval to open a release pull request."
   },
   "screenshots": [
     {
@@ -49,8 +49,8 @@
   "capabilities": [{ "kind": "secrets:own" }, { "kind": "storage:own" }, { "kind": "workspace:read" }, { "kind": "workspace:write" }],
   "contributes": {
     "panels": [
-      { "id": "managed", "title": "Claude Managed Agents", "icon": "cloud", "entry": "src/panel.tsx", "ui": "components" }
+      { "id": "managed", "title": "Managed Agents", "icon": "cloud", "entry": "src/panel.tsx", "ui": "components" }
     ],
-    "statusBarItems": [{ "id": "approvals", "icon": "cloud", "text": "Managed", "tooltip": "Claude Managed Agents" }]
+    "statusBarItems": [{ "id": "approvals", "icon": "cloud", "text": "Managed Agents", "tooltip": "Managed Agents" }]
   }
 }
