@@ -19,6 +19,8 @@ import { createWatcher, sdkEventSource } from './worker/stream'
 import { createWorkspaceHandlers } from './worker/workspace-handlers'
 import { createWorkspaces } from './worker/workspaces'
 
+let stopBackground: () => void = () => {}
+
 export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   // Les workspaces associés : un index sans clé et une clé par secret. Le client suit la clé de l'actif.
   const workspaces = createWorkspaces({
@@ -204,6 +206,8 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     log: (message) => orca.log(message)
   })
   let drafts: Drafts | null = null
+  // Le dossier sur lequel `drafts` est construit : un autre dossier à la relecture force la reconstruction.
+  let draftsFolder: string | null = null
   // Les adaptateurs ne servent qu'à travers `draft.*`, donc seulement une fois `drafts` construit.
   const liveDrafts = (): Drafts => {
     if (drafts === null) throw new Error('The drafts folder is not chosen.')
@@ -226,11 +230,28 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     now: () => new Date(),
     log: (message) => orca.log(message)
   })
-  const chosenFolder = await location.folder().catch((error: unknown) => {
-    orca.log(`drafts folder not resolved: ${describeError(error).message}`)
-    return null
-  })
-  if (chosenFolder !== null) drafts = buildDrafts(chosenFolder)
+  const adopt = (folder: string | null): Drafts | null => {
+    if (folder === null) {
+      drafts = null
+      draftsFolder = null
+    } else if (folder !== draftsFolder || drafts === null) {
+      drafts = buildDrafts(folder)
+      draftsFolder = folder
+    }
+    return drafts
+  }
+  // Le dossier se relit à chaque requête : un projet masqué ou retiré dans Orca retire les brouillons, un projet
+  // revenu les rend, et une lecture refusée au démarrage ne laisse pas le plugin sans brouillons pour toujours.
+  // Une lecture refusée n'efface rien : elle se journalise et la requête en cours se refuse, la suivante relit.
+  const currentDrafts = async (): Promise<Drafts | null> => {
+    try {
+      return adopt(await location.folder())
+    } catch (error) {
+      orca.log(`drafts folder not resolved: ${describeError(error).message}`)
+      return null
+    }
+  }
+  await currentDrafts()
   // Le choix d'un fichier et l'envoi groupé de mémoires : le contenu des fichiers reste dans le worker.
   orca.panels.handle('file.pick', createFilePicker({ platform: process.platform, run: runOsascript }))
   // Les skills et les fichiers de l'espace : listes, envois (le contenu est lu ici) et suppressions.
@@ -255,13 +276,17 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   orca.panels.handle('files.upload', resources.uploadFile)
   orca.panels.handle('files.delete', resources.deleteFile)
   orca.panels.handle('memory.stageUploads', createMemoryUploads(store, pendingWrites, (message) => orca.log(message)))
-  orca.panels.handle('memory.rename', createMemoryRename(store, () => drafts, (message) => orca.log(message)))
+  orca.panels.handle('memory.rename', async (input) => {
+    const current = await currentDrafts()
+    return createMemoryRename(store, () => current, (message) => orca.log(message))(input)
+  })
   // Un agent archivé n'a plus de brouillon propre à garder : son fichier et son nom se libèrent.
   const archiveThenRelease = thenRefreshSessions(writes.archive)
   orca.panels.handle('resource.archive', async (ref) => {
     const result = await archiveThenRelease(ref)
-    if (result.ok && drafts !== null) {
-      await releaseArchivedDrafts(ref, liveDrafts, (message) => orca.log(message))
+    const current = result.ok ? await currentDrafts() : null
+    if (current !== null) {
+      await releaseArchivedDrafts(ref, () => current, (message) => orca.log(message))
     }
     return result
   })
@@ -269,15 +294,19 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   const removeThenRelease = thenRefreshSessions(writes.remove)
   orca.panels.handle('resource.delete', async (ref) => {
     const result = await removeThenRelease(ref)
-    if (result.ok && drafts !== null) {
-      await releaseDeletedDrafts(ref, liveDrafts, (message) => orca.log(message))
+    const current = result.ok ? await currentDrafts() : null
+    if (current !== null) {
+      await releaseDeletedDrafts(ref, () => current, (message) => orca.log(message))
     }
     return result
   })
   // Le formulaire d'agent : les modèles proposés, puis l'écriture mise en attente (confirmée par `write.commit`).
   orca.panels.handle('agent.formOptions', () => attempt(store, (client) => agentFormOptions(client, (message) => orca.log(message))))
   orca.panels.handle('agent.prepareForm', (input) => prepareAgentForm(store, pendingWrites, input))
-  orca.panels.handle('drafts.status', async () => (drafts === null ? { folder: '', ready: false } : drafts.status()))
+  orca.panels.handle('drafts.status', async () => {
+    const current = await currentDrafts()
+    return current === null ? { folder: '', ready: false } : current.status()
+  })
   // Les projets où loger les brouillons ; le choix déplace les brouillons, puis `drafts` est reconstruit sur le nouveau dossier.
   orca.panels.handle('drafts.projects', async (): Promise<ApiResult<DraftsProject[]>> => {
     try {
@@ -289,19 +318,32 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   orca.panels.handle('drafts.choose', async ({ projectId }): Promise<ApiResult<DraftsStatus>> => {
     const chosen = await location.choose(projectId)
     if (!chosen.ok) return chosen
+    // Rechoisir le projet courant ne déplace rien : on reconstruit sur le dossier, même inchangé.
     drafts = buildDrafts(chosen.value.folder)
+    draftsFolder = chosen.value.folder
     return { ok: true, value: await drafts.status() }
   })
-  orca.panels.handle('draft.open', (ref) => guardDrafts(drafts, (current) => current.open(ref)))
-  orca.panels.handle('draft.discard', (ref) => guardDrafts(drafts, (current) => current.discard(ref)))
-  orca.panels.handle('draft.state', (ref) => guardDrafts(drafts, (current) => current.state(ref)))
-  orca.panels.handle('draft.prepare', (ref) => guardDrafts(drafts, (current) => current.prepare(ref)))
-  orca.panels.handle('workspace.back', ({ workspaceId }) =>
-    drafts === null ? { ok: true as const, value: null } : drafts.back(workspaceId)
-  )
+  orca.panels.handle('draft.open', async (ref) => guardDrafts(await currentDrafts(), (current) => current.open(ref)))
+  orca.panels.handle('draft.discard', async (ref) => guardDrafts(await currentDrafts(), (current) => current.discard(ref)))
+  orca.panels.handle('draft.state', async (ref) => guardDrafts(await currentDrafts(), (current) => current.state(ref)))
+  orca.panels.handle('draft.prepare', async (ref) => guardDrafts(await currentDrafts(), (current) => current.prepare(ref)))
+  orca.panels.handle('workspace.back', async ({ workspaceId }) => {
+    const current = await currentDrafts()
+    return current === null ? { ok: true as const, value: null } : current.back(workspaceId)
+  })
 
   // Le premier tour du sondeur attend la migration : sans elle, il lirait un index encore vide.
   await migrated
   poller.start()
+  stopBackground = () => {
+    poller.stop()
+    watcher.stop()
+  }
   orca.log('agent-claude-managed worker ready')
+}
+
+/** Arrête ce que le worker fait en tâche de fond (sondeur, suivi en direct) : Orca l'appelle au déchargement du plugin. */
+export function deactivate(): void {
+  stopBackground()
+  stopBackground = () => {}
 }
