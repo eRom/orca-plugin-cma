@@ -1099,3 +1099,31 @@ test('the path field stays once shown for the rest of the panel session', async 
   assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
   await view.unmount()
 })
+
+test('a refused pasted path keeps the field and its text', async () => {
+  let uploads = 0
+  const host = mockHost({
+    requests: requests({
+      'files.pickFile': UNAVAILABLE,
+      'files.upload': () => {
+        uploads += 1
+        return uploads === 1 ? { ok: false, code: 'other', error: 'This file cannot be read.' } : { ok: true, value: file({ name: 'a.md' }) }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN })
+  await view.press(addFile)
+  await view.type(view.find(FILE_FIELD)!, '/nowhere/a.md')
+  await view.press({ role: 'button', text: 'Use' })
+  assert.ok(callout(view, /Could not upload/))
+  // Le champ est resté, rempli : la correction se fait sur le chemin déjà tapé.
+  assert.equal(view.find(FILE_FIELD)?.props.value, '/nowhere/a.md')
+  assert.equal(view.find({ role: 'button', text: 'Use' })?.disabled, false)
+  await view.type(view.find(FILE_FIELD)!, '/x/a.md', { replace: true })
+  await view.press({ role: 'button', text: 'Use' })
+  assert.equal(uploads, 2)
+  assert.ok(callout(view, /Uploaded a\.md\./))
+  assert.equal(view.find(FILE_FIELD), null)
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
+  await view.unmount()
+})

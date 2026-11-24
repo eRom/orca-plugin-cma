@@ -14,7 +14,7 @@ import { clipBytes } from '../shared/text'
 import { RENDER_ROW_CAP } from './config-state'
 import { askConfirmation, ConfirmPanel, deleteQuestion } from './confirm'
 import { PICK_TIMEOUT_MS } from './memory-uploads'
-import { FILE_PATH_PLACEHOLDER, FOLDER_PATH_PLACEHOLDER, pickedFromPath, pickerUnavailable } from './picker-fallback'
+import { FILE_PATH_PLACEHOLDER, FOLDER_PATH_PLACEHOLDER, PATH_MAX_LENGTH, pickedFromPath, pickerUnavailable } from './picker-fallback'
 import {
   currentGeneration,
   fileRows,
@@ -161,25 +161,30 @@ async function usePastedPath(card: CardKey): Promise<void> {
   const target = read(resourcePathTarget)[card]
   const picked = pickedFromPath(read(resourcePathDraft)[card])
   if (target === null || picked === null || read(resourceUploading)[card] !== null) return
-  closePathField(card)
   showNotice(card, null)
-  await uploadPicked(card, currentGeneration(), picked, target.skill)
+  const startedIn = currentGeneration()
+  // Le champ reste ouvert et rempli pendant l'envoi (`Use` est grisé par l'envoi en route) : un refus de lecture
+  // le laisse corriger le chemin au lieu de tout retaper. Il ne se ferme que sur un succès.
+  const uploaded = await uploadPicked(card, startedIn, picked, target.skill)
+  if (uploaded && startedIn === currentGeneration()) closePathField(card)
 }
 
-/** Envoie un choix (de la boîte ou collé), affiche l'avis et relit la liste. */
-async function uploadPicked(card: CardKey, startedIn: number, picked: PickedFile, skill: { id: string; name: string } | null): Promise<void> {
+/** Envoie un choix (de la boîte ou collé), affiche l'avis et relit la liste. Vrai quand l'envoi a réussi. */
+async function uploadPicked(card: CardKey, startedIn: number, picked: PickedFile, skill: { id: string; name: string } | null): Promise<boolean> {
   setCardValue(resourceUploading, card, clipName(skill?.name ?? picked.name))
+  let uploaded = false
   try {
     const outcome = await sendUpload(card, picked, skill)
-    if (startedIn !== currentGeneration()) return
+    if (startedIn !== currentGeneration()) return false
     // Le worker dit lui-même qu'une attente épuisée est peut-être passée : même avis que l'attente épuisée de l'hôte.
     if (outcome === 'unconfirmed' || (!outcome.ok && outcome.error === UPLOAD_UNCONFIRMED)) {
       showNotice(card, { tone: 'warning', title: UPLOAD_UNCONFIRMED, message: null })
     } else if (outcome.ok) {
+      uploaded = true
       showNotice(card, { tone: 'success', title: outcome.value, message: null })
     } else if (outcome.code === 'unauthorized') {
       await loadWorkspace()
-      return
+      return false
     } else {
       showNotice(card, refusal('Could not upload', clipBytes(outcome.error, ERROR_TEXT_LIMIT_BYTES).text))
     }
@@ -187,6 +192,7 @@ async function uploadPicked(card: CardKey, startedIn: number, picked: PickedFile
   } finally {
     if (startedIn === currentGeneration()) setCardValue(resourceUploading, card, null)
   }
+  return uploaded
 }
 
 /** Supprime une ligne. Ne lève jamais : un refus pose l'avis de la carte et rend la main, la question se ferme. */
@@ -304,7 +310,14 @@ function PathField({ card }: { card: CardKey }): OrcaElement | null {
           {`New version of ${clipName(target.skill.name)}`}
         </Text>
       )}
-      <Input label={placeholder} labelHidden placeholder={placeholder} value={draft} onChange={(value) => setCardValue(resourcePathDraft, card, value)} />
+      <Input
+        label={placeholder}
+        labelHidden
+        placeholder={placeholder}
+        maxLength={PATH_MAX_LENGTH}
+        value={draft}
+        onChange={(value) => setCardValue(resourcePathDraft, card, value)}
+      />
       <Row gap="sm">
         <Button
           variant="solid"

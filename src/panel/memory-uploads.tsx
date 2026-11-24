@@ -12,7 +12,7 @@ import { INVALID_MEMORY_PATH, isSafeMemoryPath, MEMORY_PATH_TAKEN, overlaps } fr
 import { clipBytes } from '../shared/text'
 import { ChangesPreview } from './changes'
 import { configDetail, loadConfigs, loadDetail } from './config-state'
-import { FILE_PATH_PLACEHOLDER, pickedFromPath, pickerUnavailable } from './picker-fallback'
+import { FILE_PATH_PLACEHOLDER, PATH_MAX_LENGTH, pickedFromPath, pickerUnavailable } from './picker-fallback'
 import { ERROR_TEXT_LIMIT_BYTES, loadWorkspace, run } from './state'
 
 /** Titre de l'avis d'un conflit : le même texte que celui du worker. */
@@ -365,6 +365,7 @@ function UploadLine({ storeId, row, message, locked }: LineProps) {
             label={FILE_PATH_PLACEHOLDER}
             labelHidden
             placeholder={FILE_PATH_PLACEHOLDER}
+            maxLength={PATH_MAX_LENGTH}
             value={pathDraft}
             disabled={locked}
             onChange={(value) => update(pathDrafts, (drafts) => ({ ...drafts, [row.id]: value }))}

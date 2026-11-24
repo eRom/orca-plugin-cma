@@ -13,6 +13,9 @@ export const pickerUnavailable = atom<boolean>(false)
 export const FILE_PATH_PLACEHOLDER = 'Paste the full path of the file'
 export const FOLDER_PATH_PLACEHOLDER = 'Paste the full path of the folder'
 
+/** Longueur maximale d'un chemin collé : au-delà d'un chemin réel, avant qu'un texte énorme n'alourdisse l'état ou le rendu. */
+export const PATH_MAX_LENGTH = 4096
+
 /**
  * Le chemin collé devient un choix comme celui d'une boîte : le chemin sans espaces de bord, et son dernier segment pour
  * nom (après `/` ou `\`, séparateurs de fin ignorés). `null` quand il ne reste rien.
