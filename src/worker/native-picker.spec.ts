@@ -182,14 +182,74 @@ test('a dialog tool that fails says it could not open', async () => {
   }
 })
 
-test('linux without a display answers picker_unavailable, with or without a tool, and runs no tool', async () => {
+/** Un faux système de fichiers : un dossier connu liste ses entrées, un fichier connu existe, le reste n'existe pas. */
+function fakeFiles(dirs: Record<string, string[]>, files: string[] = []): { listDir: (path: string) => Promise<string[]>; exists: (path: string) => Promise<boolean> } {
+  return {
+    listDir: async (path) => dirs[path] ?? [],
+    exists: async (path) => files.includes(path)
+  }
+}
+
+const LINUX = { platform: 'linux', home: HOME } as const
+const FILE = { kind: 'file', prompt: PROMPT } as const
+
+test('linux without any display answers picker_unavailable, with or without a tool, and runs no tool', async () => {
   const withTool = fakeRun({ zenity: { exitCode: 1 } })
-  expect(await createNativePicker({ platform: 'linux', run: withTool.run, env: {}, home: HOME }, { kind: 'file', prompt: PROMPT })()).toEqual(UNAVAILABLE)
+  expect(await createNativePicker({ ...LINUX, run: withTool.run, env: {}, ...fakeFiles({}) }, FILE)()).toEqual(UNAVAILABLE)
   const noTool = fakeRun({})
-  expect(await createNativePicker({ platform: 'linux', run: noTool.run, env: {}, home: HOME }, { kind: 'file', prompt: PROMPT })()).toEqual(UNAVAILABLE)
+  expect(await createNativePicker({ ...LINUX, run: noTool.run, env: {}, ...fakeFiles({}) }, FILE)()).toEqual(UNAVAILABLE)
   expect([...withTool.calls, ...noTool.calls]).toEqual([])
   const wayland = fakeRun({ zenity: { stdout: '/x.md\n' } })
-  expect((await createNativePicker({ platform: 'linux', run: wayland.run, env: { WAYLAND_DISPLAY: 'wayland-0' }, home: HOME }, { kind: 'file', prompt: PROMPT })()).ok).toBe(true)
+  expect((await createNativePicker({ ...LINUX, run: wayland.run, env: { WAYLAND_DISPLAY: 'wayland-0' } }, FILE)()).ok).toBe(true)
+})
+
+test('linux without any display socket answers picker_unavailable', async () => {
+  // Des fichiers qui ressemblent à des sockets sans en être, et des dossiers vides : rien à trouver.
+  const files = fakeFiles({ '/run/user/1000': ['wayland-0.lock', 'bus', 'pulse'], '/tmp/.X11-unix': ['X0.lock', 'notes'] })
+  const { run, calls } = fakeRun({ zenity: { stdout: '/x.md\n' } })
+  expect(await createNativePicker({ ...LINUX, run, env: { XDG_RUNTIME_DIR: '/run/user/1000' }, ...files }, FILE)()).toEqual(UNAVAILABLE)
+  expect(calls).toEqual([])
+})
+
+test('linux discovers an X11 display when DISPLAY is missing', async () => {
+  const files = fakeFiles({ '/tmp/.X11-unix': ['X1', 'X0'] }, ['/home/r/.Xauthority'])
+  const { run, calls } = fakeRun({ zenity: { stdout: '/home/r/x.md\n' } })
+  const answer = await createNativePicker({ ...LINUX, run, env: { PATH: '/usr/bin' }, ...files }, FILE)()
+  expect(answer).toEqual({ ok: true, value: { file: '/home/r/x.md', name: 'x.md' } })
+  expect(calls[0]?.env).toEqual({ DISPLAY: ':0', XAUTHORITY: '/home/r/.Xauthority' })
+
+  // Sans fichier d'autorisation, seul DISPLAY est ajouté.
+  const bare = fakeRun({ zenity: { stdout: '/x.md\n' } })
+  await createNativePicker({ ...LINUX, run: bare.run, env: {}, ...fakeFiles({ '/tmp/.X11-unix': ['X3', 'X12'] }) }, FILE)()
+  expect(bare.calls[0]?.env).toEqual({ DISPLAY: ':3' })
+})
+
+test('linux prefers a wayland socket from XDG_RUNTIME_DIR', async () => {
+  const files = fakeFiles({ '/run/user/1000': ['wayland-1', 'wayland-0', 'wayland-0.lock', 'bus'], '/tmp/.X11-unix': ['X0'] }, ['/home/r/.Xauthority'])
+  const { run, calls } = fakeRun({ zenity: { stdout: '/x.md\n' }, kdialog: { stdout: '/x.md\n' } })
+  await createNativePicker({ ...LINUX, run, env: { XDG_RUNTIME_DIR: '/run/user/1000' }, ...files }, FILE)()
+  expect(calls[0]?.env).toEqual({ WAYLAND_DISPLAY: 'wayland-0' })
+
+  // Le même environnement sert à chaque outil essayé (zenity absent, kdialog trouvé).
+  const fallback = fakeRun({ kdialog: { stdout: '/x.md\n' } })
+  await createNativePicker({ ...LINUX, run: fallback.run, env: { XDG_RUNTIME_DIR: '/run/user/1000' }, ...files }, FILE)()
+  expect(fallback.calls.map((call) => call.env)).toEqual([{ WAYLAND_DISPLAY: 'wayland-0' }, { WAYLAND_DISPLAY: 'wayland-0' }])
+})
+
+test('a DISPLAY already in the environment wins and nothing is probed or added', async () => {
+  let probed = 0
+  const files = { listDir: async () => (probed++, ['X7']), exists: async () => (probed++, true) }
+  const { run, calls } = fakeRun({ zenity: { stdout: '/x.md\n' } })
+  await createNativePicker({ ...LINUX, run, env: DISPLAY, ...files }, FILE)()
+  expect(calls[0]?.env).toBe(undefined)
+  expect(probed).toBe(0)
+})
+
+test('discovering a display never changes the process environment', async () => {
+  const before = JSON.stringify(process.env)
+  const { run } = fakeRun({ zenity: { stdout: '/x.md\n' } })
+  await createNativePicker({ ...LINUX, run, env: {}, ...fakeFiles({ '/tmp/.X11-unix': ['X0'] }) }, FILE)()
+  expect(JSON.stringify(process.env)).toBe(before)
 })
 
 test('a prompt starting with a dash is not read as an option', async () => {
@@ -294,6 +354,12 @@ test('runTool resolves a non-zero exit with its code and output, and passes the 
   const script = 'process.stdout.write(process.env.PICK_PROMPT ?? ""); process.stderr.write("oops"); process.exit(3)'
   const result = await runTool(process.execPath, ['-e', script], { env: { PICK_PROMPT: 'Été l\'été' } })
   expect(result).toEqual({ stdout: "Été l'été", exitCode: 3, stderr: 'oops' })
+})
+
+test('runTool merges the given environment over the worker one: PATH stays', async () => {
+  const script = 'process.stdout.write(JSON.stringify([process.env.PATH === ' + JSON.stringify(process.env.PATH ?? '') + ', process.env.DISPLAY]))'
+  const result = await runTool(process.execPath, ['-e', script], { env: { DISPLAY: ':0' } })
+  expect(result.stdout).toBe('[true,":0"]')
 })
 
 test('runTool rejects with ENOENT when the command does not exist', async () => {

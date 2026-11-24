@@ -2,6 +2,7 @@
 // PowerShell (System.Windows.Forms) sous Windows, `zenity` puis `kdialog` sous Linux. Aucun autre processus n'est lancé.
 // Sans outil de dialogue, la réponse est `picker_unavailable` : le panneau propose alors de coller un chemin.
 import { execFile } from 'node:child_process'
+import { access, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { posix, win32 } from 'node:path'
 import type { ApiResult, PickedFile } from '../protocol'
@@ -23,6 +24,10 @@ export type NativePickerDeps = {
   env?: NodeJS.ProcessEnv
   /** Le dossier personnel, où s'ouvrent les boîtes Linux ; celui de l'utilisateur par défaut. */
   home?: string
+  /** Les entrées d'un dossier, `[]` s'il n'existe pas ; sert à chercher l'affichage Linux (par défaut le vrai système de fichiers). */
+  listDir?: (path: string) => Promise<string[]>
+  /** Vrai si le chemin existe ; sert à trouver `~/.Xauthority` (par défaut le vrai système de fichiers). */
+  exists?: (path: string) => Promise<boolean>
   /** Le journal du worker : l'échec d'un outil y est écrit (code de sortie, début de sa sortie d'erreur), jamais montré au panneau. */
   log?: (message: string) => void
 }
@@ -81,6 +86,47 @@ function linuxTools(kind: 'file' | 'folder', prompt: string, start: string): { c
 const windowsPowerShell = (env: NodeJS.ProcessEnv): string =>
   win32.join(env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 
+/** Le plus petit numéro parmi les entrées qui s'appellent `<prefix><n>` (rien d'autre : pas de `.lock`), ou null. */
+function lowestSocket(names: string[], pattern: RegExp): string | null {
+  let best: { name: string; n: number } | null = null
+  for (const name of names) {
+    const match = pattern.exec(name)
+    const n = match?.[1] === undefined ? NaN : Number(match[1])
+    if (!Number.isNaN(n) && (best === null || n < best.n)) {
+      best = { name, n }
+    }
+  }
+  return best?.name ?? null
+}
+
+/**
+ * L'affichage de la session quand le worker n'en reçoit pas (Orca ne lui donne ni DISPLAY, ni WAYLAND_DISPLAY, ni
+ * XAUTHORITY) : d'abord un socket Wayland `wayland-<n>` dans `XDG_RUNTIME_DIR`, sinon le plus petit socket X11 de
+ * `/tmp/.X11-unix` (`DISPLAY=:<n>`, avec `~/.Xauthority` s'il existe). Rend les seules variables à ajouter, vides si rien ne se trouve.
+ */
+async function discoverDisplay(
+  env: NodeJS.ProcessEnv,
+  home: string,
+  listDir: (path: string) => Promise<string[]>,
+  exists: (path: string) => Promise<boolean>
+): Promise<Record<string, string>> {
+  if (env.XDG_RUNTIME_DIR) {
+    const wayland = lowestSocket(await listDir(env.XDG_RUNTIME_DIR), /^wayland-(\d+)$/)
+    if (wayland !== null) {
+      return { WAYLAND_DISPLAY: wayland }
+    }
+  }
+  const x11 = lowestSocket(await listDir('/tmp/.X11-unix'), /^X(\d+)$/)
+  if (x11 === null) {
+    return {}
+  }
+  const authority = posix.join(home, '.Xauthority')
+  return { DISPLAY: `:${x11.slice(1)}`, ...((await exists(authority)) && { XAUTHORITY: authority }) }
+}
+
+const listDirectory = (path: string): Promise<string[]> => readdir(path).catch(() => [])
+const pathExists = (path: string): Promise<boolean> => access(path).then(() => true, () => false)
+
 /** Le début de la sortie d'erreur d'un outil, pour le journal seulement. */
 const ERROR_OUTPUT_LOG_LIMIT = 200
 
@@ -125,16 +171,20 @@ export function createNativePicker(
   }
 
   const pickOnLinux = async (): Promise<ApiResult<PickedFile | null>> => {
+    const home = deps.home ?? homedir()
+    // Orca ne donne pas DISPLAY au worker : on cherche l'affichage de la session, pour le seul outil lancé.
+    const hasDisplay = Boolean(env.DISPLAY || env.WAYLAND_DISPLAY)
+    const discovered = hasDisplay ? {} : await discoverDisplay(env, home, deps.listDir ?? listDirectory, deps.exists ?? pathExists)
     // Sans affichage aucune boîte ne peut s'ouvrir, et zenity sortirait en 1 comme pour une annulation : le panneau passe à la saisie du chemin.
-    if (!env.DISPLAY && !env.WAYLAND_DISPLAY) {
+    if (!hasDisplay && Object.keys(discovered).length === 0) {
       return UNAVAILABLE
     }
-    const home = deps.home ?? homedir()
+    const toolOptions = Object.keys(discovered).length === 0 ? undefined : { env: discovered }
     const start = home.endsWith('/') ? home : `${home}/`
     for (const { command, args } of linuxTools(kind, prompt, start)) {
       let output: ToolOutput
       try {
-        output = await run(command, args)
+        output = await run(command, args, toolOptions)
       } catch (error) {
         if (isMissing(error)) {
           continue
