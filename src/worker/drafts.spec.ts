@@ -431,22 +431,35 @@ test('rewrite does not reject when the disk refuses: it answers false and logs',
   cleanup()
 })
 
-test('returnTo falls back to the previous one when a draft is reopened from the drafts workspace', async () => {
+test('returnTo is null when a draft is reopened from the drafts workspace', async () => {
   const { drafts, fake } = setup()
   await drafts.open(AGENT)
   fake.state.focus = { workspaceId: 'ws-drafts', name: 'managed-agents' }
   const again = await drafts.open(AGENT)
-  expect(again.ok && again.value.returnTo).toEqual({ workspaceId: 'ws-other', name: 'my-project' })
+  expect(again.ok && again.value.returnTo).toBe(null)
   cleanup()
 })
 
-test('returnTo of a first draft opened from the drafts workspace is the last working workspace seen', async () => {
+test('returnTo of a first draft opened from the drafts workspace is null', async () => {
   const second: AgentRef = { kind: 'agent', agentId: 'agent_2' }
   const { drafts, fake } = setup()
   await drafts.open(AGENT)
   fake.state.focus = { workspaceId: 'ws-drafts', name: 'managed-agents' }
   const result = await drafts.open(second)
-  expect(result.ok && result.value.returnTo).toEqual({ workspaceId: 'ws-other', name: 'my-project' })
+  expect(result.ok && result.value.returnTo).toBe(null)
+  cleanup()
+})
+
+test('an old registry with lastReturnTo still loads', async () => {
+  const { drafts, folder } = setup()
+  await drafts.open(AGENT)
+  const path = join(folder, REGISTRY_FILE)
+  const registry = JSON.parse(readFileSync(path, 'utf8'))
+  writeFileSync(path, JSON.stringify({ ...registry, lastReturnTo: { workspaceId: 'ws-old', name: 'old-project' } }))
+  const state = await drafts.state(AGENT)
+  expect(state.ok && state.value?.file).toBe(FILE)
+  const again = await drafts.open(AGENT)
+  expect(again.ok && again.value.returnTo).toEqual({ workspaceId: 'ws-other', name: 'my-project' })
   cleanup()
 })
 

@@ -61,7 +61,13 @@ export type DraftAdapter<R extends DraftRef> = {
 
 export type Drafts = {
   status(): Promise<DraftsStatus>
-  open(ref: DraftRef): Promise<ApiResult<DraftInfo>>
+  /**
+   * Ouvre le brouillon dans l'éditeur. Son workspace de retour est celui qui avait le focus quand il diffère de
+   * celui des brouillons, sinon null : le bouton de retour n'existe que si cette ouverture a changé de workspace.
+   * `keepReturnTo` : une réouverture interne, faite alors que le focus est déjà aux brouillons (le fichier d'un
+   * agent qui vient d'être créé), garde le retour de l'entrée au lieu de l'effacer.
+   */
+  open(ref: DraftRef, options?: { keepReturnTo?: boolean }): Promise<ApiResult<DraftInfo>>
   /** Null quand le brouillon n'a jamais été ouvert ou que son fichier a disparu. */
   state(ref: DraftRef): Promise<ApiResult<DraftInfo | null>>
   prepare(ref: DraftRef): Promise<ApiResult<PreparedWrite>>
@@ -116,10 +122,9 @@ type RegistryEntry = {
   workspace: string
 }
 
+/** Un ancien registre peut encore porter un `lastReturnTo` : il est ignoré à la lecture et disparaît à la prochaine écriture. */
 type Registry = {
   entries: Record<string, RegistryEntry>
-  /** Le dernier workspace de travail vu au focus : le retour d'un brouillon ouvert depuis les brouillons eux-mêmes. */
-  lastReturnTo: ReturnTo | null
 }
 
 const NOT_AVAILABLE: ApiResult<never> = { ok: false, code: 'other', error: 'Not available yet.' }
@@ -175,7 +180,7 @@ function parseRegistry(raw: Buffer): Registry {
   if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
     throw new Error('no entries object')
   }
-  return { entries, lastReturnTo: parsed.lastReturnTo ?? null }
+  return { entries }
 }
 
 async function readOrNull(path: string): Promise<Buffer | null> {
@@ -281,7 +286,7 @@ export function createDrafts(deps: {
   async function readRegistry(): Promise<Registry> {
     const raw = await readOrNull(registryPath)
     if (raw === null) {
-      return { entries: {}, lastReturnTo: null }
+      return { entries: {} }
     }
     let registry: Registry
     try {
@@ -291,7 +296,7 @@ export function createDrafts(deps: {
       const aside = `${registryPath}.corrupt-${stamp()}`
       await rename(registryPath, aside)
       log(`drafts registry unreadable (${messageOf(error)}); moved to ${aside}`)
-      return { entries: {}, lastReturnTo: null }
+      return { entries: {} }
     }
     return withWorkspaces(registry, true)
   }
@@ -511,7 +516,7 @@ export function createDrafts(deps: {
       }
     },
 
-    open: (ref) =>
+    open: (ref, options) =>
       serial(async () => {
         const adapter = adapterFor(ref)
         if (!adapter) {
@@ -548,13 +553,11 @@ export function createDrafts(deps: {
           // Un fichier modifié depuis l'écriture du worker est le travail de Romain : on n'y touche pas.
           const keep = known !== undefined && onDisk !== null && sha256(onDisk) !== known.writtenSha256
 
-          // Le workspace de retour : celui qui a le focus ; depuis les brouillons eux-mêmes, le précédent.
+          // Le bouton de retour n'existe que si cette ouverture a changé de workspace : le workspace qui avait le
+          // focus quand il diffère de celui des brouillons, sinon rien (déjà dans les brouillons, ou aucun focus).
           const focus = await host.focused().catch(() => null)
           const away = focus && focus.workspaceId !== workspace.id ? focus : null
-          if (away) {
-            registry.lastReturnTo = away
-          }
-          const returnTo = away ?? known?.returnTo ?? registry.lastReturnTo
+          const returnTo = away ?? (options?.keepReturnTo ? (known?.returnTo ?? null) : null)
 
           let entry: RegistryEntry
           if (keep) {
@@ -685,7 +688,7 @@ export function createDrafts(deps: {
           if (live.recordedGone) {
             delete registry.entries[file]
           }
-          const entry = await writeDraft(registry, ref, file, live.text, live.base, known?.returnTo ?? registry.lastReturnTo, active)
+          const entry = await writeDraft(registry, ref, file, live.text, live.base, known?.returnTo ?? null, active)
           const info = await describe(ref, file, entry)
           return info ? { ok: true, value: info } : FILE_GONE
         } catch (error) {
@@ -727,7 +730,7 @@ export function createDrafts(deps: {
             throw new Error(claimed.error)
           }
           const { file, known } = claimed
-          const returnTo = known?.returnTo ?? inheritedReturnTo ?? registry.lastReturnTo
+          const returnTo = known?.returnTo ?? inheritedReturnTo ?? null
           const onDisk = await readOrNull(join(folder, file))
           if (onDisk === null || sha256(onDisk) === sha256(sent)) {
             await writeDraft(registry, ref, file, text, base, returnTo, active)
