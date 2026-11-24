@@ -99,6 +99,13 @@ const fileMeta = (id: string, createdAt: string, extra: object = {}) => ({
   ...extra
 })
 
+test('lists Anthropic skills from the anthropic source, in the order the API gives', async () => {
+  const { store, calls } = fakeStore({ skills: [skill('xlsx', '2026-11-16T17:00:22.704800Z'), skill('pdf', '2026-11-06T23:00:36.135606Z')] })
+  const result = await handlersWith(store).listAnthropicSkills()
+  expect(calls).toEqual([{ method: 'skills.list', args: [{ source: 'anthropic' }] }])
+  expect(result.ok && result.value.map((row) => row.id)).toEqual(['xlsx', 'pdf'])
+})
+
 test('lists custom skills only, newest update first', async () => {
   const { store, calls } = fakeStore({
     skills: [

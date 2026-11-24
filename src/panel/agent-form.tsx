@@ -484,7 +484,7 @@ const lostSavedAgents = (member: MultiagentMemberForm, before: MultiagentMemberF
   !member.enabled && before?.enabled ? before.savedAgents.length : 0
 
 /** Une puce d'agent enregistré ou de skill : son nom, une pastille d'origine pour un skill, et un bouton qui le retire. */
-function SavedAgentChip({ name, badge, disabled, onRemove }: { name: string; badge?: { label: string; tone: 'neutral' | 'accent' }; disabled: boolean; onRemove: () => void }) {
+function SavedAgentChip({ name, badge, disabled, onRemove }: { name: string; badge?: { label: string; tone: 'neutral' | 'warning' }; disabled: boolean; onRemove: () => void }) {
   return (
     <Box direction="row" align="center" gap="xs" border radius="md" padding="xs">
       <Text size="sm">{name}</Text>
@@ -924,7 +924,8 @@ function SystemPromptZone({ agent }: { agent: AgentDetail | null }) {
 const SKILL_SEPARATOR = 'separator'
 const SKILL_CREATE = 'create'
 const SKILL_SOURCE_LABELS: Record<AgentSkillRef['type'], string> = { custom: 'Custom', anthropic: 'Anthropic' }
-const SKILL_SOURCE_TONES: Record<AgentSkillRef['type'], 'neutral' | 'accent'> = { custom: 'neutral', anthropic: 'accent' }
+// `warning` pour sa seule teinte : l'ambre de la marque Claude, le kit n'ayant pas de ton orange neutre.
+const SKILL_SOURCE_TONES: Record<AgentSkillRef['type'], 'neutral' | 'warning'> = { custom: 'neutral', anthropic: 'warning' }
 
 /** La valeur d'une option de skill : la source et l'identifiant (un même identifiant ne vaut que dans sa source). */
 const skillValue = (type: AgentSkillRef['type'], skillId: string): string => `${type}:${skillId}`
@@ -962,7 +963,7 @@ function openResourcesTab(): void {
 
 type SkillsZoneProps = {
   skills: AgentSkillRef[]
-  /** Les skills à l'ouverture : un skill retiré puis rechoisi retrouve son épingle. */
+  /** Les skills à l'ouverture : un skill retiré puis rechoisi retrouve sa version et son rang. */
   before: AgentSkillRef[]
   disabled: boolean
   onChange: (skills: AgentSkillRef[]) => void
@@ -1006,7 +1007,14 @@ function SkillsZone({ skills, before, disabled, onChange }: SkillsZoneProps) {
             const [type, ...rest] = value.split(':')
             const skillId = rest.join(':')
             if ((type !== 'custom' && type !== 'anthropic') || skillId === '') return
-            onChange([...skills, { type, skillId, version: before.find((entry) => entry.type === type && entry.skillId === skillId)?.version ?? null }])
+            const rank = (skill: AgentSkillRef): number => {
+              const index = before.findIndex((entry) => entry.type === skill.type && entry.skillId === skill.skillId)
+              return index === -1 ? Number.POSITIVE_INFINITY : index
+            }
+            const added = { type, skillId, version: before.find((entry) => entry.type === type && entry.skillId === skillId)?.version ?? null }
+            // Un skill rechoisi reprend son rang d'origine : sinon le brouillon diffère de sa base par l'ordre seul, que
+            // le worker ignore (« Unsaved changes » puis « Nothing to apply »). Les nouveaux restent après, dans l'ordre d'ajout.
+            onChange([...skills, added].sort((a, b) => rank(a) - rank(b)))
           }}
         />
       </Stack>

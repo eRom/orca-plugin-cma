@@ -671,6 +671,19 @@ test('the close button of a chip removes only that skill, and picking it again k
   await view.unmount()
 })
 
+test('removing then picking again a skill that is not the last one takes back its place, so nothing is left to apply', async () => {
+  const calls = newCalls()
+  const two = { skills: [{ type: 'custom', skillId: 'skill_triage', version: '1' }, { type: 'anthropic', skillId: 'xlsx', version: 'latest' }] }
+  const detail = { 'configs.detail': { ok: true, value: { ...DETAIL, form: { ...FORM, ...two } } } }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, detail) }), persisted: OPEN_DETAIL })
+  await openSection(view, /Skills \(optional\)/)
+  await view.press({ role: 'button', label: 'Remove incident-triage' })
+  assert.equal(button(view, 'Review changes')?.disabled, false)
+  await view.select(ADD_SKILL, 'custom:skill_triage')
+  assert.equal(button(view, 'Review changes')?.disabled, true)
+  await view.unmount()
+})
+
 test('Create skill switches the home to the Resources tab, leaves the agent screen and adds no skill', async () => {
   const calls = newCalls()
   const view = await mount(panel, { host: mockHost({ requests: requests(calls, WITH_RESOURCES) }), persisted: OPEN_DETAIL })

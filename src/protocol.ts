@@ -110,8 +110,9 @@ export type MultiagentForm = {
 }
 
 /**
- * Un skill d'un agent. `version` null : ajouté dans le formulaire, l'API épingle alors la dernière ; une version déjà
- * posée sur l'agent est une épingle conservée telle quelle (même règle que `SavedAgentRef`).
+ * Un skill d'un agent. `version` null : ajouté dans le formulaire, l'API pose alors `latest` (une version flottante,
+ * résolue à l'usage, pas une épingle : sonde lot3/r6) ; la version lue sur l'agent (`latest` ou un numéro) repart
+ * telle quelle.
  */
 export type AgentSkillRef = { type: 'custom' | 'anthropic'; skillId: string; version: string | null }
 

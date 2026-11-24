@@ -95,7 +95,7 @@ export function toAgentForm(agent: BetaManagedAgentsAgent): AgentForm {
       return { name: server.name, url: server.url, policy: toolset?.default_config.permission_policy.type ?? 'always_ask' }
     }),
     multiagent: toMultiagentForm(agent.multiagent),
-    // La réponse rend toujours la version épinglée de chaque skill : elle repart telle quelle tant que le skill reste.
+    // La réponse rend toujours la version de chaque skill (`latest` ou un numéro) : elle repart telle quelle tant que le skill reste.
     skills: agent.skills.map((skill) => ({ type: skill.type, skillId: skill.skill_id, version: skill.version }))
   }
 }
@@ -287,8 +287,8 @@ function applyMultiagent(doc: AgentDocument, form: MultiagentForm | null, base: 
 
 /**
  * Les skills : seuls ceux que le formulaire a retirés ou ajoutés touchent la liste de l'agent vivant. Un skill resté
- * garde l'entrée du document (donc son épingle, même changée ailleurs) ; un skill ajouté part sans version (l'API
- * épingle alors la dernière). Une création écrit la liste du formulaire.
+ * garde l'entrée du document (donc sa version, même changée ailleurs) ; un skill ajouté part sans version (l'API pose
+ * alors `latest`, résolue à l'usage). Une création écrit la liste du formulaire.
  */
 function applySkills(doc: AgentDocument, form: AgentSkillRef[], base: AgentSkillRef[] | null): void {
   const wanted = new Set(form.map((skill) => skill.skillId))
