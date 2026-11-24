@@ -571,8 +571,26 @@ function detailWith(multiagent: AgentForm['multiagent'], extra: Partial<AgentDet
   return { 'configs.detail': { ok: true, value: detail } }
 }
 
-const MEMBER_ON = { enabled: true, inlineAgents: true, predefinedCount: 0 }
-const MEMBER_OFF = { enabled: false, inlineAgents: true, predefinedCount: 0 }
+const TWO_SAVED = [
+  { id: 'agent_helper', version: 2 },
+  { id: 'agent_review', version: 1 }
+]
+
+/** Les agents du workspace : l'agent édité (`agent_a`) et deux autres. */
+const WORKSPACE_AGENTS: ConfigRow[] = [
+  ...ROWS,
+  { kind: 'agent', id: 'agent_helper', name: 'Helper', summary: 'v2' },
+  { kind: 'agent', id: 'agent_review', name: 'Reviewer', summary: 'v1' }
+]
+const withWorkspaceAgents = (calls: Calls) => ({
+  'configs.list': ({ kind }: { kind: ConfigKind }) => {
+    calls.lists.push(kind)
+    return { ok: true, value: kind === 'agent' ? WORKSPACE_AGENTS : [] }
+  }
+})
+
+const MEMBER_ON = { enabled: true, inlineAgents: true, savedAgents: [] }
+const MEMBER_OFF = { enabled: false, inlineAgents: true, savedAgents: [] }
 
 test('an agent without a block shows the three members off and no option under them', async () => {
   const calls = newCalls()
@@ -631,7 +649,7 @@ test('a form kept from before the multiagent field is ignored, so turning the bl
 
 test('turning a member with saved agents off says they will be removed', async () => {
   const calls = newCalls()
-  const block = { advisor: null, subagents: { enabled: true, inlineAgents: true, predefinedCount: 2 }, workflows: MEMBER_ON }
+  const block = { advisor: null, subagents: { enabled: true, inlineAgents: true, savedAgents: TWO_SAVED }, workflows: MEMBER_ON }
   const view = await mount(panel, { host: mockHost({ requests: requests(calls, detailWith(block)) }), persisted: OPEN_DETAIL })
   await openMultiagent(view)
   assert.equal(view.find({ text: 'Turning it off removes 2 saved agents.' }), null)
@@ -670,10 +688,10 @@ test('an advisor without a model blocks the primary button with its reason, and 
 
 test('a member without inline agents and without saved agents blocks the button, saved agents lift it', async () => {
   const calls = newCalls()
-  const saved = { advisor: null, subagents: { enabled: true, inlineAgents: true, predefinedCount: 2 }, workflows: MEMBER_OFF }
+  const saved = { advisor: null, subagents: { enabled: true, inlineAgents: true, savedAgents: TWO_SAVED }, workflows: MEMBER_OFF }
   const view = await mount(panel, { host: mockHost({ requests: requests(calls, detailWith(saved)) }), persisted: OPEN_DETAIL })
   await openMultiagent(view)
-  assert.ok(view.find({ text: '2 saved agents, edited in YAML' }))
+  assert.ok(view.find({ text: 'agent_helper' }))
   // Avec deux agents enregistrés, décocher « inline » est permis.
   await view.toggle({ label: 'Can define its own agents' })
   assert.equal(button(view, 'Review changes')?.disabled, false)
@@ -684,6 +702,87 @@ test('a member without inline agents and without saved agents blocks the button,
   await view.toggle(boxes[0]!)
   assert.equal(button(view, 'Review changes')?.disabled, true)
   assert.ok(view.find({ text: 'Dynamic workflows need inline agents or at least one saved agent.' }))
+  await view.unmount()
+})
+
+/** Les libellés des options d'une liste. */
+function optionLabels(view: View, label: string): string[] {
+  const options = view.find({ type: 'Select', label })?.props.options
+  assert.ok(Array.isArray(options))
+  return (options as { label: string }[]).map((option) => option.label)
+}
+
+const savedAgentsOf = (calls: Calls, name: 'subagents' | 'workflows') => calls.prepares[0]?.form.multiagent?.[name].savedAgents
+
+test('saved agents show as chips named from the workspace list, with This agent for the edited one and the raw id for an unknown one', async () => {
+  const calls = newCalls()
+  const saved = [{ id: 'agent_helper', version: 2 }, { id: 'agent_a', version: 5 }, { id: 'agent_gone', version: 1 }]
+  const block = { advisor: null, subagents: { enabled: true, inlineAgents: true, savedAgents: saved }, workflows: MEMBER_OFF }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, { ...detailWith(block), ...withWorkspaceAgents(calls) }) }), persisted: OPEN_DETAIL })
+  await openMultiagent(view)
+  assert.ok(view.find({ text: 'Helper' }))
+  assert.ok(view.find({ text: 'This agent' }))
+  assert.ok(view.find({ text: 'agent_gone' }))
+  assert.ok(view.find({ role: 'button', label: 'Remove Helper' }))
+  assert.ok(view.find({ role: 'button', label: 'Remove This agent' }))
+  assert.ok(view.find({ role: 'button', label: 'Remove agent_gone' }))
+  assert.equal(view.find({ text: /edited in YAML/ }), null)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('choosing a saved agent adds a chip and is sent without a version, and the picked agent leaves the list', async () => {
+  const calls = newCalls()
+  const block = { advisor: null, subagents: MEMBER_ON, workflows: MEMBER_OFF }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, { ...detailWith(block), ...withWorkspaceAgents(calls) }) }), persisted: OPEN_DETAIL })
+  await openMultiagent(view)
+  assert.deepEqual(optionValues(view, 'Add saved agent to Subagents'), ['agent_a', 'agent_helper', 'agent_review'])
+  assert.deepEqual(optionLabels(view, 'Add saved agent to Subagents'), ['This agent', 'Helper', 'Reviewer'])
+  assert.equal(view.find({ type: 'Select', label: 'Add saved agent to Subagents' })?.props.placeholder, '+ Add saved agent')
+  await view.select({ label: 'Add saved agent to Subagents' }, 'agent_helper')
+  assert.ok(view.find({ text: 'Helper' }))
+  assert.deepEqual(optionValues(view, 'Add saved agent to Subagents'), ['agent_a', 'agent_review'])
+  assert.equal(view.valueOf({ label: 'Add saved agent to Subagents' }), '')
+  await view.press({ role: 'button', text: 'Review changes' })
+  assert.deepEqual(savedAgentsOf(calls, 'subagents'), [{ id: 'agent_helper', version: null }])
+  await view.unmount()
+})
+
+test('a new agent cannot pick itself: the list has no This agent', async () => {
+  const calls = newCalls()
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, withWorkspaceAgents(calls)) }), persisted: OPEN_NEW })
+  await openMultiagent(view)
+  await view.toggle({ label: 'Subagents' })
+  assert.deepEqual(optionLabels(view, 'Add saved agent to Subagents'), ['Incident commander', 'Helper', 'Reviewer'])
+  await view.unmount()
+})
+
+test('the close button of a chip removes only that agent and keeps the pin of the others', async () => {
+  const calls = newCalls()
+  const block = { advisor: null, subagents: { enabled: true, inlineAgents: true, savedAgents: TWO_SAVED }, workflows: MEMBER_OFF }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, { ...detailWith(block), ...withWorkspaceAgents(calls) }) }), persisted: OPEN_DETAIL })
+  await openMultiagent(view)
+  await view.press({ role: 'button', label: 'Remove Helper' })
+  assert.equal(view.find({ text: 'Helper' }), null)
+  assert.ok(view.find({ text: 'Reviewer' }))
+  await view.press({ role: 'button', text: 'Review changes' })
+  assert.deepEqual(savedAgentsOf(calls, 'subagents'), [{ id: 'agent_review', version: 1 }])
+  await view.unmount()
+})
+
+test('AC-4: no inline agents and no saved agent shows the error in the card and blocks the button, and adding a chip clears it', async () => {
+  const calls = newCalls()
+  const block = { advisor: null, subagents: MEMBER_ON, workflows: MEMBER_OFF }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, { ...detailWith(block), ...withWorkspaceAgents(calls) }) }), persisted: OPEN_DETAIL })
+  await openMultiagent(view)
+  const message = 'No agents to use. Add a saved agent, or let this agent define its own.'
+  assert.equal(view.find({ text: message }), null)
+  await view.toggle({ label: 'Can define its own agents' })
+  assert.equal(view.find({ text: message })?.props.tone, 'danger')
+  assert.equal(button(view, 'Review changes')?.disabled, true)
+  await view.select({ label: 'Add saved agent to Subagents' }, 'agent_review')
+  assert.equal(view.find({ text: message }), null)
+  assert.equal(button(view, 'Review changes')?.disabled, false)
   await view.unmount()
 })
 
