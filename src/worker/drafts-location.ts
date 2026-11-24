@@ -248,7 +248,7 @@ export function createDraftsLocation(deps: {
 
 const NO_DRAFTS_PROJECT: { ok: false; error: string; code: 'drafts_missing' } = {
   ok: false,
-  error: 'Choose a drafts workspace in the Drafts section of the home first.',
+  error: 'Choose a drafts project in the Drafts section of the home first.',
   code: 'drafts_missing'
 }
 

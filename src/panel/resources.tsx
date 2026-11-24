@@ -158,7 +158,12 @@ async function startUpload(card: CardKey, skill: { id: string; name: string } | 
   if (read(pickerUnavailable)) return openPathField(card, skill)
   const picked = await pick(card, startedIn, skill)
   if (picked === null) return
-  await uploadPicked(card, startedIn, picked, skill)
+  const uploaded = await uploadPicked(card, startedIn, picked, skill)
+  // Un champ de chemin resté ouvert après un échec de la boîte, pour ce même envoi, n'a plus de raison d'être.
+  const target = read(resourcePathTarget)[card]
+  if (uploaded && startedIn === currentGeneration() && target !== null && (target.skill?.id ?? null) === (skill?.id ?? null)) {
+    closePathField(card)
+  }
 }
 
 /** « Use » du champ de chemin : le chemin collé suit le parcours d'un choix de boîte. */
@@ -300,8 +305,9 @@ function NoticeView({ notice }: { notice: CardNotice }): OrcaElement {
 }
 
 /**
- * Le champ de chemin d'une carte, ouvert par `+` ou `↑` quand l'ordinateur n'a pas de boîte de choix : le chemin collé,
- * `Use` pour l'envoyer, `Cancel` pour fermer. Une ligne vide, ou un envoi en route, grise `Use`.
+ * Le champ de chemin d'une carte, ouvert par `+` ou `↑` quand l'ordinateur n'a pas de boîte de choix, ou quand la boîte
+ * n'a pas pu s'ouvrir : le chemin collé, `Use` pour l'envoyer, `Cancel` pour fermer (et effacer l'avis de la carte).
+ * Une ligne vide, ou un envoi en route, grise `Use`.
  */
 function PathField({ card }: { card: CardKey }): OrcaElement | null {
   const target = read(resourcePathTarget)[card]
@@ -332,7 +338,14 @@ function PathField({ card }: { card: CardKey }): OrcaElement | null {
         >
           Use
         </Button>
-        <Button variant="ghost" size="sm" onPress={() => closePathField(card)}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onPress={() => {
+            closePathField(card)
+            showNotice(card, null)
+          }}
+        >
           Cancel
         </Button>
       </Row>
@@ -402,7 +415,15 @@ function ResourceCard({
               <Stack gap="sm">
                 <Text size="sm">{clipBytes(failure, ERROR_TEXT_LIMIT_BYTES).text}</Text>
                 <Row>
-                  <Button variant="outline" size="sm" onPress={onRetry}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onPress={() => {
+                      // Retry est une action sur la carte : l'avis d'un envoi ou d'une suppression précédente s'efface.
+                      showNotice(card, null)
+                      onRetry()
+                    }}
+                  >
                     Retry
                   </Button>
                 </Row>

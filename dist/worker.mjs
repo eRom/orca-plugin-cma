@@ -31469,7 +31469,7 @@ function createDraftsLocation(deps) {
 }
 var NO_DRAFTS_PROJECT = {
   ok: false,
-  error: "Choose a drafts workspace in the Drafts section of the home first.",
+  error: "Choose a drafts project in the Drafts section of the home first.",
   code: "drafts_missing"
 };
 function guardDrafts(drafts, run) {

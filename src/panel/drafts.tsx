@@ -346,12 +346,12 @@ function ProjectList({ projects }: { projects: DraftsProject[] | null }): OrcaNo
   return (
     <Stack gap="sm">
       {refusal !== null ? (
-        <Callout tone="danger" title="Could not change the drafts workspace">
+        <Callout tone="danger" title="Could not change the drafts project">
           <Text size="sm">{refusal}</Text>
         </Callout>
       ) : null}
       <GroupCard
-        title="Choose a workspace"
+        title="Choose a project"
         trailing={
           <Button variant="ghost" size="sm" onPress={closeChooser}>
             Cancel
@@ -385,6 +385,12 @@ function ProjectList({ projects }: { projects: DraftsProject[] | null }): OrcaNo
   )
 }
 
+/** Le dossier des brouillons d'un projet, avec le séparateur du chemin du projet (`\` sous Windows). */
+export function draftsFolderLabel(projectPath: string): string {
+  const separator = projectPath.includes('\\') && !projectPath.includes('/') ? '\\' : '/'
+  return `${projectPath.replace(/[\\/]+$/, '')}${separator}managed-agents`
+}
+
 /** Le bloc de la home : le projet d'Orca qui héberge les brouillons, à choisir ou à changer. */
 export function DraftsSection(): OrcaNode {
   const projects = read(draftsProjects)
@@ -397,10 +403,10 @@ export function DraftsSection(): OrcaNode {
   ) : current === undefined ? (
     <EmptyView
       kind="panel"
-      title="No drafts workspace"
-      description="Edit agents and memories as files in Orca's editor. They live in a folder workspace you choose."
+      title="No drafts project"
+      description="Edit agents and memories as files in Orca's editor. They live in a folder of the Orca project you choose."
       icon="folder"
-      action={{ label: 'Add Orca workspace', onPress: openChooser }}
+      action={{ label: 'Add Orca project', onPress: openChooser }}
     />
   ) : (
     <GroupCard
@@ -409,8 +415,8 @@ export function DraftsSection(): OrcaNode {
           key="current"
           lead={{ kind: 'monogram', text: current.name }}
           title={current.name}
-          subtitle={`${current.path}/managed-agents`}
-          actions={[{ key: 'change', icon: 'edit', label: 'Change workspace', onPress: openChooser }]}
+          subtitle={draftsFolderLabel(current.path)}
+          actions={[{ key: 'change', icon: 'edit', label: 'Change project', onPress: openChooser }]}
         />
       ]}
     />
@@ -430,8 +436,8 @@ export function DraftsSection(): OrcaNode {
 /** Hors de la home : le choix du projet se fait dans le bloc Drafts de l'accueil. */
 function SetupCard(): OrcaNode {
   return (
-    <Callout tone="accent" title="Choose a drafts workspace">
-      <Text size="sm">Pick the Orca workspace that holds your drafts in the Drafts section of the home.</Text>
+    <Callout tone="accent" title="Choose a drafts project">
+      <Text size="sm">Pick the Orca project that holds your drafts in the Drafts section of the home.</Text>
     </Callout>
   )
 }

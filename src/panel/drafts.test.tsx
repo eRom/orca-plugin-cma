@@ -2,7 +2,7 @@ import { Stack } from 'orca'
 import { assert, mockHost, mount, test } from 'orca/testing'
 import type { DraftInfo, DraftRef, DraftsProject, FieldChange, PreparedWrite } from '../protocol'
 import { ChangesPreview, describeChange } from './changes'
-import { DraftControls, DraftsSection, draftKey, loadDraftControls, loadDraftsSection, refreshDraftsStatus } from './drafts'
+import { DraftControls, DraftsSection, draftKey, draftsFolderLabel, loadDraftControls, loadDraftsSection, refreshDraftsStatus } from './drafts'
 import { run } from './state'
 
 const REF: DraftRef = { kind: 'agent', agentId: 'agent_a' }
@@ -132,10 +132,10 @@ test('outside the home, a missing project points to the Drafts section', async (
   const calls = newCalls()
   const state = { ready: false }
   const view = await mount(harness, { host: mockHost({ requests: requests(calls, {}, state) }) })
-  const card = view.find({ type: 'Callout', text: /Choose a drafts workspace/ })
+  const card = view.find({ type: 'Callout', text: /Choose a drafts project/ })
   assert.ok(card)
-  assert.equal(card.props.title, 'Choose a drafts workspace')
-  assert.match(card.text, /Pick the Orca workspace that holds your drafts in the Drafts section of the home\./)
+  assert.equal(card.props.title, 'Choose a drafts project')
+  assert.match(card.text, /Pick the Orca project that holds your drafts in the Drafts section of the home\./)
   // The path is no longer shown: the choice is made on the home.
   assert.equal(view.find({ type: 'CodeView' }), null)
   assert.equal(view.find({ role: 'button', text: 'Check again' }), null)
@@ -187,7 +187,7 @@ test('a refused open shows a warning, and a missing project brings the Drafts se
   const warning = view.find({ type: 'Callout', text: /The drafts project is not open in Orca\./ })
   assert.ok(warning)
   assert.equal(warning.props.tone, 'warning')
-  assert.ok(view.find({ type: 'Callout', text: /Choose a drafts workspace/ }))
+  assert.ok(view.find({ type: 'Callout', text: /Choose a drafts project/ }))
   await view.unmount()
 })
 
@@ -539,47 +539,47 @@ test('without a project, Drafts shows the empty view', async () => {
   const state = { current: null, reads: 0, chosen: [] }
   const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
   assert.equal(view.find({ type: 'Collapsible' })?.props.title, 'Drafts')
-  assert.equal(view.find({ type: 'EmptyState' })?.props.title, 'No drafts workspace')
+  assert.equal(view.find({ type: 'EmptyState' })?.props.title, 'No drafts project')
   assert.equal(
     view.find({ type: 'EmptyState' })?.props.description,
-    "Edit agents and memories as files in Orca's editor. They live in a folder workspace you choose."
+    "Edit agents and memories as files in Orca's editor. They live in a folder of the Orca project you choose."
   )
-  assert.ok(view.find({ role: 'button', text: 'Add Orca workspace' }))
+  assert.ok(view.find({ role: 'button', text: 'Add Orca project' }))
   assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
   await view.unmount()
 })
 
-test('Add Orca workspace lists the projects and Cancel closes them', async () => {
+test('Add Orca project lists the projects and Cancel closes them', async () => {
   const state = { current: null, reads: 0, chosen: [] }
   const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
   assert.equal(state.reads, 1)
-  await view.press({ role: 'button', text: 'Add Orca workspace' })
-  assert.ok(view.find({ text: 'Choose a workspace' }))
+  await view.press({ role: 'button', text: 'Add Orca project' })
+  assert.ok(view.find({ text: 'Choose a project' }))
   assert.ok(view.find({ type: 'IconButton', label: 'Use alpha' }))
   assert.ok(view.find({ type: 'IconButton', label: 'Use beta' }))
   assert.equal(view.findAll({ type: 'IconButton' }).length, 2)
-  assert.equal(view.find({ type: 'EmptyState', text: /No drafts workspace/ }), null)
+  assert.equal(view.find({ type: 'EmptyState', text: /No drafts project/ }), null)
   await view.press({ role: 'button', text: 'Cancel' })
-  assert.equal(view.find({ text: 'Choose a workspace' }), null)
+  assert.equal(view.find({ text: 'Choose a project' }), null)
   // Opening the list reads the projects again each time.
-  await view.press({ role: 'button', text: 'Add Orca workspace' })
+  await view.press({ role: 'button', text: 'Add Orca project' })
   assert.equal(state.reads, 3)
   assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
   await view.unmount()
 })
 
-test('choosing a project shows it with Change workspace', async () => {
+test('choosing a project shows it with Change project', async () => {
   const state = { current: null, reads: 0, chosen: [] as string[] }
   const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
-  await view.press({ role: 'button', text: 'Add Orca workspace' })
+  await view.press({ role: 'button', text: 'Add Orca project' })
   await view.press({ type: 'IconButton', label: 'Use alpha' })
   assert.deepEqual(state.chosen, ['p_alpha'])
-  assert.equal(view.find({ text: 'Choose a workspace' }), null)
+  assert.equal(view.find({ text: 'Choose a project' }), null)
   assert.ok(view.find({ text: 'alpha' }))
   assert.ok(view.find({ text: '/x/alpha/managed-agents' }))
-  assert.ok(view.find({ type: 'IconButton', label: 'Change workspace' }))
+  assert.ok(view.find({ type: 'IconButton', label: 'Change project' }))
   // Changing opens the list again, the current project says so and cannot be picked again.
-  await view.press({ type: 'IconButton', label: 'Change workspace' })
+  await view.press({ type: 'IconButton', label: 'Change project' })
   assert.ok(view.find({ text: 'Current' }))
   assert.equal(view.find({ type: 'IconButton', label: 'Use alpha' }), null)
   assert.ok(view.find({ type: 'IconButton', label: 'Use beta' }))
@@ -591,14 +591,14 @@ test('a refused move keeps the list and shows why', async () => {
   const error = 'The folder already holds other files: move them away first.'
   const state = { current: null, reads: 0, chosen: [] as string[], choose: { ok: false, code: 'drafts_occupied', error } as ChooseResult }
   const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
-  await view.press({ role: 'button', text: 'Add Orca workspace' })
+  await view.press({ role: 'button', text: 'Add Orca project' })
   await view.press({ type: 'IconButton', label: 'Use alpha' })
   const refusal = view.find({ type: 'Callout', text: new RegExp(error) })
   assert.ok(refusal)
   assert.equal(refusal.props.tone, 'danger')
-  assert.equal(refusal.props.title, 'Could not change the drafts workspace')
+  assert.equal(refusal.props.title, 'Could not change the drafts project')
   // The list stays open, with nothing chosen.
-  assert.ok(view.find({ text: 'Choose a workspace' }))
+  assert.ok(view.find({ text: 'Choose a project' }))
   assert.ok(view.find({ type: 'IconButton', label: 'Use beta' }))
   // Cancel closes the list and the refusal with it.
   await view.press({ role: 'button', text: 'Cancel' })
@@ -634,7 +634,7 @@ test('a failed projects read shows the error and Retry reads again', async () =>
   assert.match(failure.text, new RegExp(READ_ERROR))
   // A failed read is not an empty list: neither the empty view nor its button.
   assert.equal(view.find({ type: 'EmptyState' }), null)
-  assert.equal(view.find({ role: 'button', text: 'Add Orca workspace' }), null)
+  assert.equal(view.find({ role: 'button', text: 'Add Orca project' }), null)
   assert.equal(state.reads, 1)
   // Retry reads again; still refused: the error stays.
   await view.press({ role: 'button', text: 'Retry' })
@@ -645,7 +645,7 @@ test('a failed projects read shows the error and Retry reads again', async () =>
   await view.press({ role: 'button', text: 'Retry' })
   assert.equal(state.reads, 3)
   assert.equal(view.find({ type: 'Callout', text: /Could not list Orca projects/ }), null)
-  assert.equal(view.find({ type: 'EmptyState' })?.props.title, 'No drafts workspace')
+  assert.equal(view.find({ type: 'EmptyState' })?.props.title, 'No drafts project')
   assert.deepEqual([view.errors, view.warnings, view.refusals], NO_ERRORS)
   await view.unmount()
 })
@@ -662,10 +662,10 @@ test('a failed read when the list opens shows the error, never the empty-list me
   const state: SectionState = { current: null, reads: 0, chosen: [] }
   const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
   state.failReads = READ_ERROR
-  await view.press({ role: 'button', text: 'Add Orca workspace' })
+  await view.press({ role: 'button', text: 'Add Orca project' })
   assert.ok(view.find({ type: 'Callout', text: /Could not list Orca projects/ }))
   assert.equal(view.find({ text: /No Orca project yet/ }), null)
-  assert.equal(view.find({ text: 'Choose a workspace' }), null)
+  assert.equal(view.find({ text: 'Choose a project' }), null)
   delete state.failReads
   await view.press({ role: 'button', text: 'Retry' })
   // The list was open when the read failed: it comes back with its rows.
@@ -678,17 +678,17 @@ test('a failed read after choosing shows the error, not the old project', async 
   const state: SectionState = { current: 'p_beta', reads: 0, chosen: [] }
   const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
   assert.ok(view.find({ text: 'beta' }))
-  await view.press({ type: 'IconButton', label: 'Change workspace' })
+  await view.press({ type: 'IconButton', label: 'Change project' })
   state.failReads = READ_ERROR
   await view.press({ type: 'IconButton', label: 'Use alpha' })
   assert.deepEqual(state.chosen, ['p_alpha'])
   assert.ok(view.find({ type: 'Callout', text: /Could not list Orca projects/ }))
   assert.equal(view.find({ text: 'beta' }), null)
-  assert.equal(view.find({ type: 'IconButton', label: 'Change workspace' }), null)
+  assert.equal(view.find({ type: 'IconButton', label: 'Change project' }), null)
   delete state.failReads
   await view.press({ role: 'button', text: 'Retry' })
   assert.ok(view.find({ text: 'alpha' }))
-  assert.ok(view.find({ type: 'IconButton', label: 'Change workspace' }))
+  assert.ok(view.find({ type: 'IconButton', label: 'Change project' }))
   assert.deepEqual([view.errors, view.warnings, view.refusals], NO_ERRORS)
   await view.unmount()
 })
@@ -696,7 +696,7 @@ test('a failed read after choosing shows the error, not the old project', async 
 test('a successful read with no project says so in the list', async () => {
   const state: SectionState = { current: null, reads: 0, chosen: [], projects: [] }
   const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
-  await view.press({ role: 'button', text: 'Add Orca workspace' })
+  await view.press({ role: 'button', text: 'Add Orca project' })
   assert.ok(view.find({ text: 'No Orca project yet. Add one in Orca (Add project), then try again.' }))
   assert.ok(view.find({ role: 'button', text: 'Cancel' }))
   assert.equal(view.find({ type: 'Callout' }), null)
@@ -718,13 +718,20 @@ test('a current project that is not ready can be chosen again', async () => {
     },
     { host: mockHost({ requests }) }
   )
-  await view.press({ type: 'IconButton', label: 'Change workspace' })
+  await view.press({ type: 'IconButton', label: 'Change project' })
   assert.ok(view.find({ text: 'Current' }))
   // The worker says the drafts folder is not open in Orca: choosing the current project again is the way out.
   assert.ok(view.find({ type: 'IconButton', label: 'Use alpha' }))
   await view.press({ type: 'IconButton', label: 'Use alpha' })
   assert.deepEqual(state.chosen, ['p_alpha'])
-  assert.equal(view.find({ text: 'Choose a workspace' }), null)
+  assert.equal(view.find({ text: 'Choose a project' }), null)
   assert.deepEqual([view.errors, view.warnings, view.refusals], NO_ERRORS)
   await view.unmount()
+})
+
+test('the drafts folder under a project keeps the separator of its path', () => {
+  assert.equal(draftsFolderLabel('/Users/someone/dev/alpha'), '/Users/someone/dev/alpha/managed-agents')
+  assert.equal(draftsFolderLabel('C:\\Users\\someone\\dev\\alpha'), 'C:\\Users\\someone\\dev\\alpha\\managed-agents')
+  assert.equal(draftsFolderLabel('C:\\Users\\someone\\dev\\alpha\\'), 'C:\\Users\\someone\\dev\\alpha\\managed-agents')
+  assert.equal(draftsFolderLabel('/'), '/managed-agents')
 })

@@ -375,7 +375,7 @@ test('draft handlers refuse without a chosen project', async () => {
   })
   expect(result).toEqual({
     ok: false,
-    error: 'Choose a drafts workspace in the Drafts section of the home first.',
+    error: 'Choose a drafts project in the Drafts section of the home first.',
     code: 'drafts_missing'
   })
   expect(called).toBe(false)

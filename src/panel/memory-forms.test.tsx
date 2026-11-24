@@ -1167,10 +1167,10 @@ test('a refused open from the list shows its notice and the setup card under the
   })
   const view = await mount(panel, { host, persisted: OPEN_STORE })
   // Avant tout refus, la carte d'installation ne s'affiche pas dans la liste.
-  assert.equal(view.find({ type: 'Callout', text: /Choose a drafts workspace/ }), null)
+  assert.equal(view.find({ type: 'Callout', text: /Choose a drafts project/ }), null)
   await view.press({ role: 'button', label: 'Edit /runbooks/deploy.md in editor' })
   assert.ok(view.find({ type: 'Callout', text: /Could not open the draft/ }))
-  assert.ok(view.find({ type: 'Callout', text: /Choose a drafts workspace/ }))
+  assert.ok(view.find({ type: 'Callout', text: /Choose a drafts project/ }))
   await view.unmount()
 })
 
@@ -1464,6 +1464,12 @@ test('a path typed in the field blocks Apply until Use is pressed', async () => 
   await view.press(useButtons(view)[0]!)
   assert.equal(view.find({ role: 'button', text: 'Apply (1)' })?.disabled, false)
   assert.equal(view.find({ text: 'Press Use to take this path.' }), null)
+  // Champ vidé : Use est grisé, le conseil ne dit plus de le presser.
+  await view.type(fileFields(view)[0]!, '', { replace: true })
+  assert.equal(useButtons(view)[0]!.disabled, true)
+  assert.equal(view.find({ text: 'Press Use to take this path.' }), null)
+  assert.ok(view.find({ text: 'Paste a path, then press Use.' }))
+  await view.type(fileFields(view)[0]!, '/home/r/other.md', { replace: true })
   await view.press({ role: 'button', text: 'Apply (1)' })
   assert.deepEqual(calls.stages, [{ memoryStoreId: 'memstore_a', items: [{ path: '/notes/today.md', file: '/home/r/other.md', memoryId: null }] }])
   assert.deepEqual(view.errors, [])

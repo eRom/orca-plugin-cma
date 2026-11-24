@@ -422,9 +422,10 @@ function UploadLine({ storeId, row, message, locked }: LineProps) {
           <Text tone="danger" size="xs">
             {failure}
           </Text>
-        ) : pending ? (
+        ) : pending && !locked ? (
+          // Le conseil suit l'état de Use : champ vidé, Use est grisé, il faut d'abord coller un chemin.
           <Text muted size="xs">
-            Press Use to take this path.
+            {pathDraft.trim() === '' ? 'Paste a path, then press Use.' : 'Press Use to take this path.'}
           </Text>
         ) : replaces ? (
           <Text muted size="xs">

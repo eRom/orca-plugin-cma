@@ -1128,6 +1128,65 @@ test('a refused pasted path keeps the field and its text', async () => {
   await view.unmount()
 })
 
+test('a dialog that works after a failure uploads and closes the path field the failure opened', async () => {
+  let picks = 0
+  const uploads: unknown[] = []
+  const host = mockHost({
+    requests: requests({
+      'files.pickFile': () => {
+        picks += 1
+        return picks === 1 ? { ok: false, code: 'other', error: 'Could not open the file picker.' } : { ok: true, value: FILE_PICKED }
+      },
+      'files.upload': (input: unknown) => {
+        uploads.push(input)
+        return { ok: true, value: file({ name: 'plugin-test-file.md' }) }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN })
+  await view.press(addFile)
+  assert.ok(view.find(FILE_FIELD))
+  await view.press(addFile)
+  assert.deepEqual(uploads, [{ file: FILE_PICKED.file }])
+  assert.equal(view.find(FILE_FIELD), null)
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
+  await view.unmount()
+})
+
+test('Cancel of the path field also clears the notice of its card', async () => {
+  const host = mockHost({
+    requests: requests({ 'files.pickFile': { ok: false, code: 'other', error: 'Could not open the file picker.' } })
+  })
+  const view = await mount(panel, { host, persisted: OPEN })
+  await view.press(addFile)
+  assert.ok(callout(view, /Could not upload/))
+  await view.press({ role: 'button', text: 'Cancel' })
+  assert.equal(view.find(FILE_FIELD), null)
+  assert.equal(callout(view, /Could not upload/), null)
+  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
+  await view.unmount()
+})
+
+test('Retry of a list also clears the notice of its card', async () => {
+  let reads = 0
+  const host = mockHost({
+    requests: requests({
+      'skills.list': () => {
+        reads += 1
+        return reads === 1 ? { ok: false, code: 'other', error: 'Rate limited (429). Try again shortly.' } : { ok: true, value: [skill()] }
+      }
+    })
+  })
+  const view = await mount(panel, { host, persisted: OPEN })
+  showNotice('skills', { tone: 'danger', title: 'Could not delete', message: 'API error 500' })
+  await view.rerender()
+  assert.ok(callout(view, /Could not delete/))
+  await view.press({ role: 'button', text: 'Retry' })
+  assert.equal(callout(view, /Could not delete/), null)
+  assert.ok(view.find({ text: 'teach' }))
+  await view.unmount()
+})
+
 test('a picker failure shows the error and the path field', async () => {
   let picks = 0
   const uploads: unknown[] = []
