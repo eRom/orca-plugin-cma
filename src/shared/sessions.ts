@@ -45,10 +45,19 @@ export function sortSessions(rows: readonly SessionRow[]): SessionRow[] {
   })
 }
 
-/** Texte de la barre d'état : le nombre d'accords en attente, ou « Managed » quand il n'y en a pas. */
+const BAR_NAME = 'Claude Managed'
+
+/**
+ * Texte de la barre d'état : le nombre d'accords en attente (prioritaire), sinon « Claude Managed » suivi du nombre de
+ * sessions au badge `running` s'il y en a.
+ */
 export function statusBarText(rows: readonly SessionRow[]): { text: string; tone: 'warning' | 'neutral'; tooltip: string } {
   const waiting = rows.filter((row) => row.badge === 'needs_approval')
-  if (waiting.length === 0) return { text: 'Managed', tone: 'neutral', tooltip: 'Claude Managed Agents' }
+  if (waiting.length === 0) {
+    const running = rows.filter((row) => row.badge === 'running')
+    if (running.length === 0) return { text: BAR_NAME, tone: 'neutral', tooltip: 'Claude Managed Agents' }
+    return { text: `${BAR_NAME} · ${running.length} running`, tone: 'neutral', tooltip: running.map((row) => row.title ?? row.id).join('\n') }
+  }
   const approvals = waiting.reduce((total, row) => total + row.pendingApprovals, 0)
   const tooltip = waiting.map((row) => row.title ?? row.id).join('\n')
   return { text: `${approvals} ${approvals === 1 ? 'approval' : 'approvals'}`, tone: 'warning', tooltip }
