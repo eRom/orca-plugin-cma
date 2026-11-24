@@ -7,6 +7,8 @@
   "description": "Browse your Claude Managed Agents and drive their sessions from Orca.",
   "author": { "name": "Romain Ecarnot", "url": "https://github.com/eRom" },
   "license": "MIT",
+  "repository": "https://github.com/eRom/orca-plugin-cma",
+  "icon": "media/icon.png",
   "engines": { "orca": ">=1.4.259" },
   "execution": "trusted-worker",
   "pluginApi": 1,
