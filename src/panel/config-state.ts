@@ -134,9 +134,14 @@ export async function loadAgentModels(): Promise<void> {
   }
 }
 
-/** À l'ouverture d'un écran d'agent (détail ou création) : les modèles et l'état du brouillon YAML. `agentId` null : un nouvel agent. */
+/**
+ * À l'ouverture d'un écran d'agent (détail ou création) : les modèles, la liste des agents du workspace (les agents
+ * enregistrés d'un membre s'y nomment) et l'état du brouillon YAML. `agentId` null : un nouvel agent.
+ * La liste n'est lue que si elle manque ; une lecture de fond, dont l'échec laisse les identifiants à la place des noms.
+ */
 async function loadAgentExtras(agentId: string | null): Promise<void> {
-  await Promise.all([loadAgentModels(), loadDraftControls({ kind: 'agent', agentId })])
+  const rows = read(configRows).agent === undefined ? loadConfigs('agent').catch(() => {}) : Promise.resolve()
+  await Promise.all([loadAgentModels(), rows, loadDraftControls({ kind: 'agent', agentId })])
 }
 
 /** Ouvre le formulaire de création d'un agent : empile la vue, puis charge ce qu'elle lit. */

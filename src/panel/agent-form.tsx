@@ -2,7 +2,7 @@
 // avec la base et la version sur lesquelles elle a été commencée). « Review changes » met l'écriture en attente côté
 // worker (`agent.prepareForm`), montre les changements, puis « Confirm » l'envoie (`write.commit`) ; « Create »
 // crée l'agent d'un seul geste. Le bloc `multiagent` (workflows, sous-agents, conseiller) s'édite ici ; le prompt, les
-// skills, les agents enregistrés et les réglages par outil MCP restent en lecture seule, avec un renvoi vers le brouillon YAML. Les blocs du kit (`src/blocks/`) sont copiés tels quels.
+// skills et les réglages par outil MCP restent en lecture seule, avec un renvoi vers le brouillon YAML. Les blocs du kit (`src/blocks/`) sont copiés tels quels.
 import {
   atom,
   Box,
@@ -34,6 +34,7 @@ import { SectionCollapsible } from '../blocks/section-collapsible'
 import {
   AGENT_EFFORTS,
   BUILTIN_TOOLS,
+  MAX_SAVED_AGENTS,
   POLICY_LABELS,
   type AgentDetail,
   type AgentEffort,
@@ -41,15 +42,17 @@ import {
   type AgentToolsForm,
   type ApiErrorCode,
   type Committed,
+  type ConfigRow,
   type DraftRef,
   type MultiagentForm,
   type MultiagentMemberForm,
   type PreparedWrite,
+  type SavedAgentRef,
   type ToolPolicy
 } from '../protocol'
 import { clipBytes } from '../shared/text'
 import { ChangesPreview } from './changes'
-import { agentModels, configDetail, configDetailError, loadConfigs, loadDetail, openConfig } from './config-state'
+import { agentModels, configDetail, configDetailError, configRows, loadConfigs, loadDetail, openConfig, RENDER_ROW_CAP } from './config-state'
 import { archiveQuestion, askConfirmation, ConfirmPanel } from './confirm'
 import { carryDraftOutcome, DraftControls, draftIsBusy, startDraft } from './drafts'
 import { clearForm, editForm, formKey, isTouched, readForm, touchField } from './form-state'
@@ -97,7 +100,16 @@ const hasMultiagentKey = (value: unknown): boolean => typeof value === 'object' 
  * Une saisie gardée d'avant le champ `multiagent` (base sans la clé) est ignorée : sa base dirait « pas de bloc » sur un
  * agent qui en a un, et « Off » n'enverrait rien (vu le 24/11 sur Incident commander, « Nothing to apply »).
  */
-const hasCurrentShape = (draft: { form: unknown; base: unknown }): boolean => hasMultiagentKey(draft.form) && hasMultiagentKey(draft.base)
+const hasCurrentShape = (draft: { form: unknown; base: unknown }): boolean =>
+  hasMultiagentKey(draft.form) && hasMultiagentKey(draft.base) && hasSavedAgents(draft.form) && hasSavedAgents(draft.base)
+
+/** Un bloc gardé avant les agents enregistrés éditables porte `predefinedCount`, pas `savedAgents` : sa saisie est ignorée. */
+function hasSavedAgents(value: unknown): boolean {
+  const block = (value as { multiagent?: unknown }).multiagent
+  if (block === null || typeof block !== 'object') return true
+  const members = block as { subagents?: { savedAgents?: unknown }; workflows?: { savedAgents?: unknown } }
+  return Array.isArray(members.subagents?.savedAgents) && Array.isArray(members.workflows?.savedAgents)
+}
 
 /** Le brouillon YAML d'un agent (`null` : un nouvel agent). */
 export const agentDraft = (agentId: string | null): DraftRef => ({ kind: 'agent', agentId })
@@ -393,7 +405,7 @@ function ModelField({ label, labelHidden, value, models, disabled, onChange }: M
 
 type MemberName = 'subagents' | 'workflows'
 
-const MEMBER_OFF: MultiagentMemberForm = { enabled: false, inlineAgents: true, predefinedCount: 0 }
+const MEMBER_OFF: MultiagentMemberForm = { enabled: false, inlineAgents: true, savedAgents: [] }
 
 /** Le bloc affiché quand l'agent n'en a pas : tout éteint. */
 const allOff = (): MultiagentForm => ({ advisor: null, subagents: MEMBER_OFF, workflows: MEMBER_OFF })
@@ -409,7 +421,7 @@ const settled = (block: MultiagentForm): MultiagentForm | null => (isAllOff(bloc
 function toggleMember(current: MultiagentForm | null, base: MultiagentForm | null, name: MemberName, on: boolean): MultiagentForm | null {
   const block = current ?? allOff()
   const before = base?.[name]
-  const member = on ? (before?.enabled ? before : { enabled: true, inlineAgents: true, predefinedCount: 0 }) : MEMBER_OFF
+  const member = on ? (before?.enabled ? before : { enabled: true, inlineAgents: true, savedAgents: [] }) : MEMBER_OFF
   return settled({ ...block, [name]: member })
 }
 
@@ -419,7 +431,26 @@ function toggleAdvisor(current: MultiagentForm | null, base: MultiagentForm | nu
   return settled({ ...block, advisor: on ? (base?.advisor ?? '') : null })
 }
 
-const savedAgentsText = (count: number): string => `${String(count)} saved agent${count === 1 ? '' : 's'}, edited in YAML`
+/** Le nom affiché d'un agent enregistré : « This agent » pour l'agent édité, le nom de la liste du workspace, sinon l'identifiant brut. */
+const THIS_AGENT = 'This agent'
+
+type AgentNames = { selfId: string | null; rows: ConfigRow[] | undefined }
+
+function savedAgentName(id: string, { selfId, rows }: AgentNames): string {
+  if (id === selfId) return THIS_AGENT
+  return clipTitle(rows?.find((row) => row.id === id)?.name ?? id)
+}
+
+/** Les agents qu'un membre peut encore ajouter : ceux du workspace hors liste, plus l'agent édité lui-même (sauf à la création). */
+function addableAgents(saved: SavedAgentRef[], names: AgentNames): { value: string; label: string }[] {
+  const taken = new Set(saved.map((agent) => agent.id))
+  const options: { value: string; label: string }[] = []
+  if (names.selfId !== null && !taken.has(names.selfId)) options.push({ value: names.selfId, label: THIS_AGENT })
+  for (const row of (names.rows ?? []).slice(0, RENDER_ROW_CAP)) {
+    if (row.id !== names.selfId && !taken.has(row.id)) options.push({ value: row.id, label: clipTitle(row.name) })
+  }
+  return options
+}
 
 type MemberCardProps = {
   title: string
@@ -428,17 +459,32 @@ type MemberCardProps = {
   /** Le membre à l'ouverture : éteint, il perd ses agents enregistrés, ce que la carte annonce. */
   before: MultiagentMemberForm | undefined
   disabled: boolean
+  names: AgentNames
   onToggle: (on: boolean) => void
   onInline: (inline: boolean) => void
+  onSavedAgents: (savedAgents: SavedAgentRef[]) => void
 }
 
 /** Les agents enregistrés qu'un membre éteint emporte : l'API remplace l'objet, la liste ne survit pas. */
 const lostSavedAgents = (member: MultiagentMemberForm, before: MultiagentMemberForm | undefined): number =>
-  !member.enabled && before?.enabled ? before.predefinedCount : 0
+  !member.enabled && before?.enabled ? before.savedAgents.length : 0
 
-/** Une carte `subagents` ou `workflows` : l'interrupteur et sa description, puis (allumé) le droit de définir ses propres agents. */
-function MemberCard({ title, description, member, before, disabled, onToggle, onInline }: MemberCardProps) {
+/** Une puce d'agent enregistré : son nom et un bouton qui le retire. */
+function SavedAgentChip({ name, disabled, onRemove }: { name: string; disabled: boolean; onRemove: () => void }) {
+  return (
+    <Box direction="row" align="center" gap="xs" border radius="md" padding="xs">
+      <Text size="sm">{name}</Text>
+      <IconButton icon="close" label={`Remove ${name}`} variant="ghost" size="sm" disabled={disabled} onPress={onRemove} />
+    </Box>
+  )
+}
+
+/** Une carte `subagents` ou `workflows` : l'interrupteur et sa description, puis (allumé) le droit de définir ses propres agents et ses agents enregistrés. */
+function MemberCard({ title, description, member, before, disabled, names, onToggle, onInline, onSavedAgents }: MemberCardProps) {
   const lost = lostSavedAgents(member, before)
+  const options = addableAgents(member.savedAgents, names)
+  const full = member.savedAgents.length >= MAX_SAVED_AGENTS
+  const empty = !member.inlineAgents && member.savedAgents.length === 0
   return (
     <GroupCard
       rows={[
@@ -459,9 +505,39 @@ function MemberCard({ title, description, member, before, disabled, onToggle, on
           <Box paddingY="xs">
             <Stack gap="xs">
               <Checkbox label="Can define its own agents" disabled={disabled} checked={member.inlineAgents} onChange={onInline} />
-              {member.predefinedCount > 0 ? (
-                <Text muted size="xs">
-                  {savedAgentsText(member.predefinedCount)}
+              {member.savedAgents.length > 0 ? (
+                <Box direction="row" wrap gap="xs">
+                  {member.savedAgents.map((agent) => {
+                    const name = savedAgentName(agent.id, names)
+                    return (
+                      <SavedAgentChip
+                        key={agent.id}
+                        name={name}
+                        disabled={disabled}
+                        onRemove={() => onSavedAgents(member.savedAgents.filter((entry) => entry.id !== agent.id))}
+                      />
+                    )
+                  })}
+                </Box>
+              ) : null}
+              {full ? (
+                <Text muted size="xs">{`Up to ${String(MAX_SAVED_AGENTS)} saved agents.`}</Text>
+              ) : (
+                <Select
+                  // La clé suit la liste : le choix fait, la liste se remonte et revient au texte d'invite.
+                  key={member.savedAgents.length}
+                  label={`Add saved agent to ${title}`}
+                  labelHidden
+                  placeholder="+ Add saved agent"
+                  disabled={disabled || options.length === 0}
+                  value={undefined}
+                  options={options}
+                  onChange={(id) => onSavedAgents([...member.savedAgents, { id, version: before?.savedAgents.find((agent) => agent.id === id)?.version ?? null }])}
+                />
+              )}
+              {empty ? (
+                <Text tone="danger" size="xs">
+                  No agents to use. Add a saved agent, or let this agent define its own.
                 </Text>
               ) : null}
             </Stack>
@@ -477,15 +553,19 @@ type MultiagentZoneProps = {
   models: string[] | null
   disabled: boolean
   coordinator: boolean
+  /** L'agent édité (`null` : une création) : il se nomme « This agent » dans les agents enregistrés. */
+  agentId: string | null
   /** La base de la saisie gardée : ce qu'un membre rallumé retrouve. */
   base: MultiagentForm | null
   onChange: (multiagent: MultiagentForm | null) => void
 }
 
 /** Les trois membres du bloc `multiagent` : « Dynamic workflows », « Subagents », « Advisor ». Une topologie `coordinator` reste au YAML. */
-function MultiagentZone({ form, models, disabled, coordinator, base, onChange }: MultiagentZoneProps) {
+function MultiagentZone({ form, models, disabled, coordinator, agentId, base, onChange }: MultiagentZoneProps) {
   const block = form.multiagent ?? null
   const view = block ?? allOff()
+  // La liste des agents du workspace : absente tant qu'elle n'est pas lue, les puces montrent alors les identifiants.
+  const names: AgentNames = { selfId: agentId, rows: read(configRows).agent }
   return (
     <SectionCollapsible title="Multiagent (optional)" summary={multiagentSummary(block, coordinator)} open={read(multiagentOpen)} onChange={(next) => set(multiagentOpen, next)}>
       <Stack gap="sm">
@@ -501,8 +581,10 @@ function MultiagentZone({ form, models, disabled, coordinator, base, onChange }:
               member={view.workflows}
               before={base?.workflows}
               disabled={disabled}
+              names={names}
               onToggle={(on) => onChange(toggleMember(block, base, 'workflows', on))}
               onInline={(inline) => onChange({ ...view, workflows: { ...view.workflows, inlineAgents: inline } })}
+              onSavedAgents={(savedAgents) => onChange({ ...view, workflows: { ...view.workflows, savedAgents } })}
             />
             <MemberCard
               title="Subagents"
@@ -510,8 +592,10 @@ function MultiagentZone({ form, models, disabled, coordinator, base, onChange }:
               member={view.subagents}
               before={base?.subagents}
               disabled={disabled}
+              names={names}
               onToggle={(on) => onChange(toggleMember(block, base, 'subagents', on))}
               onInline={(inline) => onChange({ ...view, subagents: { ...view.subagents, inlineAgents: inline } })}
+              onSavedAgents={(savedAgents) => onChange({ ...view, subagents: { ...view.subagents, savedAgents } })}
             />
             <GroupCard
               rows={[
@@ -568,7 +652,7 @@ function multiagentProblem(block: MultiagentForm | null): string | null {
   if (block.advisor !== null && block.advisor.trim() === '') return 'Choose an advisor model.'
   for (const [name, label] of [['workflows', 'Dynamic workflows'], ['subagents', 'Subagents']] as const) {
     const member = block[name]
-    if (member.enabled && !member.inlineAgents && member.predefinedCount === 0) {
+    if (member.enabled && !member.inlineAgents && member.savedAgents.length === 0) {
       return `${label} need inline agents or at least one saved agent.`
     }
   }
@@ -1003,6 +1087,7 @@ function AgentFormBody({ id, base, version, name, agent }: BodyProps) {
         models={agentModels()}
         disabled={locked}
         coordinator={agent?.multiagentCoordinator === true}
+        agentId={id}
         base={draftBase.multiagent ?? null}
         onChange={(multiagent) => change({ multiagent })}
       />

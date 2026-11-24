@@ -87,8 +87,8 @@ const AGENT_FORM: AgentForm = {
   ],
   multiagent: {
     advisor: 'claude-opus-5',
-    subagents: { enabled: true, inlineAgents: true, predefinedCount: 2 },
-    workflows: { enabled: false, inlineAgents: true, predefinedCount: 0 }
+    subagents: { enabled: true, inlineAgents: true, savedAgents: [{ id: 'agent_01helper', version: 2 }, { id: 'agent_01review', version: 1 }] },
+    workflows: { enabled: false, inlineAgents: true, savedAgents: [] }
   }
 }
 

@@ -10,6 +10,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/beta/agents/agents'
 import {
   BUILTIN_TOOLS,
+  MAX_SAVED_AGENTS,
   type AgentForm,
   type AgentToolsForm,
   type ApiResult,
@@ -41,11 +42,18 @@ const isMapping = (value: unknown): value is Mapping => typeof value === 'object
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
 /** Un membre `subagents` ou `workflows` de la réponse de l'API ; désactivé, il vaut « inline agents permis, aucun agent enregistré ». */
-function toMemberForm(member: { type: 'disabled' } | { type: 'enabled'; inline_agents: { type: string }; predefined_agents: unknown[] }): MultiagentMemberForm {
+function toMemberForm(
+  member: { type: 'disabled' } | { type: 'enabled'; inline_agents: { type: string }; predefined_agents: { id: string; version: number }[] }
+): MultiagentMemberForm {
   if (member.type === 'disabled') {
-    return { enabled: false, inlineAgents: true, predefinedCount: 0 }
+    return { enabled: false, inlineAgents: true, savedAgents: [] }
   }
-  return { enabled: true, inlineAgents: member.inline_agents.type === 'enabled', predefinedCount: member.predefined_agents.length }
+  // La réponse rend toujours les références résolues et épinglées. L'agent lui-même revient sous son identifiant ; renvoyé ainsi, l'API le traite comme `self` et le réépingle sur la nouvelle version (sonde du 24/11 : v2 envoyée, v3 relue).
+  return {
+    enabled: true,
+    inlineAgents: member.inline_agents.type === 'enabled',
+    savedAgents: member.predefined_agents.map((agent) => ({ id: agent.id, version: agent.version }))
+  }
 }
 
 /** Le bloc `multiagent` du formulaire : seule la forme `multiagent_20261001` s'édite, la topologie `coordinator` reste au YAML. */
@@ -229,16 +237,20 @@ function applyMcpServers(doc: AgentDocument, form: AgentForm['mcpServers'], base
   }
 }
 
-/** Un membre `subagents` ou `workflows` écrit : les agents enregistrés du document passent tels quels tant que le membre reste activé. */
-function memberValue(member: MultiagentMemberForm, existing: unknown): Mapping {
+/**
+ * Un membre `subagents` ou `workflows` écrit. Les agents enregistrés viennent du formulaire : une épingle conservée
+ * repart à l'identique, un agent ajouté part sans version (l'API épingle alors la dernière).
+ */
+function memberValue(member: MultiagentMemberForm): Mapping {
   if (!member.enabled) {
     return { type: 'disabled' }
   }
-  const kept = isMapping(existing) && existing.type === 'enabled' && Array.isArray(existing.predefined_agents) ? existing.predefined_agents : []
-  return { type: 'enabled', inline_agents: { type: member.inlineAgents ? 'enabled' : 'disabled' }, predefined_agents: kept }
+  const predefined = member.savedAgents.map((agent) => (agent.version === null ? { type: 'agent', id: agent.id } : { type: 'agent', id: agent.id, version: agent.version }))
+  return { type: 'enabled', inline_agents: { type: member.inlineAgents ? 'enabled' : 'disabled' }, predefined_agents: predefined }
 }
 
-const sameMember = (a: MultiagentMemberForm, b: MultiagentMemberForm): boolean => a.enabled === b.enabled && a.inlineAgents === b.inlineAgents
+const sameMember = (a: MultiagentMemberForm, b: MultiagentMemberForm): boolean =>
+  a.enabled === b.enabled && a.inlineAgents === b.inlineAgents && isDeepStrictEqual(a.savedAgents, b.savedAgents)
 
 /**
  * Le bloc `multiagent`, membre par membre. Un formulaire sans bloc retire celui de l'agent (la clé absente part à
@@ -264,7 +276,7 @@ function applyMultiagent(doc: AgentDocument, form: MultiagentForm | null, base: 
   }
   for (const name of ['subagents', 'workflows'] as const) {
     if (writeAll || !sameMember(form[name], base[name])) {
-      block[name] = memberValue(form[name], block[name])
+      block[name] = memberValue(form[name])
     }
   }
   doc.multiagent = block
@@ -374,13 +386,36 @@ function multiagentText(multiagent: MultiagentForm): string {
 
 /** Les agents enregistrés qu'un membre éteint emporte : l'API remplace l'objet du membre, la liste ne survit pas. */
 const lostSaved = (member: MultiagentMemberForm | null, before: MultiagentMemberForm): number =>
-  before.enabled && !(member?.enabled ?? false) ? before.predefinedCount : 0
+  before.enabled && !(member?.enabled ?? false) ? before.savedAgents.length : 0
 
 const removesText = (count: number): string => (count === 0 ? '' : ` (removes ${String(count)} saved agent${count === 1 ? '' : 's'})`)
+
+/** Une ligne par agent enregistré ajouté ou retiré d'un membre qui reste activé (le worker n'a que les identifiants, pas les noms). */
+/** Un membre absent (bloc neuf) : aucun agent enregistré, tout ce que le formulaire en porte est un ajout. */
+const MEMBER_NONE: MultiagentMemberForm = { enabled: false, inlineAgents: true, savedAgents: [] }
+
+function savedAgentChanges(path: string, form: MultiagentMemberForm, base: MultiagentMemberForm, out: FieldChange[]): void {
+  const before = new Set(base.savedAgents.map((agent) => agent.id))
+  const after = new Set(form.savedAgents.map((agent) => agent.id))
+  for (const agent of form.savedAgents) {
+    if (!before.has(agent.id)) {
+      out.push({ path: `${path}${SAVED_AGENT_SUFFIX}`, before: null, after: agent.id, lines: null })
+    }
+  }
+  for (const agent of base.savedAgents) {
+    if (!after.has(agent.id)) {
+      out.push({ path: `${path}${SAVED_AGENT_SUFFIX}`, before: agent.id, after: null, lines: null })
+    }
+  }
+}
 
 function memberChange(path: string, form: MultiagentMemberForm, base: MultiagentMemberForm, out: FieldChange[]): void {
   if (memberText(form) !== memberText(base)) {
     out.push(leafChange(path, memberText(base), `${memberText(form)}${removesText(lostSaved(form, base))}`))
+  }
+  // Un membre éteint n'a plus de liste : sa perte se lit dans le suffixe de la ligne d'état.
+  if (form.enabled) {
+    savedAgentChanges(path, form, base, out)
   }
 }
 
@@ -394,6 +429,10 @@ function multiagentChanges(form: MultiagentForm | null, base: MultiagentForm | n
   }
   if (base === null) {
     out.push({ path: 'Multiagent', before: null, after: multiagentText(form), lines: null })
+    // Un bloc neuf nomme aussi ses agents enregistrés : la ligne du bloc ne dit pas lesquels.
+    for (const [name, path] of [['subagents', 'Subagents'], ['workflows', 'Workflows']] as const) {
+      if (form[name].enabled) savedAgentChanges(path, form[name], MEMBER_NONE, out)
+    }
     return
   }
   if (form.advisor !== base.advisor) {
@@ -450,6 +489,31 @@ export async function agentFormOptions(client: Anthropic, log: (message: string)
   }
 }
 
+const SAVED_AGENT_SUFFIX = ' saved agent'
+
+/**
+ * Les lignes « … saved agent » de la revue disent le nom de l'agent, pas son identifiant : une lecture de la liste
+ * des agents, seulement quand il y a de telles lignes. L'agent édité se dit « This agent » ; un échec de lecture
+ * laisse les identifiants (la revue reste juste).
+ */
+async function nameSavedAgents(store: ClientStore, agentId: string | null, changes: FieldChange[]): Promise<FieldChange[]> {
+  if (!changes.some((change) => change.path.endsWith(SAVED_AGENT_SUFFIX))) {
+    return changes
+  }
+  const names = new Map<string, string>()
+  try {
+    for await (const agent of (await store.get()).beta.agents.list()) {
+      names.set(agent.id, agent.name)
+    }
+  } catch {
+    // Les identifiants restent : la revue est exacte, seulement moins lisible.
+  }
+  const nameOf = (id: string | null): string | null => (id === null ? null : id === agentId ? 'This agent' : (names.get(id) ?? id))
+  return changes.map((change) =>
+    change.path.endsWith(SAVED_AGENT_SUFFIX) ? { ...change, before: nameOf(change.before), after: nameOf(change.after) } : change
+  )
+}
+
 export type PrepareAgentFormInput = { agentId: string | null; baseVersion: number | null; form: AgentForm; base: AgentForm | null }
 
 /**
@@ -477,7 +541,10 @@ export async function prepareAgentForm(
   }
   for (const [name, label] of [['subagents', 'Subagents'], ['workflows', 'Workflows']] as const) {
     const member = form.multiagent?.[name]
-    if (member?.enabled && !member.inlineAgents && member.predefinedCount === 0) {
+    if (member?.enabled && member.savedAgents.length > MAX_SAVED_AGENTS) {
+      return { ok: false, code: 'invalid', error: `${label} can use at most ${String(MAX_SAVED_AGENTS)} saved agents.` }
+    }
+    if (member?.enabled && !member.inlineAgents && member.savedAgents.length === 0) {
       return { ok: false, code: 'invalid', error: `${label} need inline agents or at least one saved agent.` }
     }
   }
@@ -503,7 +570,7 @@ export async function prepareAgentForm(
     // exactement l'envoi. Changé ailleurs depuis, l'envoi (forcé par « Apply anyway ») peut porter plus que cet
     // écart (un toolset recréé, une politique déjà posée) : la revue montre alors le document, exact.
     const described = liveVersion === baseVersion ? formChanges(form, agentId === null ? null : base) : []
-    const changes = described.length > 0 ? described : documentChanges
+    const changes = await nameSavedAgents(store, agentId, described.length > 0 ? described : documentChanges)
     const commit = async (force: boolean): Promise<ApiResult<Committed>> => {
       try {
         const agent = await sendAgent(await store.get(), agentId, baseVersion, before, after, force)

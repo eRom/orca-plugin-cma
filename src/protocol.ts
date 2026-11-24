@@ -86,13 +86,19 @@ export type AgentToolsForm = {
   tools: { name: (typeof BUILTIN_TOOLS)[number]; enabled: boolean | null; policy: ToolPolicy | null }[]
 }
 
+/** Un agent enregistré d'un membre `multiagent` ; `version` null : ajouté dans le formulaire, l'API épingle alors la dernière. */
+export type SavedAgentRef = { id: string; version: number | null }
+
+/** Le plafond d'agents enregistrés par membre (limite de l'API). */
+export const MAX_SAVED_AGENTS = 20
+
 /** Un membre `subagents` ou `workflows` du bloc `multiagent`. */
 export type MultiagentMemberForm = {
   enabled: boolean
   /** L'agent peut définir ses propres agents (non enregistrés). */
   inlineAgents: boolean
-  /** Lecture seule : les agents enregistrés se modifient dans le YAML et sont conservés tels quels. */
-  predefinedCount: number
+  /** Les agents enregistrés que le membre peut utiliser, dans l'ordre ; une version posée est une épingle conservée telle quelle. */
+  savedAgents: SavedAgentRef[]
 }
 
 /** Le bloc `multiagent` (type `multiagent_20261001`) tel que le formulaire le modifie. */
