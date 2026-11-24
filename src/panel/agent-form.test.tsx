@@ -614,6 +614,21 @@ test('switching the last member off returns to no block: nothing is left to revi
   await view.unmount()
 })
 
+test('a form kept from before the multiagent field is ignored, so turning the block off really sends null', async () => {
+  const calls = newCalls()
+  const block = { advisor: null, subagents: MEMBER_ON, workflows: MEMBER_OFF }
+  const { multiagent: _dropped, ...legacy } = FORM
+  const persisted = { plugin: { ...OPEN_DETAIL.plugin, 'forms.drafts': { 'agent:agent_a': { form: legacy, base: legacy, baseStamp: DETAIL.version } } } }
+  const view = await mount(panel, { host: mockHost({ requests: requests(calls, detailWith(block)) }), persisted })
+  await openMultiagent(view)
+  assert.equal(view.valueOf({ label: 'Subagents' }), true)
+  await view.toggle({ label: 'Subagents' })
+  await view.press({ role: 'button', text: 'Review changes' })
+  assert.equal(calls.prepares[0]?.form.multiagent, null)
+  assert.deepEqual(calls.prepares[0]?.base?.multiagent, block)
+  await view.unmount()
+})
+
 test('turning a member with saved agents off says they will be removed', async () => {
   const calls = newCalls()
   const block = { advisor: null, subagents: { enabled: true, inlineAgents: true, predefinedCount: 2 }, workflows: MEMBER_ON }

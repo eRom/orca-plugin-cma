@@ -75,16 +75,17 @@ function isDraft(value: unknown): value is Draft {
  *   sinon `freshBase` et `currentStamp`. C'est ce qu'il faut envoyer à l'écriture.
  * - `dirty` : le formulaire diffère de `base`.
  * - `stale` : la saisie a été commencée sur une autre version que `currentStamp` (null pour une création).
- * Une saisie gardée à une forme antérieure (sans base) est ignorée : elle compte comme absente.
+ * Une saisie gardée à une forme antérieure (sans base, ou refusée par `accepts`) est ignorée : elle compte comme absente.
  */
 export function readForm<F>(
   key: string,
   freshBase: F,
-  currentStamp: BaseStamp = null
+  currentStamp: BaseStamp = null,
+  accepts: (draft: { form: unknown; base: unknown }) => boolean = () => true
 ): { form: F; base: F; baseStamp: BaseStamp; dirty: boolean; stale: boolean } {
   const drafts = read(formDrafts)
   const draft: unknown = Object.hasOwn(drafts, key) ? drafts[key] : undefined
-  if (!isDraft(draft)) return { form: freshBase, base: freshBase, baseStamp: currentStamp, dirty: false, stale: false }
+  if (!isDraft(draft) || !accepts(draft)) return { form: freshBase, base: freshBase, baseStamp: currentStamp, dirty: false, stale: false }
   const form = draft.form as F
   const base = draft.base as F
   return {
@@ -100,12 +101,19 @@ export function readForm<F>(
  * Garde la saisie en cours. `base` (le formulaire de l'objet chargé) et `baseStamp` (son repère de
  * version, null à la création) sont retenus à la première saisie d'une clé, puis conservés tant que la saisie vit.
  */
-export function editForm<F>(key: string, form: F, base: F, baseStamp: BaseStamp = null): void {
+export function editForm<F>(
+  key: string,
+  form: F,
+  base: F,
+  baseStamp: BaseStamp = null,
+  accepts: (draft: { form: unknown; base: unknown }) => boolean = () => true
+): void {
   update(formDrafts, (drafts) => {
     const existing: unknown = Object.hasOwn(drafts, key) ? drafts[key] : undefined
     return {
       ...drafts,
-      [key]: isDraft(existing)
+      // Une saisie refusée par `accepts` (forme antérieure) est remplacée, comme `readForm` l'ignore.
+      [key]: isDraft(existing) && accepts(existing)
         ? { form, base: existing.base, baseStamp: existing.baseStamp, ...(existing.hadSecret === true && { hadSecret: true }) }
         : { form, base, baseStamp }
     }

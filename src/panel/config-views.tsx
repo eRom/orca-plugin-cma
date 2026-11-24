@@ -26,7 +26,7 @@ import { AgentFormView, leaveAgentView, TRUNCATED_NOTICE } from './agent-form'
 import { EnvironmentFormView } from './environment-form'
 import { MemoryActions, MemoryDeleteAction, MemoryStoreFormView, refreshStore } from './memory-forms'
 import { VaultFormView } from './vault-forms'
-import { configDetail, configDetailError, configRows, loadAgentModels, loadDetail, loadMemory, memoryContent, memoryError, restoreNewAgent } from './config-state'
+import { configDetail, configDetailError, configRows, loadDetail, loadMemory, memoryContent, memoryError, restoreNewAgent } from './config-state'
 import { ERROR_TEXT_LIMIT_BYTES, nav, popView, run, workspace } from './state'
 
 /** Plafond d'un titre ou d'un libellé : un libellé de plus de 1 Kio fait refuser le rendu. */
@@ -54,7 +54,9 @@ export function filterRows(rows: readonly ConfigRow[], query: string): ConfigRow
  */
 export async function restoreConfigView(): Promise<void> {
   const top = read(nav).at(-1)
-  if (top?.view === 'config' && read(configDetail)?.id !== top.id) {
+  // Un agent est toujours relu : un détail gardé d'un panneau ou d'un worker précédent peut manquer un champ (`multiagent`, 24/11)
+  // ou la liste des modèles ; sa relecture recharge aussi les modèles (`loadAgentExtras`).
+  if (top?.view === 'config' && (read(configDetail)?.id !== top.id || top.kind === 'agent')) {
     await loadDetail(top.kind, top.id)
   } else if (top?.view === 'credential' && read(configDetail)?.id !== top.vaultId) {
     await loadDetail('vault', top.vaultId)
@@ -62,9 +64,6 @@ export async function restoreConfigView(): Promise<void> {
     await loadMemory(top.memoryStoreId, top.memoryId)
   } else if (top?.view === 'newConfig') {
     await restoreNewAgent()
-  } else if (top?.view === 'config' && top.kind === 'agent') {
-    // Détail déjà chargé (panneau rechargé sur un agent ouvert) : la liste des modèles peut manquer ou avoir expiré.
-    await loadAgentModels()
   }
 }
 

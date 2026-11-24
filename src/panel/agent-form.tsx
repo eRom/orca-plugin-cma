@@ -91,6 +91,14 @@ const clipTitle = (text: string): string => clipBytes(text, TITLE_LIMIT_BYTES).t
 const asPolicy = (value: string): ToolPolicy | null => POLICIES.find((policy) => policy === value) ?? null
 const asEffort = (value: string): AgentEffort | null => AGENT_EFFORTS.find((effort) => effort === value) ?? null
 
+const hasMultiagentKey = (value: unknown): boolean => typeof value === 'object' && value !== null && Object.hasOwn(value, 'multiagent')
+
+/**
+ * Une saisie gardée d'avant le champ `multiagent` (base sans la clé) est ignorée : sa base dirait « pas de bloc » sur un
+ * agent qui en a un, et « Off » n'enverrait rien (vu le 24/11 sur Incident commander, « Nothing to apply »).
+ */
+const hasCurrentShape = (draft: { form: unknown; base: unknown }): boolean => hasMultiagentKey(draft.form) && hasMultiagentKey(draft.base)
+
 /** Le brouillon YAML d'un agent (`null` : un nouvel agent). */
 export const agentDraft = (agentId: string | null): DraftRef => ({ kind: 'agent', agentId })
 
@@ -210,7 +218,7 @@ async function showFailure(key: string, failure: { code: ApiErrorCode; error: st
 async function prepare(target: Target): Promise<void> {
   const { key, id } = target
   if (isBusy(read(flows)[key])) return
-  const { form, base, baseStamp } = readForm(key, target.base, target.version)
+  const { form, base, baseStamp } = readForm(key, target.base, target.version, hasCurrentShape)
   setFlow(key, { step: id === null ? 'creating' : 'preparing' })
   let result
   try {
@@ -858,13 +866,13 @@ type BodyProps = { id: string | null; base: AgentForm; version: number | null; n
 
 function AgentFormBody({ id, base, version, name, agent }: BodyProps) {
   const key = formKey('agent', id)
-  const { form, base: draftBase, baseStamp, dirty, stale } = readForm(key, base, version)
-  const latest = (): AgentForm => readForm(key, base, version).form
+  const { form, base: draftBase, baseStamp, dirty, stale } = readForm(key, base, version, hasCurrentShape)
+  const latest = (): AgentForm => readForm(key, base, version, hasCurrentShape).form
   const change = (changes: Partial<AgentForm>): void => {
     // Un résultat ou un avis déjà lu ne vaut plus une fois la saisie reprise.
     const flow = read(flows)[key]
     if (flow?.step === 'applied' || flow?.step === 'notice') setFlow(key, null)
-    editForm(key, { ...latest(), ...changes }, base, version)
+    editForm(key, { ...latest(), ...changes }, base, version, hasCurrentShape)
   }
   const changeTools = (changes: Partial<AgentToolsForm>): void => {
     const tools = latest().builtinTools
