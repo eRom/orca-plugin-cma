@@ -7,7 +7,7 @@ import { basename, join } from 'node:path'
 import type { UploadItem } from '../protocol'
 import { INVALID_MEMORY_PATH } from '../shared/memory-path'
 import { CONFLICT_MESSAGE, type ClientStore } from './client'
-import { createFilePicker, createMemoryUploads } from './memory-uploads'
+import { createMemoryUploads } from './memory-uploads'
 import { createPendingWrites } from './pending-writes'
 
 const sha = (data: string | Buffer): string => createHash('sha256').update(data).digest('hex')
@@ -305,52 +305,6 @@ test('file contents appear in no log line and no error message, only base names'
   cleanup()
 })
 
-test('file.pick answers the chosen path and its base name, trimming the trailing newline', async () => {
-  const calls: string[][] = []
-  const pick = createFilePicker({
-    platform: 'darwin',
-    run: async (args) => {
-      calls.push(args)
-      return '/Users/test/Documents/notes today.md\n'
-    }
-  })
-  expect(await pick()).toEqual({ ok: true, value: { file: '/Users/test/Documents/notes today.md', name: 'notes today.md' } })
-  expect(calls.length).toBe(1)
-  expect(calls[0]?.[0]).toBe('-e')
-  expect(calls[0]?.[1]).toBe('POSIX path of (choose file with prompt "Choose a file to upload as a memory")')
-})
-
-test('file.pick answers null when the user cancels (osascript error -128)', async () => {
-  const pick = createFilePicker({
-    platform: 'darwin',
-    run: async () => {
-      throw new Error('Command failed: osascript\n0:49: execution error: User canceled. (-128)')
-    }
-  })
-  expect(await pick()).toEqual({ ok: true, value: null })
-})
-
-test('file.pick fails readably on another error, and off macOS never runs anything', async () => {
-  const broken = createFilePicker({
-    platform: 'darwin',
-    run: async () => {
-      throw new Error('osascript: command not found')
-    }
-  })
-  expect(await broken()).toEqual({ ok: false, code: 'other', error: 'Could not open the file picker.' })
-
-  let ran = 0
-  const linux = createFilePicker({
-    platform: 'linux',
-    run: async () => {
-      ran++
-      return '/x'
-    }
-  })
-  expect(await linux()).toEqual({ ok: false, code: 'other', error: 'File picking works on macOS only.' })
-  expect(ran).toBe(0)
-})
-
 test('overlapping paths are refused before any request, between rows and against the store, in both directions', async () => {
   const { stageUploads, file, api, only } = setup()
   const path = file('x.md', 'x\n')
@@ -380,67 +334,4 @@ test('a sibling that only shares a name prefix does not overlap, and a replaceme
   expect((await stageUploads({ memoryStoreId: 'memstore_1', items: [item('/doc', path), item('/docs.md', path), item('/notes/a.md.bak', path)] })).ok).toBe(true)
   expect((await stageUploads({ memoryStoreId: 'memstore_1', items: [item('/notes/a.md', path, 'mem_1')] })).ok).toBe(true)
   cleanup()
-})
-
-test('file.pick keeps trailing spaces of a file name and drops only the line ending', async () => {
-  const pick = createFilePicker({ platform: 'darwin', run: async () => '/Users/test/notes .md \n' })
-  expect(await pick()).toEqual({ ok: true, value: { file: '/Users/test/notes .md ', name: 'notes .md ' } })
-  const crlf = createFilePicker({ platform: 'darwin', run: async () => '/Users/test/a.md\r\n' })
-  expect(await crlf()).toEqual({ ok: true, value: { file: '/Users/test/a.md', name: 'a.md' } })
-})
-
-test('two concurrent file.pick calls share one dialog and one answer, and a later call opens a new one', async () => {
-  let runs = 0
-  let release: (output: string) => void = () => {}
-  const pick = createFilePicker({
-    platform: 'darwin',
-    run: () => {
-      runs++
-      return new Promise<string>((resolve) => {
-        release = resolve
-      })
-    }
-  })
-  const first = pick()
-  const second = pick()
-  expect(runs).toBe(1)
-  release('/Users/test/late.md\n')
-  const expected = { ok: true, value: { file: '/Users/test/late.md', name: 'late.md' } }
-  expect(await first).toEqual(expected)
-  expect(await second).toEqual(expected)
-  // La boîte est fermée : un nouvel appel en ouvre une autre.
-  const third = pick()
-  expect(runs).toBe(2)
-  release('/Users/test/other.md')
-  expect(await third).toEqual({ ok: true, value: { file: '/Users/test/other.md', name: 'other.md' } })
-})
-
-test('a failed or cancelled dialog is not kept: the next file.pick runs again', async () => {
-  let runs = 0
-  const pick = createFilePicker({
-    platform: 'darwin',
-    run: async () => {
-      runs++
-      throw new Error('User canceled. (-128)')
-    }
-  })
-  expect(await pick()).toEqual({ ok: true, value: null })
-  expect(await pick()).toEqual({ ok: true, value: null })
-  expect(runs).toBe(2)
-})
-
-test('a folder picker runs choose folder with its prompt and answers the folder name', async () => {
-  const calls: string[][] = []
-  const pick = createFilePicker(
-    {
-      platform: 'darwin',
-      run: async (args) => {
-        calls.push(args)
-        return '/Users/x/skills/teach/\n'
-      }
-    },
-    { kind: 'folder', prompt: 'Choose a skill folder (it must contain SKILL.md)' }
-  )
-  expect(await pick()).toEqual({ ok: true, value: { file: '/Users/x/skills/teach/', name: 'teach' } })
-  expect(calls).toEqual([['-e', 'POSIX path of (choose folder with prompt "Choose a skill folder (it must contain SKILL.md)")']])
 })

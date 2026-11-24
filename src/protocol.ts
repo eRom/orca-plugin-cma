@@ -31,6 +31,8 @@ export type ApiErrorCode =
   | 'drafts_occupied'
   /** Le fichier de brouillon n'a pas changé depuis l'écriture du worker : rien à envoyer. */
   | 'nothing_to_apply'
+  /** Aucune boîte de dialogue native sur cet ordinateur : le panneau propose de coller un chemin. */
+  | 'picker_unavailable'
   | 'other'
 
 /** Un appel à l'API Anthropic : une erreur revient en texte lisible, jamais en exception. */
