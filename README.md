@@ -6,7 +6,9 @@
 
 [Install](#install) · [Usage](#usage) · [Drafts](#drafts-edit-as-files) · [Files](#what-it-writes) · [Access](#what-it-can-access) · [Limits](#requirements-and-limits) · [Development](#development)
 
-Claude Managed Agents run on Anthropic's infrastructure: you configure an agent, an environment and its tools, then start sessions that work on their own. This plugin puts that console inside Orca. A **Claude Managed Agents** panel lists your sessions and follows them live, lets you answer their approval requests, and edits every configuration the API exposes. A status bar item tells you how many sessions are running and when one waits for you.
+Claude Managed Agents run on Anthropic's infrastructure: you configure an agent, an environment and its tools, then start sessions that work on their own. This plugin puts that console inside Orca. A **Managed Agents** panel lists your sessions and follows them live, lets you answer their approval requests, and edits every configuration the API exposes. A status bar item tells you how many sessions are running and when one waits for you.
+
+Managed Agents is a community plugin for Orca, not made or endorsed by Stably or by Anthropic.
 
 ## Install
 
@@ -16,7 +18,7 @@ From the command line:
 orca plugin install eRom/orca-plugin-cma
 ```
 
-Orca shows the access the plugin asks for (see [What it can access](#what-it-can-access)) and enables it once you approve. The **Claude Managed Agents** panel then appears in the sidebar.
+Orca shows the access the plugin asks for (see [What it can access](#what-it-can-access)) and enables it once you approve. The **Managed Agents** panel then appears in the sidebar.
 
 Open it and add an Anthropic API key under **Organisation**. You can add several Anthropic workspaces, each with its own key, and switch between them: the whole panel follows the active one.
 
@@ -95,7 +97,7 @@ bun run build              # bundle the worker to dist/worker.mjs
 orca plugin check . --json
 ```
 
-Claude Managed Agents is a community plugin, not made or endorsed by Stably or by Anthropic.
+`dist/worker.mjs` is committed, because Orca installs the plugin from Git without building it: rebuild it before each release.
 
 ## License
 
