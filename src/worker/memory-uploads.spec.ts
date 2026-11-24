@@ -3,7 +3,7 @@ import { expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import type { UploadItem } from '../protocol'
 import { INVALID_MEMORY_PATH } from '../shared/memory-path'
 import { CONFLICT_MESSAGE, type ClientStore } from './client'
@@ -229,7 +229,7 @@ test('every refusal answers invalid on the first faulty line and sends nothing',
     { name: 'bad path after a good one', items: [item('/a.md', good), item('/a//b', good)], error: INVALID_MEMORY_PATH },
     { name: 'duplicate by case', items: [item('/Notes.md', good), item('/notes.md', good)], error: '/notes.md: A memory already has this path.' },
     { name: 'missing file', items: [item('/m.md', missing)], error: 'Could not read gone.md.' },
-    { name: 'directory', items: [item('/d.md', dir)], error: `Could not read ${dir.split('/').pop()}.` },
+    { name: 'directory', items: [item('/d.md', dir)], error: `Could not read ${basename(dir)}.` },
     { name: 'NUL byte', items: [item('/n.md', withNul)], error: `/n.md: ${textOnly}` },
     { name: 'not UTF-8', items: [item('/l.md', notUtf8)], error: `/l.md: ${textOnly}` }
   ]

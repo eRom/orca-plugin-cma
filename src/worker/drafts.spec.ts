@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { ApiResult, DraftRef, PreparedWrite } from '../protocol'
-import { REGISTRY_FILE, createDrafts, sameRef, slugify, type DraftAdapter, type DraftBase } from './drafts'
+import { REGISTRY_FILE, createDrafts, sameRef, slugify, toPosixKey, type DraftAdapter, type DraftBase } from './drafts'
 import type { DraftsHost } from './editor-host'
 import { fakeWorkspace } from './fake-workspace'
 import { createPendingWrites } from './pending-writes'
@@ -980,5 +980,37 @@ test('creates the missing leaf folder of an existing project', async () => {
   rmSync(folder, { recursive: true, force: true })
   expect(await drafts.status()).toEqual({ folder, ready: false })
   expect(existsSync(folder)).toBe(true)
+  cleanup()
+})
+
+test('toPosixKey turns every backslash into a slash and leaves a posix path untouched', () => {
+  expect(toPosixKey('memories\\store\\notes\\PLAY.md')).toBe('memories/store/notes/PLAY.md')
+  expect(toPosixKey('agents\\x.yaml')).toBe('agents/x.yaml')
+  expect(toPosixKey('agents/x.yaml')).toBe('agents/x.yaml')
+  expect(toPosixKey('')).toBe('')
+})
+
+test('a draft file is reported and registered under a posix key', async () => {
+  const { drafts, folder } = setup({ file: () => 'memories/s/notes/a.md' })
+  const opened = await drafts.open(AGENT)
+  expect(opened.ok && opened.value.file).toBe('memories/s/notes/a.md')
+  const registry = JSON.parse(readFileSync(join(folder, REGISTRY_FILE), 'utf8'))
+  expect(Object.keys(registry.entries)).toEqual(['memories/s/notes/a.md'])
+})
+
+test('a registry written with backslash keys is read with posix keys', async () => {
+  const { drafts, folder, build } = setup()
+  await drafts.open(AGENT)
+  const path = join(folder, REGISTRY_FILE)
+  const registry = JSON.parse(readFileSync(path, 'utf8'))
+  writeFileSync(path, JSON.stringify({ entries: { 'agents\\agent_1.yaml': registry.entries[FILE] } }))
+  const reread = build()
+  const state = await reread.state(AGENT)
+  expect(state.ok && state.value?.file).toBe(FILE)
+  const found = await reread.find(() => true)
+  expect(found.map((draft) => draft.file)).toEqual([FILE])
+  // La prochaine écriture réécrit la clé en `/`.
+  expect((await reread.open(AGENT)).ok).toBe(true)
+  expect(Object.keys(JSON.parse(readFileSync(path, 'utf8')).entries)).toEqual([FILE])
   cleanup()
 })
