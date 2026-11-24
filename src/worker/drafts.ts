@@ -303,7 +303,14 @@ export function createDrafts(deps: {
    * a plusieurs, ou null. `prefix` est le chemin du dossier relatif au workspace, en `/` ('' si c'est le workspace).
    */
   async function findWorkspace(): Promise<{ id: string; name: string; prefix: string } | null> {
-    await mkdir(folder, { recursive: true })
+    // Seul le dernier niveau se crée : un projet supprimé du disque ne doit pas renaître sous son ancien chemin.
+    try {
+      await mkdir(folder)
+    } catch (error) {
+      const code = (error as { code?: unknown } | null)?.code
+      if (code === 'ENOENT') return null
+      if (code !== 'EEXIST') throw error
+    }
     const target = await realpath(folder)
     let best: { id: string; name: string; prefix: string } | null = null
     for (const candidate of await host.folders()) {

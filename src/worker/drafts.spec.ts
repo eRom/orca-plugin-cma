@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { ApiResult, DraftRef, PreparedWrite } from '../protocol'
 import { REGISTRY_FILE, createDrafts, sameRef, slugify, type DraftAdapter, type DraftBase } from './drafts'
 import type { DraftsHost } from './editor-host'
@@ -948,5 +948,24 @@ test('does not match a workspace that only shares a name prefix with the folder'
   mkdirSync(sibling)
   const { drafts } = subfolderSetup([{ id: 'ws-sibling', path: sibling }], folder)
   expect((await drafts.status()).ready).toBe(false)
+  cleanup()
+})
+
+test('does not recreate the folder of a deleted project', async () => {
+  const { drafts, folder } = setup({ workspace: false })
+  rmSync(dirname(folder), { recursive: true, force: true })
+  expect(await drafts.status()).toEqual({ folder, ready: false })
+  expect(existsSync(dirname(folder))).toBe(false)
+  const opened = await drafts.open(AGENT)
+  expect(opened.ok === false && opened.code).toBe('drafts_missing')
+  expect(existsSync(dirname(folder))).toBe(false)
+  cleanup()
+})
+
+test('creates the missing leaf folder of an existing project', async () => {
+  const { drafts, folder } = setup({ workspace: false })
+  rmSync(folder, { recursive: true, force: true })
+  expect(await drafts.status()).toEqual({ folder, ready: false })
+  expect(existsSync(folder)).toBe(true)
   cleanup()
 })
