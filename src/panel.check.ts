@@ -33,10 +33,10 @@ const WITH_KEY = {
 const WORKSPACES_INFO = {
   hasKey: true,
   keyRejected: false,
-  workspaceId: 'wrkspc_0198iz9hody2oYuZvJ1SMcHz',
+  workspaceId: 'wrkspc_01DemoDefaultWorkspace',
   workspaces: [
-    { localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_0198iz9hody2oYuZvJ1SMcHz', active: true },
-    { localId: 'ws_2', name: 'Orca-claude', workspaceId: 'wrkspc_013Mp1kNaYDSgw93rzjxpQkF', active: false }
+    { localId: 'ws_1', name: 'Default', workspaceId: 'wrkspc_01DemoDefaultWorkspace', active: true },
+    { localId: 'ws_2', name: 'Staging', workspaceId: 'wrkspc_01DemoSecondWorkspace', active: false }
   ]
 }
 
