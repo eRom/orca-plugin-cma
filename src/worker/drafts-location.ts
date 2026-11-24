@@ -1,9 +1,9 @@
 // Où vit le dossier de brouillons : un sous-dossier `managed-agents/` d'un projet de la barre latérale
 // d'Orca, choisi par Romain (l'éditeur d'Orca n'ouvre que des fichiers d'un workspace). Ce module retient
 // le choix, liste les projets candidats et déplace les brouillons quand le projet change.
-import { cp, mkdir, readFile, readdir, realpath, rename as fsRename, rm, rmdir, stat, writeFile } from 'node:fs/promises'
+import { cp, lstat, mkdir, readFile, readdir, realpath, rename as fsRename, rm, rmdir, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { ApiResult, DraftsProject } from '../protocol'
 import { REGISTRY_FILE } from './drafts'
 
@@ -57,7 +57,41 @@ function registryEntryCount(text: string): number {
   }
 }
 
-const realOrResolved = (path: string): Promise<string> => realpath(path).catch(() => resolve(path))
+/** Le chemin réel, même si le dossier n'existe pas encore : l'ancêtre existant le plus proche est résolu. */
+async function realDeep(path: string): Promise<string> {
+  try {
+    return await realpath(path)
+  } catch {
+    const parent = dirname(resolve(path))
+    if (parent === resolve(path)) return resolve(path)
+    return join(await realDeep(parent), basename(path))
+  }
+}
+
+/** `inner` est `outer` ou se trouve dessous (chemins réels). */
+function isInside(outer: string, inner: string): boolean {
+  const rel = relative(outer, inner)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+/**
+ * Un fichier de `source` dont le chemin relatif existe déjà dans `target` (ou un fichier face à un dossier) :
+ * le déplacer écraserait l'un des deux. Deux dossiers de même nom ne collisionnent pas, on regarde dedans.
+ * Au premier niveau, le registre et le .gitignore ne comptent pas : l'un est remplacé, l'autre reste.
+ */
+async function collides(source: string, target: string, top = true): Promise<boolean> {
+  for (const name of await readdir(source)) {
+    if (top && (name === GITIGNORE_FILE || name === REGISTRY_FILE)) continue
+    const existing = await lstat(join(target, name)).catch(() => null)
+    if (existing === null) continue
+    if (existing.isDirectory() && (await lstat(join(source, name))).isDirectory()) {
+      if (await collides(join(source, name), join(target, name), false)) return true
+    } else {
+      return true
+    }
+  }
+  return false
+}
 
 /** Déplace un fichier ou un dossier ; deux volumes différents (`EXDEV`) : copie puis suppression. */
 async function moveEntry(source: string, target: string, rename: Rename): Promise<void> {
@@ -85,15 +119,24 @@ async function moveEntry(source: string, target: string, rename: Rename): Promis
 
 /**
  * Déplace les brouillons de `from` vers `to`. `nothing` : pas de registre dans `from`, ou même dossier.
- * `occupied` : le registre de `to` a déjà au moins une entrée, rien n'est touché. Le registre passe en dernier :
- * un déplacement interrompu laisse `from` reconnaissable et `to` libre, donc relançable.
+ * `nested` : un des dossiers est dans l'autre, le déplacement se mangerait lui-même. `occupied` : le registre de `to`
+ * a déjà au moins une entrée, ou un fichier de `to` serait écrasé. Ces trois refus ne touchent à rien. Le registre
+ * passe en dernier : un déplacement interrompu laisse `from` reconnaissable et `to` libre, donc relançable.
  */
-export async function moveDrafts(from: string, to: string, rename: Rename = fsRename): Promise<'moved' | 'nothing' | 'occupied'> {
+export async function moveDrafts(
+  from: string,
+  to: string,
+  rename: Rename = fsRename
+): Promise<'moved' | 'nothing' | 'occupied' | 'nested'> {
   if ((await readOrNull(join(from, REGISTRY_FILE))) === null) return 'nothing'
-  await mkdir(to, { recursive: true })
-  if ((await realOrResolved(from)) === (await realOrResolved(to))) return 'nothing'
+  const realFrom = await realDeep(from)
+  const realTo = await realDeep(to)
+  if (realFrom === realTo) return 'nothing'
+  if (isInside(realFrom, realTo) || isInside(realTo, realFrom)) return 'nested'
   const targetRegistry = await readOrNull(join(to, REGISTRY_FILE))
   if (targetRegistry !== null && registryEntryCount(targetRegistry) > 0) return 'occupied'
+  if (await collides(from, to)) return 'occupied'
+  await mkdir(to, { recursive: true })
 
   const names = (await readdir(from)).filter((name) => name !== GITIGNORE_FILE && name !== REGISTRY_FILE)
   for (const name of [...names, REGISTRY_FILE]) {
@@ -169,20 +212,24 @@ export function createDraftsLocation(deps: {
           sourceFolder = previous ? join(previous.path, DRAFTS_SUBFOLDER) : null
         }
 
-        await mkdir(targetFolder, { recursive: true })
-        await writeFile(join(targetFolder, GITIGNORE_FILE), GITIGNORE_CONTENT, { flag: 'wx' }).catch((error: unknown) => {
-          if (errorCode(error) !== 'EEXIST') throw error
-        })
-
+        // Le déplacement d'abord : ses refus ne laissent rien derrière eux, pas même le dossier cible.
         if (previousId !== projectId && sourceFolder !== null) {
-          if ((await moveDrafts(sourceFolder, targetFolder, rename)) === 'occupied') {
+          const moved = await moveDrafts(sourceFolder, targetFolder, rename)
+          if (moved === 'occupied') {
             return {
               ok: false,
               error: 'That project already holds drafts. Remove them or pick another project.',
               code: 'drafts_occupied'
             }
           }
+          if (moved === 'nested') {
+            return { ok: false, error: 'The drafts folder cannot move inside itself. Choose another project.', code: 'invalid' }
+          }
         }
+        await mkdir(targetFolder, { recursive: true })
+        await writeFile(join(targetFolder, GITIGNORE_FILE), GITIGNORE_CONTENT, { flag: 'wx' }).catch((error: unknown) => {
+          if (errorCode(error) !== 'EEXIST') throw error
+        })
         await store.set(DRAFTS_PROJECT_KEY, projectId)
         log(`drafts folder: ${targetFolder}`)
         return { ok: true, value: { folder: targetFolder } }

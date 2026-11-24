@@ -296,3 +296,71 @@ test('choose refuses an unknown project id', async () => {
   expect(existsSync(draftsOf(rows[0]))).toBe(false)
   cleanup()
 })
+
+const NESTED_MESSAGE = 'The drafts folder cannot move inside itself. Choose another project.'
+
+test('refuses a target nested in the source and touches nothing', async () => {
+  // Un projet dont le chemin est le dossier de brouillons lui-même : la cible serait dedans.
+  const rows = [project('p1', 'one')]
+  const inside = project('p-inside', 'inside')
+  rows.push(inside)
+  const { location, data } = fakeLocation(rows)
+  await location.choose('p1')
+  populate(draftsOf(rows[0]))
+  inside.path = draftsOf(rows[0])
+  const result = await location.choose('p-inside')
+  expect(result).toEqual({ ok: false, error: NESTED_MESSAGE, code: 'invalid' })
+  expect(data.get(DRAFTS_PROJECT_KEY)).toBe('p1')
+  expectMovedTo(draftsOf(rows[0]))
+  expect(existsSync(join(draftsOf(rows[0]), DRAFTS_SUBFOLDER))).toBe(false)
+  expect(readFileSync(join(draftsOf(rows[0]), REGISTRY_FILE), 'utf8').includes('agents/a.yaml')).toBe(true)
+  cleanup()
+})
+
+test('refuses a source nested in the target and touches nothing', async () => {
+  // L'inverse : le dossier de brouillons retenu est dans celui du projet visé.
+  const outer = project('p-outer', 'outer')
+  const sub = project('p-sub', 'sub')
+  sub.path = join(draftsOf(outer), 'sub')
+  mkdirSync(sub.path, { recursive: true })
+  const { location, data } = fakeLocation([outer, sub])
+  await location.choose('p-sub')
+  populate(draftsOf(sub))
+  const result = await location.choose('p-outer')
+  expect(result).toEqual({ ok: false, error: NESTED_MESSAGE, code: 'invalid' })
+  expect(data.get(DRAFTS_PROJECT_KEY)).toBe('p-sub')
+  expectMovedTo(draftsOf(sub))
+  expect(existsSync(join(draftsOf(outer), REGISTRY_FILE))).toBe(false)
+  cleanup()
+})
+
+test('refuses when a target file would be overwritten', async () => {
+  const rows = [project('p1', 'one'), project('p2', 'two')]
+  const { location, data } = fakeLocation(rows)
+  await location.choose('p1')
+  populate(draftsOf(rows[0]))
+  mkdirSync(join(draftsOf(rows[1]), 'agents'), { recursive: true })
+  writeFileSync(join(draftsOf(rows[1]), 'agents', 'a.yaml'), 'target\n')
+  const result = await location.choose('p2')
+  expect(result.ok).toBe(false)
+  expect(result.ok === false ? result.code : null).toBe('drafts_occupied')
+  expect(readFileSync(join(draftsOf(rows[1]), 'agents', 'a.yaml'), 'utf8')).toBe('target\n')
+  expect(readdirSync(join(draftsOf(rows[1]), 'agents'))).toEqual(['a.yaml'])
+  expect(data.get(DRAFTS_PROJECT_KEY)).toBe('p1')
+  expectMovedTo(draftsOf(rows[0]))
+  cleanup()
+})
+
+test('merges directories of the target when no file collides', async () => {
+  const rows = [project('p1', 'one'), project('p2', 'two')]
+  const { location } = fakeLocation(rows)
+  await location.choose('p1')
+  populate(draftsOf(rows[0]))
+  mkdirSync(join(draftsOf(rows[1]), 'agents'), { recursive: true })
+  writeFileSync(join(draftsOf(rows[1]), 'agents', 'other.yaml'), 'other\n')
+  const result = await location.choose('p2')
+  expect(result.ok).toBe(true)
+  expectMovedTo(draftsOf(rows[1]))
+  expect(readFileSync(join(draftsOf(rows[1]), 'agents', 'other.yaml'), 'utf8')).toBe('other\n')
+  cleanup()
+})
