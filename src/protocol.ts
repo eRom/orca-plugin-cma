@@ -364,10 +364,10 @@ export type PickedFile = { file: string; name: string }
 /** Une ligne d'envoi : `path` est le chemin de la mémoire, `memoryId` non nul pour remplacer une mémoire existante. */
 export type UploadItem = { path: string; file: string; memoryId: string | null }
 
-/** Un skill de l'espace (Skills API, bêta) : sa dernière version sert aux agents qui le référencent. */
+/** Un skill de l'espace (Skills API) : sa dernière version sert aux agents qui le référencent. */
 export type SkillRow = { id: string; name: string; latestVersionId: string; updatedAt: string }
 
-/** Un fichier de l'espace (Files API, bêta) ; `sessionId` non nul : produit par une session, pas envoyé. */
+/** Un fichier de l'espace (Files API) ; `sessionId` non nul : produit par une session, pas envoyé. */
 export type FileRow = { id: string; name: string; sizeBytes: number; createdAt: string; sessionId: string | null }
 
 /** Délai que le panneau laisse à un envoi de skill ou de fichier avant de le dire incertain. */

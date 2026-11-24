@@ -56,10 +56,6 @@ const isHostTimeout = (error: unknown): boolean => error instanceof Error && (er
 
 // --- Actions ---
 
-function setNotice(card: CardKey, notice: CardNotice | null): void {
-  showNotice(card, notice)
-}
-
 const refusal = (title: string, message: string): CardNotice => ({ tone: 'danger', title, message })
 
 /** Relit la liste d'une carte. Une lecture qui échoue montre son erreur sur la carte (avec Retry), elle ne remonte pas. */
@@ -87,13 +83,13 @@ async function pick(card: CardKey, startedIn: number): Promise<PickedFile | null
     } catch (error) {
       if (startedIn !== currentGeneration()) return null
       if (!isHostTimeout(error)) throw error
-      setNotice(card, { tone: 'warning', title: PICK_STILL_OPEN, message: null })
+      showNotice(card, { tone: 'warning', title: PICK_STILL_OPEN, message: null })
       return null
     }
     if (startedIn !== currentGeneration()) return null
     if (result.ok) return result.value
     if (result.code === 'unauthorized') await loadWorkspace()
-    else setNotice(card, refusal('Could not upload', clipBytes(result.error, ERROR_TEXT_LIMIT_BYTES).text))
+    else showNotice(card, refusal('Could not upload', clipBytes(result.error, ERROR_TEXT_LIMIT_BYTES).text))
     return null
   } finally {
     if (startedIn === currentGeneration()) setCardValue(resourcePicking, card, false)
@@ -129,7 +125,7 @@ async function sendUpload(card: CardKey, picked: PickedFile, skill: { id: string
 async function startUpload(card: CardKey, skill: { id: string; name: string } | null): Promise<void> {
   if (read(resourcePicking)[card] || read(resourceUploading)[card] !== null) return
   const startedIn = currentGeneration()
-  setNotice(card, null)
+  showNotice(card, null)
   const picked = await pick(card, startedIn)
   if (picked === null) return
   setCardValue(resourceUploading, card, clipName(skill?.name ?? picked.name))
@@ -138,14 +134,14 @@ async function startUpload(card: CardKey, skill: { id: string; name: string } | 
     if (startedIn !== currentGeneration()) return
     // Le worker dit lui-même qu'une attente épuisée est peut-être passée : même avis que l'attente épuisée de l'hôte.
     if (outcome === 'unconfirmed' || (!outcome.ok && outcome.error === UPLOAD_UNCONFIRMED)) {
-      setNotice(card, { tone: 'warning', title: UPLOAD_UNCONFIRMED, message: null })
+      showNotice(card, { tone: 'warning', title: UPLOAD_UNCONFIRMED, message: null })
     } else if (outcome.ok) {
-      setNotice(card, { tone: 'success', title: outcome.value, message: null })
+      showNotice(card, { tone: 'success', title: outcome.value, message: null })
     } else if (outcome.code === 'unauthorized') {
       await loadWorkspace()
       return
     } else {
-      setNotice(card, refusal('Could not upload', clipBytes(outcome.error, ERROR_TEXT_LIMIT_BYTES).text))
+      showNotice(card, refusal('Could not upload', clipBytes(outcome.error, ERROR_TEXT_LIMIT_BYTES).text))
     }
     await reread(card, startedIn)
   } finally {
@@ -156,30 +152,30 @@ async function startUpload(card: CardKey, skill: { id: string; name: string } | 
 /** Supprime une ligne. Ne lève jamais : un refus pose l'avis de la carte et rend la main, la question se ferme. */
 async function deleteResource(card: CardKey, id: string, name: string): Promise<void> {
   const startedIn = currentGeneration()
-  setNotice(card, null)
+  showNotice(card, null)
   let result: ApiResult<null>
   try {
     result = await (card === 'skills' ? plugin.request('skills.delete', { skillId: id }) : plugin.request('files.delete', { fileId: id }))
   } catch (error) {
     // Un rejet de l'hôte (délai, worker indisponible) : l'avis de la carte, puis la relecture comme pour tout refus.
     if (startedIn !== currentGeneration()) return
-    setNotice(card, refusal('Could not delete', errorText(error)))
+    showNotice(card, refusal('Could not delete', errorText(error)))
     await reread(card, startedIn)
     return
   }
   if (startedIn !== currentGeneration()) return
   if (result.ok) {
-    setNotice(card, { tone: 'success', title: `Deleted ${clipName(name)}.`, message: null })
+    showNotice(card, { tone: 'success', title: `Deleted ${clipName(name)}.`, message: null })
   } else if (result.code === 'unauthorized') {
     // `onConfirm` ne lève jamais : une identité qu'on ne peut pas relire devient l'avis de la carte.
     try {
       await loadWorkspace()
     } catch (error) {
-      if (startedIn === currentGeneration()) setNotice(card, refusal('Could not delete', errorText(error)))
+      if (startedIn === currentGeneration()) showNotice(card, refusal('Could not delete', errorText(error)))
     }
     return
   } else {
-    setNotice(card, refusal('Could not delete', clipBytes(result.error, ERROR_TEXT_LIMIT_BYTES).text))
+    showNotice(card, refusal('Could not delete', clipBytes(result.error, ERROR_TEXT_LIMIT_BYTES).text))
   }
   // Un 404 veut dire que la ligne a déjà disparu : la relecture la retire, réussie ou non la suppression.
   await reread(card, startedIn)

@@ -663,13 +663,17 @@ test('a refusal before the API shows the worker text', async () => {
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
-test('a success notice goes away after 3 s, an error after 5 s', async () => {
+test('a success notice goes away after 3 s; an API error stays until the next action on its card', async () => {
+  let fileUploads = 0
   const host = mockHost({
     requests: requests({
       'skills.pickFolder': { ok: true, value: SKILL_FOLDER },
       'skills.upload': { ok: true, value: skill({ name: 'plugin-test-skill' }) },
-      'files.pickFile': { ok: true, value: FILE_PICKED },
-      'files.upload': { ok: false, code: 'other', error: 'API error 500' }
+      'files.pickFile': () => (fileUploads === 0 ? { ok: true, value: FILE_PICKED } : { ok: true, value: null }),
+      'files.upload': () => {
+        fileUploads += 1
+        return { ok: false, code: 'other', error: 'API error 500' }
+      }
     })
   })
   const view = await mount(panel, { host, persisted: OPEN })
@@ -681,24 +685,25 @@ test('a success notice goes away after 3 s, an error after 5 s', async () => {
   await view.rerender()
   assert.equal(callout(view, /Uploaded plugin-test-skill\./), null)
   assert.ok(callout(view, /Could not upload/))
-  await wait(2000)
-  await view.rerender()
+  // L'action suivante sur la carte (ici une boîte annulée) retire l'erreur.
+  await view.press(addFile)
   assert.equal(callout(view, /Could not upload/), null)
   await view.unmount()
 })
 
-test('the timer of an older notice never clears a newer one', async () => {
+test('a warning never clears itself, and the timer of an older success never clears a newer notice', async () => {
   const view = await mount(panel, { host: mockHost({ requests: requests() }), persisted: OPEN })
-  const lifetimes = { success: 40, warning: 40, danger: 40 }
-  showNotice('skills', { tone: 'success', title: 'First.', message: null }, lifetimes)
+  showNotice('files', { tone: 'warning', title: UPLOAD_UNCONFIRMED, message: null }, 20)
+  showNotice('skills', { tone: 'success', title: 'First.', message: null }, 40)
   await wait(25)
-  showNotice('skills', { tone: 'success', title: 'Second.', message: null }, { ...lifetimes, success: 200 })
+  showNotice('skills', { tone: 'success', title: 'Second.', message: null }, 200)
   await wait(40)
   await view.rerender()
   assert.equal(read(resourceNotices).skills?.title, 'Second.')
   assert.ok(callout(view, /Second\./))
   await wait(200)
   assert.equal(read(resourceNotices).skills, null)
+  assert.equal(read(resourceNotices).files?.title, UPLOAD_UNCONFIRMED)
   await view.unmount()
 })
 

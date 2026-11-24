@@ -217,6 +217,21 @@ test('a refused read answers invalid and sends nothing', async () => {
   expect(calls).toEqual([])
 })
 
+test('a workspace switch during the disk read does not move the upload to the new workspace', async () => {
+  const started = fakeStore({ created: skill('skill_1', '2026-11-24T08:00:00.000000Z') })
+  const switched = fakeStore({ created: skill('skill_2', '2026-11-24T08:00:00.000000Z') })
+  let active = started.store
+  const store = { get: () => active.get(), reset() {}, hasKey: async () => true } as unknown as ClientStore
+  const readThenSwitch = async (): Promise<ReadUploads> => {
+    active = switched.store
+    return { ok: true, files: skillFiles, label: 'my-skill' }
+  }
+  const result = await handlersWith(store, { skillFolder: readThenSwitch }).uploadSkill({ folder: '/tmp/my-skill' })
+  expect(started.calls.map((call) => call.method)).toEqual(['skills.create'])
+  expect(switched.calls).toEqual([])
+  expect(result.ok && result.value.id).toBe('skill_1')
+})
+
 test('an upload cut before any answer says it may have gone through', async () => {
   const { store, calls } = fakeStore({ uploadError: new TypeError('terminated') })
   const result = await handlersWith(store, { skillFolder: readsOk() }).uploadSkill({ folder: '/tmp/my-skill' })

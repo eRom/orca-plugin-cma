@@ -4,7 +4,7 @@ import type { FileMetadata } from '@anthropic-ai/sdk/resources/files'
 import type { Skill } from '@anthropic-ai/sdk/resources/skills/skills'
 import type { ApiResult, FileRow, SkillRow } from '../protocol'
 import { UPLOAD_UNCONFIRMED } from '../protocol'
-import { attempt, type ClientStore } from './client'
+import { attempt, failure, type ClientStore } from './client'
 import { readSkillFolder, readUploadFile, type ReadUploads } from './resource-files'
 import { NO_RETRY, unconfirmedUnlessAnswered } from './session-actions'
 
@@ -74,28 +74,35 @@ export function createResourceHandlers(
   }
 ): ResourceHandlers {
   /**
-   * Lit le disque d'abord, sans réseau : un refus de lecture n'envoie rien. Puis un seul appel, sans nouvel essai
-   * et borné dans le temps. Sans réponse du serveur, l'objet a pu être créé : le dire évite le doublon.
+   * Prend d'abord le client du workspace actif : une bascule pendant la lecture du disque ne détourne pas l'envoi
+   * vers le nouveau workspace, il finit là où il a commencé. Puis lit le disque, sans réseau : un refus de lecture
+   * n'envoie rien. Enfin un seul appel, sans nouvel essai et borné dans le temps. Sans réponse du serveur, l'objet a
+   * pu être créé : le dire évite le doublon.
    */
   async function upload<T>(
-    reading: Promise<ReadUploads>,
+    reading: () => Promise<ReadUploads>,
     send: (files: File[], options: { maxRetries: 0; timeout: number; signal: AbortSignal }, client: Awaited<ReturnType<ClientStore['get']>>) => Promise<T>
   ): Promise<ApiResult<T>> {
-    const input = await reading
+    let client: Awaited<ReturnType<ClientStore['get']>>
+    try {
+      client = await store.get()
+    } catch (error) {
+      return failure(error)
+    }
+    const input = await reading()
     if (!input.ok) {
       return { ok: false, code: 'invalid', error: input.error }
     }
-    return attempt(store, async (client) => {
-      try {
-        return await send(
-          input.files,
-          { ...NO_RETRY, timeout: UPLOAD_TIMEOUT_MS, signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS) },
-          client
-        )
-      } catch (error) {
-        throw unconfirmedUnlessAnswered(error, UPLOAD_UNCONFIRMED)
-      }
-    })
+    try {
+      const value = await send(
+        input.files,
+        { ...NO_RETRY, timeout: UPLOAD_TIMEOUT_MS, signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS) },
+        client
+      )
+      return { ok: true, value }
+    } catch (error) {
+      return failure(unconfirmedUnlessAnswered(error, UPLOAD_UNCONFIRMED))
+    }
   }
 
   return {
@@ -108,12 +115,12 @@ export function createResourceHandlers(
     // Les `File` partent sans type MIME, comme dans l'exemple du SDK (`createReadStream`). Si l'API en refuse un
     // sans, ajouter le type ici.
     uploadSkill: ({ folder }) =>
-      upload(read.skillFolder(folder), async (files, options, client) =>
+      upload(() => read.skillFolder(folder), async (files, options, client) =>
         toSkillRow(await client.skills.create({ files }, options))
       ),
 
     uploadSkillVersion: ({ skillId, folder }) =>
-      upload(read.skillFolder(folder), async (files, options, client) => {
+      upload(() => read.skillFolder(folder), async (files, options, client) => {
         const version = await client.skills.versions.create(skillId, { files }, options)
         return { versionId: version.id }
       }),
@@ -133,7 +140,7 @@ export function createResourceHandlers(
       }),
 
     uploadFile: ({ file }) =>
-      upload(read.uploadFile(file), async (files, options, client) =>
+      upload(() => read.uploadFile(file), async (files, options, client) =>
         toFileRow(await client.files.upload({ file: files[0]! }, options))
       ),
 
