@@ -3,7 +3,7 @@
   "manifestVersion": 2,
   "id": "agent-claude-managed",
   "name": "Agent Claude Managed",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Browse your Claude Managed Agents and drive their sessions from Orca.",
   "author": { "name": "Romain Ecarnot", "url": "https://github.com/eRom" },
   "license": "MIT",
