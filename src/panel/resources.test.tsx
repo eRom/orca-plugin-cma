@@ -685,14 +685,21 @@ test('a success notice goes away after 3 s; an API error stays until the next ac
   await view.rerender()
   assert.equal(callout(view, /Uploaded plugin-test-skill\./), null)
   assert.ok(callout(view, /Could not upload/))
+  // Au-delà des 5 s de l'ancienne règle, l'erreur est toujours là.
+  await wait(2200)
+  await view.rerender()
+  assert.ok(callout(view, /Could not upload/))
   // L'action suivante sur la carte (ici une boîte annulée) retire l'erreur.
   await view.press(addFile)
   assert.equal(callout(view, /Could not upload/), null)
   await view.unmount()
 })
 
-test('a warning never clears itself, and the timer of an older success never clears a newer notice', async () => {
+test('a warning or an error never clears itself, and the timer of an older success never clears a newer notice', async () => {
   const view = await mount(panel, { host: mockHost({ requests: requests() }), persisted: OPEN })
+  showNotice('files', { tone: 'danger', title: 'Could not upload', message: 'API error 500' }, 20)
+  await wait(40)
+  assert.equal(read(resourceNotices).files?.title, 'Could not upload')
   showNotice('files', { tone: 'warning', title: UPLOAD_UNCONFIRMED, message: null }, 20)
   showNotice('skills', { tone: 'success', title: 'First.', message: null }, 40)
   await wait(25)
