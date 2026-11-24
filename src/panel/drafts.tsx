@@ -22,6 +22,7 @@ import {
 import type { ApiErrorCode, Committed, DraftInfo, DraftRef, DraftsProject, DraftsStatus, PreparedWrite } from '../protocol'
 import { clipBytes } from '../shared/text'
 import { EmptyView } from '../blocks/empty-view'
+import { ErrorRetry } from '../blocks/error-retry'
 import { GroupCard } from '../blocks/group-card'
 import { ItemRow } from '../blocks/item-row'
 import { SectionCollapsible } from '../blocks/section-collapsible'
@@ -275,8 +276,10 @@ function clock(iso: string): string | null {
 
 // --- Bloc « Drafts » de la home ---
 
-/** Les projets d'Orca qui peuvent héberger les brouillons, dont le courant ; null tant que la première lecture n'est pas revenue. */
+/** Les projets d'Orca qui peuvent héberger les brouillons, dont le courant ; null tant qu'aucune lecture n'a réussi (ou après un échec). */
 const draftsProjects = atom<DraftsProject[] | null>(null)
+/** Le texte du refus de la dernière lecture des projets ; null quand elle a réussi. Le bloc montre alors l'erreur, jamais une liste fausse. */
+const projectsFailure = atom<string | null>(null)
 /** Vrai quand la liste de choix est déployée (premier choix ou changement). */
 const choosing = atom(false)
 /** Le refus du dernier `drafts.choose`, montré au-dessus de la liste qui reste ouverte ; null sans refus. */
@@ -284,16 +287,23 @@ const chooseRefusal = atom<string | null>(null)
 const draftsSectionOpen = atom('draftsSectionOpen', true, { persist: 'plugin' })
 
 /**
- * À appeler à l'ouverture du panneau et du choix : lit les projets candidats et le courant. Une lecture de fond : un échec
- * (refus ou hôte muet) laisse ce que le bloc savait, ou rien, et il montre alors son état vide.
+ * À appeler à l'ouverture du panneau, du choix et après un choix : lit les projets candidats et le courant. Une lecture de
+ * fond : un échec (refus ou hôte muet) ne lève rien, il est gardé pour le bloc qui montre « Could not list Orca projects »
+ * avec Retry. Les projets lus avant sont oubliés : ils ne disent plus le vrai courant.
  */
 export async function loadDraftsSection(): Promise<void> {
   try {
     const result = await plugin.request('drafts.projects')
-    if (result.ok) set(draftsProjects, result.value)
-  } catch {
-    // Rien à montrer : le bloc garde son dernier état.
+    if (result.ok) {
+      set(draftsProjects, result.value)
+      set(projectsFailure, null)
+      return
+    }
+    set(projectsFailure, clipBytes(result.error, ERROR_TEXT_LIMIT_BYTES).text)
+  } catch (error) {
+    set(projectsFailure, clipBytes(error instanceof Error ? error.message : String(error), ERROR_TEXT_LIMIT_BYTES).text)
   }
+  set(draftsProjects, null)
 }
 
 async function chooseProject(projectId: string): Promise<void> {
@@ -327,7 +337,7 @@ function closeChooser(): void {
   set(choosing, false)
 }
 
-function ProjectList({ projects }: { projects: DraftsProject[] }): OrcaNode {
+function ProjectList({ projects }: { projects: DraftsProject[] | null }): OrcaNode {
   const busy = read(checking)
   const refusal = read(chooseRefusal)
   return (
@@ -345,8 +355,11 @@ function ProjectList({ projects }: { projects: DraftsProject[] }): OrcaNode {
           </Button>
         }
         rows={
-          projects.length === 0
-            ? [<EmptyView kind="list" text="No Orca workspace yet. Add a folder in Orca (Add project, then Folder), then try again." />]
+          // Sans lecture revenue (null), aucune ligne : « aucun projet » ne se dit que d'une lecture réussie et vide.
+          projects === null
+            ? []
+            : projects.length === 0
+            ? [<EmptyView kind="list" text="No Orca project yet. Add one in Orca (Add project), then try again." />]
             : projects.map((project) => ({
                 key: project.id,
                 row: (
@@ -371,9 +384,12 @@ function ProjectList({ projects }: { projects: DraftsProject[] }): OrcaNode {
 
 /** Le bloc de la home : le projet d'Orca qui héberge les brouillons, à choisir ou à changer. */
 export function DraftsSection(): OrcaNode {
-  const projects = read(draftsProjects) ?? []
-  const current = projects.find((project) => project.current)
-  const body = read(choosing) ? (
+  const projects = read(draftsProjects)
+  const failure = read(projectsFailure)
+  const current = projects?.find((project) => project.current)
+  const body = failure !== null ? (
+    <ErrorRetry title="Could not list Orca projects" message={failure} onRetry={() => run(loadDraftsSection)} />
+  ) : read(choosing) ? (
     <ProjectList projects={projects} />
   ) : current === undefined ? (
     <EmptyView
@@ -399,7 +415,7 @@ export function DraftsSection(): OrcaNode {
   return (
     <SectionCollapsible
       title="Drafts"
-      summary={current?.name ?? 'Not set'}
+      summary={failure !== null ? undefined : (current?.name ?? 'Not set')}
       open={read(draftsSectionOpen)}
       onChange={(next) => set(draftsSectionOpen, next)}
     >

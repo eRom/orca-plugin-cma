@@ -52,6 +52,7 @@ function requests(over: Record<string, unknown> = {}) {
     'configs.list': { ok: true, value: [] },
     'skills.list': { ok: true, value: [] },
     'files.list': { ok: true, value: [] },
+    'drafts.projects': { ok: true, value: [] },
     ...over
   } as never
 }

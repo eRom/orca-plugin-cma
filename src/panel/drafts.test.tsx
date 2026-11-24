@@ -502,11 +502,22 @@ const BETA: DraftsProject = { id: 'p_beta', name: 'beta', path: '/x/beta', curre
 type ChooseResult = { ok: true; value: { folder: string; ready: boolean } } | { ok: false; code: string; error: string }
 
 /** The fake worker of the section: `current` is the chosen project id, moved by a successful `drafts.choose`. */
-function sectionRequests(state: { current: string | null; reads: number; chosen: string[]; choose?: ChooseResult }) {
+type SectionState = {
+  current: string | null
+  reads: number
+  chosen: string[]
+  choose?: ChooseResult
+  /** Set: the next reads are refused with this text. */
+  failReads?: string
+  projects?: DraftsProject[]
+}
+
+function sectionRequests(state: SectionState) {
   return {
     'drafts.projects': () => {
       state.reads += 1
-      return { ok: true, value: [ALPHA, BETA].map((project) => ({ ...project, current: project.id === state.current })) }
+      if (state.failReads !== undefined) return { ok: false, code: 'other', error: state.failReads }
+      return { ok: true, value: (state.projects ?? [ALPHA, BETA]).map((project) => ({ ...project, current: project.id === state.current })) }
     },
     'drafts.choose': (input: { projectId: string }) => {
       state.chosen.push(input.projectId)
@@ -611,10 +622,84 @@ test('folded, Drafts sums up the project', async () => {
   await unset.unmount()
 })
 
-test('a failed projects read shows the empty view and no error', async () => {
-  const view = await mount(sectionHarness, {
-    host: mockHost({ requests: { 'drafts.projects': { ok: false, code: 'other', error: 'Orca is not reachable.' } } as never })
-  })
-  assert.deepEqual([view.errors, view.warnings, view.refusals], [[], [], []])
+const NO_ERRORS = [[], [], []]
+const READ_ERROR = 'Orca is not reachable.'
+
+test('a failed projects read shows the error and Retry reads again', async () => {
+  const state: SectionState = { current: null, reads: 0, chosen: [], failReads: READ_ERROR }
+  const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
+  const failure = view.find({ type: 'Callout', text: /Could not list Orca projects/ })
+  assert.ok(failure)
+  assert.equal(failure.props.title, 'Could not list Orca projects')
+  assert.match(failure.text, new RegExp(READ_ERROR))
+  // A failed read is not an empty list: neither the empty view nor its button.
+  assert.equal(view.find({ type: 'EmptyState' }), null)
+  assert.equal(view.find({ role: 'button', text: 'Add Orca workspace' }), null)
+  assert.equal(state.reads, 1)
+  // Retry reads again; still refused: the error stays.
+  await view.press({ role: 'button', text: 'Retry' })
+  assert.equal(state.reads, 2)
+  assert.ok(view.find({ type: 'Callout', text: /Could not list Orca projects/ }))
+  // Then it succeeds: the section is back.
+  delete state.failReads
+  await view.press({ role: 'button', text: 'Retry' })
+  assert.equal(state.reads, 3)
+  assert.equal(view.find({ type: 'Callout', text: /Could not list Orca projects/ }), null)
+  assert.equal(view.find({ type: 'EmptyState' })?.props.title, 'No drafts workspace')
+  assert.deepEqual([view.errors, view.warnings, view.refusals], NO_ERRORS)
+  await view.unmount()
+})
+
+test('a rejected request at setup ends in the same error state, without a notice', async () => {
+  const view = await mount(sectionHarness, { host: mockHost({ requests: {} as never }) })
+  assert.ok(view.find({ type: 'Callout', text: /Could not list Orca projects/ }))
+  assert.equal(view.find({ type: 'EmptyState' }), null)
+  assert.equal(view.find({ type: 'Callout', text: /Something went wrong/ }), null)
+  await view.unmount()
+})
+
+test('a failed read when the list opens shows the error, never the empty-list message', async () => {
+  const state: SectionState = { current: null, reads: 0, chosen: [] }
+  const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
+  state.failReads = READ_ERROR
+  await view.press({ role: 'button', text: 'Add Orca workspace' })
+  assert.ok(view.find({ type: 'Callout', text: /Could not list Orca projects/ }))
+  assert.equal(view.find({ text: /No Orca project yet/ }), null)
+  assert.equal(view.find({ text: 'Choose a workspace' }), null)
+  delete state.failReads
+  await view.press({ role: 'button', text: 'Retry' })
+  // The list was open when the read failed: it comes back with its rows.
+  assert.ok(view.find({ type: 'IconButton', label: 'Use alpha' }))
+  assert.deepEqual([view.errors, view.warnings, view.refusals], NO_ERRORS)
+  await view.unmount()
+})
+
+test('a failed read after choosing shows the error, not the old project', async () => {
+  const state: SectionState = { current: 'p_beta', reads: 0, chosen: [] }
+  const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
+  assert.ok(view.find({ text: 'beta' }))
+  await view.press({ type: 'IconButton', label: 'Change workspace' })
+  state.failReads = READ_ERROR
+  await view.press({ type: 'IconButton', label: 'Use alpha' })
+  assert.deepEqual(state.chosen, ['p_alpha'])
+  assert.ok(view.find({ type: 'Callout', text: /Could not list Orca projects/ }))
+  assert.equal(view.find({ text: 'beta' }), null)
+  assert.equal(view.find({ type: 'IconButton', label: 'Change workspace' }), null)
+  delete state.failReads
+  await view.press({ role: 'button', text: 'Retry' })
+  assert.ok(view.find({ text: 'alpha' }))
+  assert.ok(view.find({ type: 'IconButton', label: 'Change workspace' }))
+  assert.deepEqual([view.errors, view.warnings, view.refusals], NO_ERRORS)
+  await view.unmount()
+})
+
+test('a successful read with no project says so in the list', async () => {
+  const state: SectionState = { current: null, reads: 0, chosen: [], projects: [] }
+  const view = await mount(sectionHarness, { host: mockHost({ requests: sectionRequests(state) }) })
+  await view.press({ role: 'button', text: 'Add Orca workspace' })
+  assert.ok(view.find({ text: 'No Orca project yet. Add one in Orca (Add project), then try again.' }))
+  assert.ok(view.find({ role: 'button', text: 'Cancel' }))
+  assert.equal(view.find({ type: 'Callout' }), null)
+  assert.deepEqual([view.errors, view.warnings, view.refusals], NO_ERRORS)
   await view.unmount()
 })
